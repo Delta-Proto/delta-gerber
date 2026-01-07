@@ -1,0 +1,66 @@
+package nl.bytesoflife.gerber.model.gerber.aperture;
+
+import nl.bytesoflife.gerber.model.gerber.BoundingBox;
+import nl.bytesoflife.gerber.model.gerber.aperture.macro.MacroPrimitive;
+import nl.bytesoflife.gerber.model.gerber.aperture.macro.MacroTemplate;
+import nl.bytesoflife.gerber.renderer.svg.SvgOptions;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * An aperture instantiated from a macro template.
+ */
+public class MacroAperture extends Aperture {
+
+    private final MacroTemplate template;
+    private final List<Double> parameters;
+    private final Map<Integer, Double> evaluatedVariables;
+
+    public MacroAperture(int dCode, MacroTemplate template, List<Double> parameters) {
+        super(dCode);
+        this.template = template;
+        this.parameters = new ArrayList<>(parameters);
+        this.evaluatedVariables = template.evaluateVariables(parameters);
+    }
+
+    public MacroTemplate getTemplate() {
+        return template;
+    }
+
+    public List<Double> getParameters() {
+        return parameters;
+    }
+
+    @Override
+    public String getTemplateCode() {
+        return template.getName();
+    }
+
+    @Override
+    public BoundingBox getBoundingBox() {
+        BoundingBox bbox = new BoundingBox();
+        for (MacroPrimitive primitive : template.getPrimitives()) {
+            BoundingBox primBounds = primitive.getBoundingBox(evaluatedVariables);
+            bbox.extend(primBounds);
+        }
+        return bbox;
+    }
+
+    @Override
+    public String toSvgDef(String id, SvgOptions options) {
+        StringBuilder svg = new StringBuilder();
+        svg.append(String.format("<g id=\"%s\">", id));
+
+        for (MacroPrimitive primitive : template.getPrimitives()) {
+            String primSvg = primitive.toSvg(evaluatedVariables, options);
+            if (primSvg != null && !primSvg.isEmpty()) {
+                svg.append(primSvg);
+            }
+        }
+
+        svg.append("</g>");
+        return svg.toString();
+    }
+}
