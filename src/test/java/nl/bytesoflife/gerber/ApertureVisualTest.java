@@ -119,7 +119,7 @@ public class ApertureVisualTest {
             """);
 
         // Write to file
-        Path outputPath = Path.of("target/aperture-visual-test.html");
+        Path outputPath = Path.of("generated/aperture-visual-test.html");
         Files.createDirectories(outputPath.getParent());
         Files.writeString(outputPath, html.toString());
 

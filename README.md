@@ -32,7 +32,7 @@ Open http://localhost:8080 and upload a Gerber ZIP archive.
 
 The library includes a comprehensive visual test for aperture rendering that compares our implementation against reference images.
 
-[View Aperture Visual Test](https://htmlpreview.github.io/?https://github.com/mcix/gerber/blob/main/docs/aperture-visual-test.html)
+[View Aperture Visual Test](https://htmlpreview.github.io/?https://github.com/mcix/gerber/blob/main/generated/aperture-visual-test.html)
 
 ## Project Structure
 
