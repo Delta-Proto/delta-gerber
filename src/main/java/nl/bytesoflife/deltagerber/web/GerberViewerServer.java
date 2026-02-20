@@ -3,6 +3,10 @@ package nl.bytesoflife.deltagerber.web;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import nl.bytesoflife.deltagerber.drc.*;
+import nl.bytesoflife.deltagerber.drc.check.*;
+import nl.bytesoflife.deltagerber.drc.model.DrcRule;
+import nl.bytesoflife.deltagerber.drc.model.DrcRuleSet;
 import nl.bytesoflife.deltagerber.model.drill.DrillDocument;
 import nl.bytesoflife.deltagerber.model.gerber.GerberDocument;
 import nl.bytesoflife.deltagerber.parser.ExcellonParser;
@@ -34,8 +38,11 @@ public class GerberViewerServer {
 
     public void start() throws IOException {
         server = HttpServer.create(new InetSocketAddress(port), 0);
+        ParseHandler parseHandler = new ParseHandler();
         server.createContext("/", new StaticHandler());
-        server.createContext("/api/parse", new ParseHandler());
+        server.createContext("/api/parse", parseHandler);
+        server.createContext("/api/layer-type", new LayerTypeHandler(parseHandler));
+        server.createContext("/api/drc", new DrcHandler(parseHandler));
         server.setExecutor(null);
         server.start();
         log.info("Gerber Viewer Server started at http://localhost:{}", port);
@@ -72,6 +79,12 @@ public class GerberViewerServer {
         private final GerberParser gerberParser = new GerberParser();
         private final ExcellonParser drillParser = new ExcellonParser();
         private final MultiLayerSVGRenderer multiLayerRenderer = new MultiLayerSVGRenderer();
+
+        // Stored state for DRC
+        private volatile List<ParsedFile> lastParsedFiles = List.of();
+
+        // Layer type overrides (filename → KiCAD layer name), populated during parse and editable via API
+        private final Map<String, String> layerOverrides = Collections.synchronizedMap(new LinkedHashMap<>());
 
         // Layer colors for different file types
         private static final Map<String, String> LAYER_COLORS = new LinkedHashMap<>();
@@ -131,6 +144,8 @@ public class GerberViewerServer {
                     json.append(escapeJson(layer.color));
                     json.append(",\"type\":");
                     json.append(escapeJson(layer.type));
+                    json.append(",\"drcLayer\":");
+                    json.append(escapeJson(layer.drcLayer));
                     json.append("}");
                 }
                 json.append("],\"svg\":");
@@ -149,17 +164,41 @@ public class GerberViewerServer {
             }
         }
 
+        static class ParsedFile {
+            final String filename;
+            final String type; // "gerber" or "drill"
+            final GerberDocument gerberDoc;
+            final DrillDocument drillDoc;
+
+            ParsedFile(String filename, String type, GerberDocument gerberDoc, DrillDocument drillDoc) {
+                this.filename = filename;
+                this.type = type;
+                this.gerberDoc = gerberDoc;
+                this.drillDoc = drillDoc;
+            }
+        }
+
+        List<ParsedFile> getLastParsedFiles() {
+            return lastParsedFiles;
+        }
+
+        Map<String, String> getLayerOverrides() {
+            return layerOverrides;
+        }
+
         private static class LayerInfo {
             String name;
             String id;
             String color;
             String type;
+            String drcLayer;
 
-            LayerInfo(String name, String id, String color, String type) {
+            LayerInfo(String name, String id, String color, String type, String drcLayer) {
                 this.name = name;
                 this.id = id;
                 this.color = color;
                 this.type = type;
+                this.drcLayer = drcLayer;
             }
         }
 
@@ -176,6 +215,7 @@ public class GerberViewerServer {
         private ParseResult parseZipFile(byte[] zipData) throws IOException {
             List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
             List<LayerInfo> layerInfos = new ArrayList<>();
+            List<ParsedFile> parsedFiles = new ArrayList<>();
 
             log.debug("Opening ZIP stream...");
             try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipData))) {
@@ -212,11 +252,13 @@ public class GerberViewerServer {
                             log.debug("  Parsing as drill file...");
                             DrillDocument doc = drillParser.parse(contentStr);
                             layer = new MultiLayerSVGRenderer.Layer(name, doc);
+                            parsedFiles.add(new ParsedFile(name, "drill", null, doc));
                             log.debug("  Drill parsed: {} operations", doc.getOperations().size());
                         } else if (layerType.equals("gerber")) {
                             log.debug("  Parsing as Gerber file...");
                             GerberDocument doc = gerberParser.parse(contentStr);
                             layer = new MultiLayerSVGRenderer.Layer(name, doc);
+                            parsedFiles.add(new ParsedFile(name, "gerber", doc, null));
                             log.debug("  Gerber parsed: {} objects, {} apertures",
                                 doc.getObjects().size(), doc.getApertures().size());
                         } else {
@@ -229,9 +271,26 @@ public class GerberViewerServer {
                             layer.setOpacity(0.85);
                             layers.add(layer);
 
+                            // Compute drcLayer from file function or filename
+                            String drcLayer = null;
+                            if ("drill".equals(layerType)) {
+                                drcLayer = "Drill";
+                            } else if ("gerber".equals(layerType) && parsedFiles.get(parsedFiles.size() - 1).gerberDoc != null) {
+                                GerberDocument gDoc = parsedFiles.get(parsedFiles.size() - 1).gerberDoc;
+                                if (gDoc.getFileFunction() != null) {
+                                    drcLayer = DrcBoardInput.mapFileFunction(gDoc.getFileFunction());
+                                }
+                                if (drcLayer == null) {
+                                    drcLayer = DrcBoardInput.mapFilenameToLayer(name);
+                                }
+                                if (drcLayer == null) {
+                                    drcLayer = DrcBoardInput.mapAltiumExtension(name);
+                                }
+                            }
+
                             // Create layer info for JSON response
                             String id = name.replaceAll("[^a-zA-Z0-9._-]", "_");
-                            layerInfos.add(new LayerInfo(name, id, color, layerType));
+                            layerInfos.add(new LayerInfo(name, id, color, layerType, drcLayer));
 
                             long fileElapsed = System.currentTimeMillis() - fileStart;
                             log.info("  Parsed {} in {}ms", name, fileElapsed);
@@ -242,6 +301,17 @@ public class GerberViewerServer {
                     }
                 }
                 log.info("Processed {} files from ZIP", fileCount);
+            }
+
+            // Store parsed files for DRC
+            this.lastParsedFiles = List.copyOf(parsedFiles);
+
+            // Populate layer overrides from auto-detected drcLayer values
+            layerOverrides.clear();
+            for (LayerInfo li : layerInfos) {
+                if (li.drcLayer != null) {
+                    layerOverrides.put(li.name, li.drcLayer);
+                }
             }
 
             // Render all layers into a single multi-layer SVG
@@ -306,6 +376,189 @@ public class GerberViewerServer {
             }
 
             return "unknown";
+        }
+    }
+
+    /**
+     * Handles layer type override requests.
+     */
+    static class LayerTypeHandler implements HttpHandler {
+        private final ParseHandler parseHandler;
+
+        LayerTypeHandler(ParseHandler parseHandler) {
+            this.parseHandler = parseHandler;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                sendResponse(exchange, 405, "text/plain", "Method Not Allowed");
+                return;
+            }
+
+            try {
+                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                String filename = null;
+                String drcLayer = null;
+                for (String param : body.split("&")) {
+                    String[] kv = param.split("=", 2);
+                    if (kv.length == 2) {
+                        String key = java.net.URLDecoder.decode(kv[0], StandardCharsets.UTF_8);
+                        String value = java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+                        if ("filename".equals(key)) filename = value;
+                        else if ("drcLayer".equals(key)) drcLayer = value;
+                    }
+                }
+
+                if (filename == null) {
+                    sendResponse(exchange, 400, "application/json", "{\"error\":\"Missing filename parameter\"}");
+                    return;
+                }
+
+                if (drcLayer == null || drcLayer.isEmpty()) {
+                    parseHandler.getLayerOverrides().remove(filename);
+                } else {
+                    parseHandler.getLayerOverrides().put(filename, drcLayer);
+                }
+
+                sendResponse(exchange, 200, "application/json", "{\"ok\":true}");
+            } catch (Exception e) {
+                sendResponse(exchange, 500, "application/json",
+                        "{\"error\":" + escapeJson(e.getMessage()) + "}");
+            }
+        }
+    }
+
+    /**
+     * Handles DRC requests against the last parsed Gerber/drill data.
+     */
+    static class DrcHandler implements HttpHandler {
+        private static final Logger log = LoggerFactory.getLogger(DrcHandler.class);
+        private final ParseHandler parseHandler;
+
+        DrcHandler(ParseHandler parseHandler) {
+            this.parseHandler = parseHandler;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equals(exchange.getRequestMethod())) {
+                sendResponse(exchange, 405, "text/plain", "Method Not Allowed");
+                return;
+            }
+
+            try {
+                // Parse query parameter
+                String query = exchange.getRequestURI().getQuery();
+                String rulesName = "pcbway";
+                if (query != null) {
+                    for (String param : query.split("&")) {
+                        String[] kv = param.split("=", 2);
+                        if (kv.length == 2 && "rules".equals(kv[0])) {
+                            rulesName = kv[1].toLowerCase();
+                        }
+                    }
+                }
+
+                // Check if files have been loaded
+                List<ParseHandler.ParsedFile> parsedFiles = parseHandler.getLastParsedFiles();
+                if (parsedFiles.isEmpty()) {
+                    sendResponse(exchange, 400, "application/json",
+                            "{\"error\":\"No Gerber files loaded. Please upload a ZIP file first.\"}");
+                    return;
+                }
+
+                // Load the requested rule set
+                DrcRuleSet ruleSet;
+                try {
+                    ruleSet = switch (rulesName) {
+                        case "pcbway" -> BuiltinRuleSets.pcbWay();
+                        case "nextpcb" -> BuiltinRuleSets.nextPcb();
+                        default -> throw new IllegalArgumentException("Unknown rule set: " + rulesName);
+                    };
+                } catch (IllegalArgumentException e) {
+                    sendResponse(exchange, 400, "application/json",
+                            "{\"error\":" + escapeJson(e.getMessage()) + "}");
+                    return;
+                }
+
+                // Build DrcBoardInput from parsed files using layer overrides
+                DrcBoardInput board = new DrcBoardInput();
+                Map<String, String> overrides = parseHandler.getLayerOverrides();
+                for (ParseHandler.ParsedFile pf : parsedFiles) {
+                    String mapped = overrides.get(pf.filename);
+                    if ("gerber".equals(pf.type) && pf.gerberDoc != null) {
+                        if (mapped != null && !mapped.equals("Drill")) {
+                            board.addGerberLayer(mapped, pf.gerberDoc);
+                        }
+                    } else if ("drill".equals(pf.type) && pf.drillDoc != null) {
+                        board.addDrill(pf.drillDoc);
+                    }
+                }
+
+                // Create runner with all checks
+                DrcRunner runner = new DrcRunner()
+                        .registerCheck(new TrackWidthCheck())
+                        .registerCheck(new HoleSizeCheck())
+                        .registerCheck(new AnnularWidthCheck())
+                        .registerCheck(new ClearanceCheck())
+                        .registerCheck(new HoleToHoleCheck())
+                        .registerCheck(new EdgeClearanceCheck());
+
+                log.info("Running DRC with {} rules ({})", ruleSet.getRules().size(), rulesName);
+                long startTime = System.currentTimeMillis();
+                DrcReport report = runner.run(ruleSet, board);
+                long elapsed = System.currentTimeMillis() - startTime;
+                log.info("DRC complete in {}ms: {} errors, {} warnings, {} skipped",
+                        elapsed, report.getErrors().size(), report.getWarnings().size(),
+                        report.getSkippedRules().size());
+
+                // Build JSON response
+                StringBuilder json = new StringBuilder();
+                json.append("{\"errors\":").append(report.getErrors().size());
+                json.append(",\"warnings\":").append(report.getWarnings().size());
+                json.append(",\"skipped\":").append(report.getSkippedRules().size());
+
+                json.append(",\"violations\":[");
+                boolean first = true;
+                for (DrcViolation v : report.getViolations()) {
+                    if (!first) json.append(",");
+                    first = false;
+                    json.append("{\"severity\":").append(escapeJson(v.getSeverity().name()));
+                    json.append(",\"rule\":").append(escapeJson(v.getRule().getName()));
+                    json.append(",\"description\":").append(escapeJson(v.getDescription()));
+                    if (v.getMeasuredValueMm() != null) {
+                        json.append(",\"measured\":").append(String.format(Locale.US, "%.4f", v.getMeasuredValueMm()));
+                    }
+                    if (v.getRequiredValueMm() != null) {
+                        json.append(",\"required\":").append(String.format(Locale.US, "%.4f", v.getRequiredValueMm()));
+                    }
+                    json.append(",\"x\":").append(String.format(Locale.US, "%.4f", v.getX()));
+                    json.append(",\"y\":").append(String.format(Locale.US, "%.4f", v.getY()));
+                    if (v.getLayer() != null) {
+                        json.append(",\"layer\":").append(escapeJson(v.getLayer()));
+                    }
+                    json.append("}");
+                }
+                json.append("]");
+
+                json.append(",\"skippedRules\":[");
+                first = true;
+                for (DrcRule r : report.getSkippedRules()) {
+                    if (!first) json.append(",");
+                    first = false;
+                    json.append(escapeJson(r.getName()));
+                }
+                json.append("]");
+
+                json.append("}");
+
+                sendResponse(exchange, 200, "application/json", json.toString());
+            } catch (Exception e) {
+                log.error("Error running DRC", e);
+                sendResponse(exchange, 500, "application/json",
+                        "{\"error\":" + escapeJson(e.getMessage()) + "}");
+            }
         }
     }
 
@@ -443,7 +696,7 @@ public class GerberViewerServer {
         }
 
         .sidebar {
-            width: 280px;
+            width: 320px;
             background: #16213e;
             border-right: 1px solid #0f3460;
             padding: 16px;
@@ -498,6 +751,27 @@ public class GerberViewerServer {
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+        }
+
+        .layer-tooltip {
+            position: fixed;
+            position-area: top;
+            position-try-fallbacks: bottom, right, left;
+            padding: 4px 8px;
+            background: #0d0d1a;
+            color: #eee;
+            font-size: 0.8rem;
+            border-radius: 4px;
+            border: 1px solid #333;
+            white-space: nowrap;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 10;
+        }
+
+        .layer-item .name:hover + .layer-tooltip {
+            opacity: 1;
         }
 
         .viewer-container {
@@ -635,6 +909,281 @@ public class GerberViewerServer {
             padding: 20px;
             text-align: center;
         }
+
+        .drc-dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        .drc-btn {
+            background: #0f3460;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+
+        .drc-btn:hover {
+            background: #1a4f7a;
+        }
+
+        .drc-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .drc-menu {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            margin-top: 4px;
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 6px;
+            overflow: hidden;
+            z-index: 100;
+            min-width: 160px;
+        }
+
+        .drc-menu.open {
+            display: block;
+        }
+
+        .drc-menu-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            white-space: nowrap;
+            transition: background 0.2s;
+        }
+
+        .drc-menu-item:hover {
+            background: #0f3460;
+        }
+
+        .drc-panel {
+            display: none;
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 420px;
+            height: 100%;
+            background: #16213e;
+            border-left: 1px solid #0f3460;
+            z-index: 50;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .drc-panel.open {
+            display: flex;
+        }
+
+        .drc-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            border-bottom: 1px solid #0f3460;
+            flex-shrink: 0;
+        }
+
+        .drc-panel-header h3 {
+            font-size: 1rem;
+            font-weight: 500;
+        }
+
+        .drc-close-btn {
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 1.3rem;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .drc-close-btn:hover {
+            color: #fff;
+            background: #0f3460;
+        }
+
+        .drc-summary {
+            padding: 12px 16px;
+            border-bottom: 1px solid #0f3460;
+            flex-shrink: 0;
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+
+        .drc-summary.pass {
+            color: #4caf50;
+        }
+
+        .drc-summary.fail {
+            color: #e94560;
+        }
+
+        .drc-violations {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 0;
+        }
+
+        .drc-violation {
+            padding: 10px 16px;
+            border-bottom: 1px solid rgba(15, 52, 96, 0.5);
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+
+        .drc-violation:hover {
+            background: rgba(15, 52, 96, 0.3);
+        }
+
+        .drc-violation.active {
+            background: rgba(15, 52, 96, 0.4);
+            border-left: 3px solid #e94560;
+        }
+
+        @keyframes drc-pulse {
+            0% { r: 0.3; opacity: 1; }
+            50% { r: 0.8; opacity: 0.6; }
+            100% { r: 0.3; opacity: 1; }
+        }
+
+        .drc-violation-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+
+        .drc-severity {
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .drc-severity.error {
+            background: rgba(233, 69, 96, 0.2);
+            color: #e94560;
+        }
+
+        .drc-severity.warning {
+            background: rgba(255, 165, 0, 0.2);
+            color: #ffa500;
+        }
+
+        .drc-rule-name {
+            font-weight: 500;
+            color: #ddd;
+        }
+
+        .drc-violation-detail {
+            color: #999;
+            margin-top: 2px;
+        }
+
+        .drc-violation-values {
+            color: #bbb;
+            margin-top: 2px;
+        }
+
+        .drc-skipped {
+            padding: 10px 16px;
+            border-top: 1px solid #0f3460;
+            flex-shrink: 0;
+        }
+
+        .drc-skipped-header {
+            cursor: pointer;
+            color: #888;
+            font-size: 0.85rem;
+            user-select: none;
+        }
+
+        .drc-skipped-header:hover {
+            color: #bbb;
+        }
+
+        .drc-skipped-list {
+            display: none;
+            margin-top: 8px;
+            font-size: 0.8rem;
+            color: #666;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .drc-skipped-list.open {
+            display: block;
+        }
+
+        .drc-skipped-list div {
+            padding: 2px 0;
+        }
+
+        .drc-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding: 32px;
+            color: #888;
+        }
+
+        .drc-loading .spinner {
+            width: 24px;
+            height: 24px;
+            border-width: 2px;
+        }
+
+        .layer-quick-select {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 10px;
+        }
+
+        .layer-quick-select button {
+            flex: 1;
+            background: #0f3460;
+            color: #ccc;
+            border: none;
+            padding: 5px 0;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            transition: background 0.2s;
+        }
+
+        .layer-quick-select button:hover {
+            background: #1a4f7a;
+            color: #fff;
+        }
+
+        .layer-type-select {
+            background: #0d0d1a;
+            color: #aaa;
+            border: 1px solid #333;
+            border-radius: 3px;
+            padding: 2px 4px;
+            font-size: 0.7rem;
+            cursor: pointer;
+            max-width: 90px;
+            flex-shrink: 0;
+        }
+
+        .layer-type-select:focus {
+            outline: 1px solid #e94560;
+            border-color: #e94560;
+        }
     </style>
 </head>
 <body>
@@ -644,6 +1193,13 @@ public class GerberViewerServer {
             <input type="file" id="file-input" accept=".zip">
             Open ZIP File
         </label>
+        <div class="drc-dropdown" id="drc-dropdown">
+            <button class="drc-btn" id="drc-btn" disabled onclick="toggleDrcMenu()">Run DRC &#9662;</button>
+            <div class="drc-menu" id="drc-menu">
+                <div class="drc-menu-item" onclick="runDrc('pcbway')">PCBWay Rules</div>
+                <div class="drc-menu-item" onclick="runDrc('nextpcb')">NextPCB Rules</div>
+            </div>
+        </div>
         <div class="zoom-controls">
             <button class="zoom-btn" id="zoom-out" title="Zoom Out">-</button>
             <span class="zoom-level" id="zoom-level">100%</span>
@@ -655,6 +1211,12 @@ public class GerberViewerServer {
     <div class="main-container">
         <aside class="sidebar">
             <h2>Layers</h2>
+            <div class="layer-quick-select hidden" id="layer-quick-select">
+                <button onclick="quickSelectLayers('all')">All</button>
+                <button onclick="quickSelectLayers('none')">None</button>
+                <button onclick="quickSelectLayers('top')">Top</button>
+                <button onclick="quickSelectLayers('bottom')">Bottom</button>
+            </div>
             <div class="layer-list" id="layer-list">
                 <div class="no-layers">No layers loaded</div>
             </div>
@@ -679,10 +1241,24 @@ public class GerberViewerServer {
             <div id="svg-container">
                 <div id="svg-content"></div>
             </div>
+            <div class="drc-panel" id="drc-panel">
+                <div class="drc-panel-header">
+                    <h3 id="drc-panel-title">DRC Results</h3>
+                    <button class="drc-close-btn" onclick="closeDrcPanel()">&times;</button>
+                </div>
+                <div class="drc-summary" id="drc-summary"></div>
+                <div class="drc-violations" id="drc-violations"></div>
+                <div class="drc-skipped" id="drc-skipped-section"></div>
+            </div>
         </div>
     </div>
 
     <script>
+        // Available KiCAD layer types
+        const KICAD_LAYERS = ['', 'F.Cu', 'B.Cu', 'In1.Cu', 'In2.Cu', 'In3.Cu', 'In4.Cu',
+            'F.Silkscreen', 'B.Silkscreen', 'F.Mask', 'B.Mask',
+            'F.Paste', 'B.Paste', 'Edge.Cuts', 'Drill'];
+
         // State
         let layers = [];       // Layer metadata from server
         let combinedSvg = '';  // The multi-layer SVG string
@@ -789,10 +1365,11 @@ public class GerberViewerServer {
 
                 loadingStatus.textContent = 'Rendering ' + data.layers.length + ' layers...';
 
-                // Store layer metadata with visibility state
+                // Store layer metadata with visibility state and drcLayer
                 layers = data.layers.map((layer, index) => ({
                     ...layer,
                     visible: true,
+                    drcLayer: layer.drcLayer || '',
                     index
                 }));
 
@@ -806,6 +1383,10 @@ public class GerberViewerServer {
                 renderSvg();
                 renderLayerList();
                 fitToView();
+
+                // Enable DRC button and show quick-select buttons
+                document.getElementById('drc-btn').disabled = false;
+                document.getElementById('layer-quick-select').classList.remove('hidden');
             } catch (error) {
                 alert('Error parsing file: ' + error.message);
                 dropZone.classList.remove('hidden');
@@ -823,13 +1404,20 @@ public class GerberViewerServer {
                 return;
             }
 
-            layerList.innerHTML = layers.map((layer, index) => `
-                <div class="layer-item" onclick="toggleLayer(${index})">
-                    <input type="checkbox" ${layer.visible ? 'checked' : ''} onclick="event.stopPropagation(); toggleLayer(${index})">
-                    <div class="color-dot" style="background: ${layer.color}"></div>
-                    <span class="name" title="${layer.name}">${layer.name}</span>
-                </div>
-            `).join('');
+            layerList.innerHTML = layers.map((layer, index) => {
+                const options = KICAD_LAYERS.map(l => {
+                    const label = l || '(none)';
+                    const selected = (l === layer.drcLayer) ? 'selected' : '';
+                    return '<option value="' + l + '" ' + selected + '>' + label + '</option>';
+                }).join('');
+                return '<div class="layer-item">' +
+                    '<input type="checkbox" ' + (layer.visible ? 'checked' : '') + ' onclick="event.stopPropagation(); toggleLayer(' + index + ')">' +
+                    '<div class="color-dot" style="background: ' + layer.color + '"></div>' +
+                    '<span class="name" style="anchor-name: --layer-' + index + '" onclick="toggleLayer(' + index + ')">' + layer.name + '</span>' +
+                    '<div class="layer-tooltip" style="position-anchor: --layer-' + index + '">' + layer.name + '</div>' +
+                    '<select class="layer-type-select" onclick="event.stopPropagation()" onchange="updateLayerType(' + index + ', this.value)">' + options + '</select>' +
+                '</div>';
+            }).join('');
         }
 
         // Toggle layer visibility - just update display attribute on layer group
@@ -966,6 +1554,233 @@ public class GerberViewerServer {
         function updateTransform() {
             svgContent.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
             zoomLevel.textContent = Math.round(scale * 100) + '%';
+        }
+
+        function focusViolation(x, y) {
+            const svg = svgContent.querySelector('svg');
+            if (!svg) return;
+
+            const viewBox = svg.getAttribute('viewBox');
+            if (!viewBox) return;
+            const [vbMinX, vbMinY, vbW, vbH] = viewBox.split(' ').map(Number);
+
+            // The viewport group has transform="translate(0, flipOffset) scale(1,-1)"
+            // where flipOffset = vbMinY + vbH + vbMinY = 2*vbMinY + vbH
+            const flipOffset = 2 * vbMinY + vbH;
+
+            // In SVG coordinate space (before the viewport Y-flip), the point is at:
+            const svgX = x;
+            const svgY = flipOffset - y;
+
+            // Convert from viewBox mm to pixel position within the SVG element
+            const pxPerMm = 3.78;
+            const svgPixelWidth = vbW * pxPerMm;
+            const svgPixelHeight = vbH * pxPerMm;
+
+            const pixelX = (svgX - vbMinX) / vbW * svgPixelWidth;
+            const pixelY = (svgY - vbMinY) / vbH * svgPixelHeight;
+
+            // Set zoom level and center the point in the container
+            scale = 8;
+            const rect = svgContainer.getBoundingClientRect();
+            panX = rect.width / 2 - pixelX * scale;
+            panY = rect.height / 2 - pixelY * scale;
+
+            updateTransform();
+            showMarker(x, y);
+        }
+
+        function showMarker(x, y) {
+            const svg = svgContent.querySelector('svg');
+            if (!svg) return;
+            const viewport = svg.querySelector('#viewport');
+            if (!viewport) return;
+
+            // Remove existing marker
+            const existing = viewport.querySelector('#drc-marker');
+            if (existing) existing.remove();
+
+            const ns = 'http://www.w3.org/2000/svg';
+            const g = document.createElementNS(ns, 'g');
+            g.setAttribute('id', 'drc-marker');
+
+            // Pulsing ring
+            const ring = document.createElementNS(ns, 'circle');
+            ring.setAttribute('cx', x);
+            ring.setAttribute('cy', y);
+            ring.setAttribute('r', '0.5');
+            ring.setAttribute('fill', 'none');
+            ring.setAttribute('stroke', '#e94560');
+            ring.setAttribute('stroke-width', '0.06');
+            ring.setAttribute('style', 'animation: drc-pulse 1.2s ease-in-out infinite;');
+            g.appendChild(ring);
+
+            // Center dot
+            const dot = document.createElementNS(ns, 'circle');
+            dot.setAttribute('cx', x);
+            dot.setAttribute('cy', y);
+            dot.setAttribute('r', '0.08');
+            dot.setAttribute('fill', '#e94560');
+            g.appendChild(dot);
+
+            // Crosshair lines
+            const lineLen = 0.7;
+            [[ -lineLen, 0, lineLen, 0 ], [ 0, -lineLen, 0, lineLen ]].forEach(([x1, y1, x2, y2]) => {
+                const line = document.createElementNS(ns, 'line');
+                line.setAttribute('x1', x + x1);
+                line.setAttribute('y1', y + y1);
+                line.setAttribute('x2', x + x2);
+                line.setAttribute('y2', y + y2);
+                line.setAttribute('stroke', '#e94560');
+                line.setAttribute('stroke-width', '0.04');
+                g.appendChild(line);
+            });
+
+            viewport.appendChild(g);
+        }
+
+        // Update layer type on server
+        function updateLayerType(index, value) {
+            layers[index].drcLayer = value;
+            const body = 'filename=' + encodeURIComponent(layers[index].name) + '&drcLayer=' + encodeURIComponent(value);
+            fetch('/api/layer-type', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: body
+            });
+        }
+
+        // Quick-select layer visibility
+        function quickSelectLayers(mode) {
+            layers.forEach((layer, index) => {
+                let visible;
+                if (mode === 'all') {
+                    visible = true;
+                } else if (mode === 'none') {
+                    visible = false;
+                } else if (mode === 'top') {
+                    visible = layer.drcLayer.startsWith('F.') || layer.drcLayer === 'Edge.Cuts' || layer.drcLayer === 'Drill';
+                } else if (mode === 'bottom') {
+                    visible = layer.drcLayer.startsWith('B.') || layer.drcLayer === 'Edge.Cuts' || layer.drcLayer === 'Drill';
+                }
+                layer.visible = visible;
+                const layerGroup = svgContent.querySelector('#' + CSS.escape(layer.id));
+                if (layerGroup) {
+                    layerGroup.setAttribute('display', visible ? 'inline' : 'none');
+                }
+            });
+            renderLayerList();
+        }
+
+        // DRC functionality
+        let drcMenuOpen = false;
+
+        function toggleDrcMenu() {
+            drcMenuOpen = !drcMenuOpen;
+            document.getElementById('drc-menu').classList.toggle('open', drcMenuOpen);
+        }
+
+        // Close menu when clicking outside
+        document.addEventListener('click', (e) => {
+            const dropdown = document.getElementById('drc-dropdown');
+            if (!dropdown.contains(e.target)) {
+                drcMenuOpen = false;
+                document.getElementById('drc-menu').classList.remove('open');
+            }
+        });
+
+        async function runDrc(rulesName) {
+            drcMenuOpen = false;
+            document.getElementById('drc-menu').classList.remove('open');
+
+            const panel = document.getElementById('drc-panel');
+            const summary = document.getElementById('drc-summary');
+            const violations = document.getElementById('drc-violations');
+            const skippedSection = document.getElementById('drc-skipped-section');
+            const title = document.getElementById('drc-panel-title');
+
+            title.textContent = 'DRC Results (' + (rulesName === 'pcbway' ? 'PCBWay' : 'NextPCB') + ')';
+            panel.classList.add('open');
+            summary.className = 'drc-summary';
+            summary.textContent = '';
+            violations.innerHTML = '<div class="drc-loading"><div class="spinner"></div>Running DRC...</div>';
+            skippedSection.innerHTML = '';
+
+            try {
+                const response = await fetch('/api/drc?rules=' + rulesName);
+                const data = await response.json();
+
+                if (data.error) {
+                    summary.className = 'drc-summary fail';
+                    summary.textContent = data.error;
+                    violations.innerHTML = '';
+                    return;
+                }
+
+                // Summary
+                if (data.errors === 0 && data.warnings === 0) {
+                    summary.className = 'drc-summary pass';
+                    summary.textContent = 'No violations found';
+                } else {
+                    summary.className = 'drc-summary fail';
+                    let parts = [];
+                    if (data.errors > 0) parts.push(data.errors + ' error' + (data.errors !== 1 ? 's' : ''));
+                    if (data.warnings > 0) parts.push(data.warnings + ' warning' + (data.warnings !== 1 ? 's' : ''));
+                    summary.textContent = parts.join(', ');
+                }
+
+                // Violations list
+                if (data.violations.length === 0) {
+                    violations.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">No violations</div>';
+                } else {
+                    violations.innerHTML = data.violations.map(v => {
+                        let detail = v.description;
+                        let values = '';
+                        if (v.measured !== undefined && v.required !== undefined) {
+                            values = 'Measured: ' + v.measured + 'mm, Required: ' + v.required + 'mm';
+                        }
+                        let location = 'at (' + v.x + ', ' + v.y + ')';
+                        if (v.layer) location += ' on ' + v.layer;
+
+                        return '<div class="drc-violation" onclick="document.querySelectorAll(\\'.drc-violation.active\\').forEach(el => el.classList.remove(\\'active\\')); this.classList.add(\\'active\\'); focusViolation(' + v.x + ', ' + v.y + ')">' +
+                            '<div class="drc-violation-header">' +
+                                '<span class="drc-severity ' + v.severity.toLowerCase() + '">' + v.severity + '</span>' +
+                                '<span class="drc-rule-name">' + escapeHtml(v.rule) + '</span>' +
+                            '</div>' +
+                            '<div class="drc-violation-detail">' + escapeHtml(detail) + '</div>' +
+                            (values ? '<div class="drc-violation-values">' + values + '</div>' : '') +
+                            '<div class="drc-violation-detail">' + location + '</div>' +
+                        '</div>';
+                    }).join('');
+                }
+
+                // Skipped rules
+                if (data.skippedRules && data.skippedRules.length > 0) {
+                    skippedSection.innerHTML =
+                        '<div class="drc-skipped-header" onclick="this.nextElementSibling.classList.toggle(&quot;open&quot;)">' +
+                            'Skipped ' + data.skippedRules.length + ' rule' + (data.skippedRules.length !== 1 ? 's' : '') + ' &#9662;' +
+                        '</div>' +
+                        '<div class="drc-skipped-list">' +
+                            data.skippedRules.map(r => '<div>' + escapeHtml(r) + '</div>').join('') +
+                        '</div>';
+                }
+            } catch (err) {
+                summary.className = 'drc-summary fail';
+                summary.textContent = 'Error: ' + err.message;
+                violations.innerHTML = '';
+            }
+        }
+
+        function closeDrcPanel() {
+            document.getElementById('drc-panel').classList.remove('open');
+            const marker = document.querySelector('#drc-marker');
+            if (marker) marker.remove();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
 
         // Initialize
