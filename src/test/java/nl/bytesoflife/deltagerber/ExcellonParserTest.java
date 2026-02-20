@@ -65,8 +65,17 @@ public class ExcellonParserTest {
 
         DrillDocument doc = parser.parse(drill);
 
-        assertEquals(Unit.INCH, doc.getUnit());
+        // Unit is normalized to MM after parsing
+        assertEquals(Unit.MM, doc.getUnit());
         assertFalse(doc.isLeadingZeros());
+
+        // Tool diameter should be converted: 0.035 inch = 0.889 mm
+        assertEquals(0.889, doc.getTool(1).getDiameter(), 0.001);
+
+        // Coordinate: TZ format, 2.4: "1000" padded to "001000" -> 00.1000 = 0.1 inch = 2.54 mm
+        DrillHit hit = (DrillHit) doc.getOperations().get(0);
+        assertEquals(2.54, hit.getX(), 0.01);
+        assertEquals(2.54, hit.getY(), 0.01);
     }
 
     @Test

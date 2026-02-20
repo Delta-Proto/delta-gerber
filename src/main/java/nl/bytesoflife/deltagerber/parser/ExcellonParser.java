@@ -83,6 +83,9 @@ public class ExcellonParser {
             parseLine(line);
         }
 
+        // All coordinates and tool diameters have been normalized to mm during parsing
+        document.setUnit(Unit.MM);
+
         log.trace("Excellon parse complete in {}ms: {} operations, {} tools",
             System.currentTimeMillis() - startTime, document.getOperations().size(), document.getTools().size());
 
@@ -134,7 +137,7 @@ public class ExcellonParser {
         Matcher toolDefMatcher = TOOL_DEF.matcher(line);
         if (toolDefMatcher.find()) {
             int toolNum = Integer.parseInt(toolDefMatcher.group(1));
-            double diameter = Double.parseDouble(toolDefMatcher.group(2));
+            double diameter = document.getUnit().toMm(Double.parseDouble(toolDefMatcher.group(2)));
             Tool tool = new Tool(toolNum, diameter);
             document.addTool(tool);
             return;
@@ -384,12 +387,16 @@ public class ExcellonParser {
             return 0;
         }
 
+        double parsed;
         // If the value contains a decimal point, parse directly
         if (value.contains(".")) {
-            return Double.parseDouble(value);
+            parsed = Double.parseDouble(value);
+        } else {
+            // Otherwise, use the document's format settings
+            parsed = document.parseCoordinate(value);
         }
 
-        // Otherwise, use the document's format settings
-        return document.parseCoordinate(value);
+        // Normalize to mm
+        return document.getUnit().toMm(parsed);
     }
 }
