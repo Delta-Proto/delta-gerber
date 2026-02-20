@@ -54,7 +54,7 @@ This document outlines a comprehensive plan to implement a Gerber (RS-274X / X2 
 ### 2.2 Detailed Module Structure
 
 ```
-nl.bytesoflife.gerber/
+com.deltaproto.deltagerber/
 ├── lexer/
 │   ├── GerberLexer.java           # Tokenizes Gerber files
 │   ├── ExcellonLexer.java         # Tokenizes Excellon files

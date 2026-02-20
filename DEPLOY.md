@@ -22,7 +22,7 @@ The GPG passphrase is stored in `.mvn-gpg-passphrase` (gitignored).
 
 ### 3. Verify the Release
 
-Check [Maven Central](https://central.sonatype.com/artifact/nl.bytesoflife/delta-gerber) for the published artifact.
+Check [Maven Central](https://central.sonatype.com/artifact/com.deltaproto/delta-gerber) for the published artifact.
 
 ### 4. Tag the Release
 

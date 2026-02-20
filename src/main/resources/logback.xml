@@ -8,7 +8,7 @@
     </appender>
 
     <!-- Application loggers -->
-    <logger name="nl.bytesoflife.gerber" level="DEBUG"/>
+    <logger name="com.deltaproto.deltagerber" level="DEBUG"/>
 
     <!-- Root logger -->
     <root level="INFO">

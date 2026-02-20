@@ -4,14 +4,14 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>nl.bytesoflife</groupId>
+    <groupId>com.deltaproto</groupId>
     <artifactId>delta-gerber</artifactId>
     <version>1.0.3-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>Delta Gerber</name>
     <description>Java Gerber/NC drill file parser with SVG export</description>
-    <url>https://github.com/avanderheijde/delta-gerber</url>
+    <url>https://github.com/Delta-Proto/delta-gerber</url>
 
     <licenses>
         <license>
@@ -23,17 +23,16 @@
 
     <developers>
         <developer>
-            <name>Bytes of Life</name>
-            <email>info@bytesoflife.nl</email>
-            <organization>Bytes of Life</organization>
-            <organizationUrl>https://bytesoflife.nl</organizationUrl>
+            <name>Delta Proto</name>
+            <organization>Delta Proto</organization>
+            <organizationUrl>https://github.com/Delta-Proto</organizationUrl>
         </developer>
     </developers>
 
     <scm>
-        <connection>scm:git:git://github.com/avanderheijde/delta-gerber.git</connection>
-        <developerConnection>scm:git:ssh://github.com:avanderheijde/delta-gerber.git</developerConnection>
-        <url>https://github.com/avanderheijde/delta-gerber/tree/main</url>
+        <connection>scm:git:git://github.com/Delta-Proto/delta-gerber.git</connection>
+        <developerConnection>scm:git:ssh://github.com:Delta-Proto/delta-gerber.git</developerConnection>
+        <url>https://github.com/Delta-Proto/delta-gerber/tree/main</url>
     </scm>
 
     <properties>
@@ -86,7 +85,7 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.1.0</version>
                 <configuration>
-                    <mainClass>nl.bytesoflife.deltagerber.web.GerberViewerServer</mainClass>
+                    <mainClass>com.deltaproto.deltagerber.web.GerberViewerServer</mainClass>
                 </configuration>
             </plugin>
             <plugin>
@@ -96,7 +95,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>nl.bytesoflife.deltagerber.web.GerberViewerServer</mainClass>
+                            <mainClass>com.deltaproto.deltagerber.web.GerberViewerServer</mainClass>
                         </manifest>
                     </archive>
                 </configuration>
