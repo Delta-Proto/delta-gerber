@@ -6,7 +6,7 @@
 
     <groupId>nl.bytesoflife</groupId>
     <artifactId>delta-gerber</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
     <packaging>jar</packaging>
 
     <name>Delta Gerber</name>
