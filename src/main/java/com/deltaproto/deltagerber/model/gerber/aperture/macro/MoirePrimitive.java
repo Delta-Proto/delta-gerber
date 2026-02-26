@@ -36,19 +36,18 @@ public class MoirePrimitive implements MacroPrimitive {
     }
 
     @Override
-    public String toSvg(Map<Integer, Double> variables, SvgOptions options) {
-        double cx = centerX.evaluate(variables);
-        double cy = centerY.evaluate(variables);
-        double od = outerDiameter.evaluate(variables);
-        double thick = ringThickness.evaluate(variables);
-        double gap = ringGap.evaluate(variables);
+    public String toSvg(Map<Integer, Double> variables, SvgOptions options, double unitFactor) {
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
+        double od = outerDiameter.evaluate(variables) * unitFactor;
+        double thick = ringThickness.evaluate(variables) * unitFactor;
+        double gap = ringGap.evaluate(variables) * unitFactor;
         int rings = (int) maxRings.evaluate(variables);
-        double crossThick = crosshairThickness.evaluate(variables);
-        double crossLen = crosshairLength.evaluate(variables);
+        double crossThick = crosshairThickness.evaluate(variables) * unitFactor;
+        double crossLen = crosshairLength.evaluate(variables) * unitFactor;
         double rot = rotation.evaluate(variables);
 
         if (options.isPolygonize()) {
-            // Polygonized mode: use path approximations
             StringBuilder pathData = new StringBuilder();
             double outerRadius = od / 2;
             double pitch = thick + gap;
@@ -89,7 +88,6 @@ public class MoirePrimitive implements MacroPrimitive {
             }
             return svg.toString();
         } else {
-            // Exact mode: use native SVG circles and rectangles
             StringBuilder svg = new StringBuilder();
 
             if (rot != 0) {
@@ -99,18 +97,15 @@ public class MoirePrimitive implements MacroPrimitive {
             double outerRadius = od / 2;
             double pitch = thick + gap;
 
-            // Draw concentric rings
             for (int i = 0; i < rings && outerRadius > 0; i++) {
                 double innerRadius = Math.max(0, outerRadius - thick);
 
                 if (innerRadius > 0) {
-                    // Annulus: outer circle black, inner circle white
                     svg.append(String.format(java.util.Locale.US,
                         "<circle cx=\"%.6f\" cy=\"%.6f\" r=\"%.6f\" fill=\"black\"/>", cx, cy, outerRadius));
                     svg.append(String.format(java.util.Locale.US,
                         "<circle cx=\"%.6f\" cy=\"%.6f\" r=\"%.6f\" fill=\"white\"/>", cx, cy, innerRadius));
                 } else {
-                    // Solid circle for center
                     svg.append(String.format(java.util.Locale.US,
                         "<circle cx=\"%.6f\" cy=\"%.6f\" r=\"%.6f\" fill=\"black\"/>", cx, cy, outerRadius));
                 }
@@ -118,15 +113,12 @@ public class MoirePrimitive implements MacroPrimitive {
                 outerRadius = outerRadius - pitch;
             }
 
-            // Draw crosshairs as rectangles
             if (crossThick > 0 && crossLen > 0) {
                 double hw = crossLen / 2;
                 double hh = crossThick / 2;
-                // Horizontal bar
                 svg.append(String.format(java.util.Locale.US,
                     "<rect x=\"%.6f\" y=\"%.6f\" width=\"%.6f\" height=\"%.6f\" fill=\"black\"/>",
                     cx - hw, cy - hh, crossLen, crossThick));
-                // Vertical bar
                 svg.append(String.format(java.util.Locale.US,
                     "<rect x=\"%.6f\" y=\"%.6f\" width=\"%.6f\" height=\"%.6f\" fill=\"black\"/>",
                     cx - hh, cy - hw, crossThick, crossLen));
@@ -141,13 +133,12 @@ public class MoirePrimitive implements MacroPrimitive {
     }
 
     @Override
-    public BoundingBox getBoundingBox(Map<Integer, Double> variables) {
-        double cx = centerX.evaluate(variables);
-        double cy = centerY.evaluate(variables);
-        double od = outerDiameter.evaluate(variables);
-        double crossLen = crosshairLength.evaluate(variables);
+    public BoundingBox getBoundingBox(Map<Integer, Double> variables, double unitFactor) {
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
+        double od = outerDiameter.evaluate(variables) * unitFactor;
+        double crossLen = crosshairLength.evaluate(variables) * unitFactor;
 
-        // The bounding box is the max of outer diameter and crosshair length
         double maxExtent = Math.max(od, crossLen);
         double r = maxExtent / 2;
         return new BoundingBox(cx - r, cy - r, cx + r, cy + r);
@@ -155,6 +146,6 @@ public class MoirePrimitive implements MacroPrimitive {
 
     @Override
     public boolean isExposed(Map<Integer, Double> variables) {
-        return true; // Moire is always exposed
+        return true;
     }
 }

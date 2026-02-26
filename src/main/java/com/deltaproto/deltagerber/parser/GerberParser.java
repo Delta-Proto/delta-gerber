@@ -44,6 +44,10 @@ public class GerberParser {
     private boolean loadMirrorX = false;   // Mirror X axis
     private boolean loadMirrorY = false;   // Mirror Y axis
 
+    // Modal D-code: Gerber D-codes are modal — a coordinate without an explicit
+    // D-code reuses the last active D-code (D01, D02, or D03).
+    private TokenType lastDCode = null;
+
     private static final Pattern COORD_X = Pattern.compile("X([+-]?\\d+)");
     private static final Pattern COORD_Y = Pattern.compile("Y([+-]?\\d+)");
     private static final Pattern COORD_I = Pattern.compile("I([+-]?\\d+)");
@@ -66,6 +70,10 @@ public class GerberParser {
         }
         log.trace("Token processing took {}ms", System.currentTimeMillis() - parseStart);
 
+        // All coordinates and dimensions have been normalized to mm during parsing.
+        // Set the document unit to MM so downstream code knows the data is in mm.
+        document.setUnit(Unit.MM);
+
         log.trace("Gerber parse complete in {}ms: {} objects, {} apertures",
             System.currentTimeMillis() - startTime, document.getObjects().size(), document.getApertures().size());
 
@@ -84,10 +92,17 @@ public class GerberParser {
             case LOAD_ROTATION -> parseLoadRotation(token);
             case LOAD_SCALING -> parseLoadScaling(token);
             case LOAD_MIRRORING -> parseLoadMirroring(token);
-            case COORDINATE -> parseCoordinate(token);
-            case D01 -> executeD01();
-            case D02 -> executeD02();
-            case D03 -> executeD03();
+            case COORDINATE -> {
+                // If there are already pending coordinates without an explicit D-code,
+                // execute the modal (last active) D-code before parsing the new coordinate.
+                if (hasPendingCoordinates() && lastDCode != null) {
+                    executeModalDCode();
+                }
+                parseCoordinate(token);
+            }
+            case D01 -> { lastDCode = TokenType.D01; executeD01(); }
+            case D02 -> { lastDCode = TokenType.D02; executeD02(); }
+            case D03 -> { lastDCode = TokenType.D03; executeD03(); }
             case G01 -> linearMode = true;
             case G02 -> { linearMode = false; clockwise = true; }
             case G03 -> { linearMode = false; clockwise = false; }
@@ -96,6 +111,20 @@ public class GerberParser {
             case G36 -> startRegion();
             case G37 -> endRegion();
             default -> { /* Ignore */ }
+        }
+    }
+
+    private boolean hasPendingCoordinates() {
+        return !Double.isNaN(pendingX) || !Double.isNaN(pendingY) ||
+               !Double.isNaN(pendingI) || !Double.isNaN(pendingJ);
+    }
+
+    private void executeModalDCode() {
+        switch (lastDCode) {
+            case D01 -> executeD01();
+            case D02 -> executeD02();
+            case D03 -> executeD03();
+            default -> clearPending();
         }
     }
 
@@ -180,7 +209,7 @@ public class GerberParser {
             MacroTemplate template = document.getMacroTemplate(macroName);
             if (template != null) {
                 List<Double> paramValues = parseApertureParams(params);
-                Aperture aperture = new MacroAperture(dCode, template, paramValues);
+                Aperture aperture = new MacroAperture(dCode, template, paramValues, unit.toMm(1.0));
                 document.addAperture(aperture);
             }
         }
@@ -206,26 +235,29 @@ public class GerberParser {
 
     private Aperture createAperture(int dCode, String template, String params) {
         String[] parts = params.split("X");
-        double[] values = new double[parts.length];
+        double[] raw = new double[parts.length];
         for (int i = 0; i < parts.length; i++) {
-            values[i] = parts[i].isEmpty() ? 0 : Double.parseDouble(parts[i]);
+            raw[i] = parts[i].isEmpty() ? 0 : Double.parseDouble(parts[i]);
         }
+        double f = unit.toMm(1.0);
 
+        // All dimensional values (diameter, width, height, hole) are converted to mm.
+        // Non-dimensional values (vertex count, rotation in degrees) are kept as-is.
         return switch (template) {
-            case "C" -> values.length >= 2 ?
-                new CircleAperture(dCode, values[0], values[1]) :
-                new CircleAperture(dCode, values[0]);
-            case "R" -> values.length >= 3 ?
-                new RectangleAperture(dCode, values[0], values[1], values[2]) :
-                new RectangleAperture(dCode, values[0], values[1]);
-            case "O" -> values.length >= 3 ?
-                new ObroundAperture(dCode, values[0], values[1], values[2]) :
-                new ObroundAperture(dCode, values[0], values[1]);
-            case "P" -> values.length >= 4 ?
-                new PolygonAperture(dCode, values[0], (int) values[1], values[2], values[3]) :
-                values.length >= 3 ?
-                    new PolygonAperture(dCode, values[0], (int) values[1], values[2]) :
-                    new PolygonAperture(dCode, values[0], (int) values[1]);
+            case "C" -> raw.length >= 2 ?
+                new CircleAperture(dCode, raw[0] * f, raw[1] * f) :
+                new CircleAperture(dCode, raw[0] * f);
+            case "R" -> raw.length >= 3 ?
+                new RectangleAperture(dCode, raw[0] * f, raw[1] * f, raw[2] * f) :
+                new RectangleAperture(dCode, raw[0] * f, raw[1] * f);
+            case "O" -> raw.length >= 3 ?
+                new ObroundAperture(dCode, raw[0] * f, raw[1] * f, raw[2] * f) :
+                new ObroundAperture(dCode, raw[0] * f, raw[1] * f);
+            case "P" -> raw.length >= 4 ?
+                new PolygonAperture(dCode, raw[0] * f, (int) raw[1], raw[2], raw[3] * f) :
+                raw.length >= 3 ?
+                    new PolygonAperture(dCode, raw[0] * f, (int) raw[1], raw[2]) :
+                    new PolygonAperture(dCode, raw[0] * f, (int) raw[1]);
             default -> null;
         };
     }
@@ -307,25 +339,26 @@ public class GerberParser {
 
     private void parseCoordinate(Token token) {
         String content = token.getContent();
+        double f = unit.toMm(1.0);
 
         Matcher xm = COORD_X.matcher(content);
         if (xm.find()) {
-            pendingX = coordFormat.parseCoordinate(xm.group(1));
+            pendingX = coordFormat.parseCoordinate(xm.group(1)) * f;
         }
 
         Matcher ym = COORD_Y.matcher(content);
         if (ym.find()) {
-            pendingY = coordFormat.parseCoordinate(ym.group(1));
+            pendingY = coordFormat.parseCoordinate(ym.group(1)) * f;
         }
 
         Matcher im = COORD_I.matcher(content);
         if (im.find()) {
-            pendingI = coordFormat.parseCoordinate(im.group(1));
+            pendingI = coordFormat.parseCoordinate(im.group(1)) * f;
         }
 
         Matcher jm = COORD_J.matcher(content);
         if (jm.find()) {
-            pendingJ = coordFormat.parseCoordinate(jm.group(1));
+            pendingJ = coordFormat.parseCoordinate(jm.group(1)) * f;
         }
     }
 

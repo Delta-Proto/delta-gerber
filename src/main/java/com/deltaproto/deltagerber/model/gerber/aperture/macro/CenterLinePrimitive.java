@@ -29,22 +29,20 @@ public class CenterLinePrimitive implements MacroPrimitive {
     }
 
     @Override
-    public String toSvg(Map<Integer, Double> variables, SvgOptions options) {
+    public String toSvg(Map<Integer, Double> variables, SvgOptions options, double unitFactor) {
         double exp = exposure.evaluate(variables);
-        double w = width.evaluate(variables);
-        double h = height.evaluate(variables);
-        double cx = centerX.evaluate(variables);
-        double cy = centerY.evaluate(variables);
+        double w = width.evaluate(variables) * unitFactor;
+        double h = height.evaluate(variables) * unitFactor;
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
         double rot = rotation.evaluate(variables);
 
         double hw = w / 2;
         double hh = h / 2;
 
-        // Four corners relative to center
         double[] cornersX = {cx - hw, cx + hw, cx + hw, cx - hw};
         double[] cornersY = {cy - hh, cy - hh, cy + hh, cy + hh};
 
-        // Apply rotation around origin
         if (rot != 0) {
             double radians = Math.toRadians(rot);
             double cos = Math.cos(radians);
@@ -60,14 +58,12 @@ public class CenterLinePrimitive implements MacroPrimitive {
         String fill = exp >= 1 ? options.getDarkColor() : options.getClearColor();
 
         if (options.isPolygonize()) {
-            // Polygonized mode: use path (same as exact for rectangles)
             String pathData = String.format(Locale.US,
                 "M %.6f %.6f L %.6f %.6f L %.6f %.6f L %.6f %.6f Z",
                 cornersX[0], cornersY[0], cornersX[1], cornersY[1],
                 cornersX[2], cornersY[2], cornersX[3], cornersY[3]);
             return String.format(Locale.US, "<path d=\"%s\" fill=\"%s\"/>", pathData, fill);
         } else {
-            // Exact mode: use native SVG polygon element
             StringBuilder points = new StringBuilder();
             for (int i = 0; i < 4; i++) {
                 if (i > 0) points.append(" ");
@@ -78,11 +74,11 @@ public class CenterLinePrimitive implements MacroPrimitive {
     }
 
     @Override
-    public BoundingBox getBoundingBox(Map<Integer, Double> variables) {
-        double w = width.evaluate(variables);
-        double h = height.evaluate(variables);
-        double cx = centerX.evaluate(variables);
-        double cy = centerY.evaluate(variables);
+    public BoundingBox getBoundingBox(Map<Integer, Double> variables, double unitFactor) {
+        double w = width.evaluate(variables) * unitFactor;
+        double h = height.evaluate(variables) * unitFactor;
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
         double rot = rotation.evaluate(variables);
 
         double hw = w / 2;

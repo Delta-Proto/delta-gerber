@@ -29,22 +29,20 @@ public class PolygonPrimitive implements MacroPrimitive {
     }
 
     @Override
-    public String toSvg(Map<Integer, Double> variables, SvgOptions options) {
+    public String toSvg(Map<Integer, Double> variables, SvgOptions options, double unitFactor) {
         double exp = exposure.evaluate(variables);
         int n = (int) vertexCount.evaluate(variables);
-        double cx = centerX.evaluate(variables);
-        double cy = centerY.evaluate(variables);
-        double d = diameter.evaluate(variables);
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
+        double d = diameter.evaluate(variables) * unitFactor;
         double rot = rotation.evaluate(variables);
 
         String fill = exp >= 1 ? options.getDarkColor() : options.getClearColor();
 
         if (options.isPolygonize()) {
-            // Polygonized mode: use path
             String pathData = SvgPathUtils.polygonPath(cx, cy, d, n, rot);
             return String.format(java.util.Locale.US, "<path d=\"%s\" fill=\"%s\"/>", pathData, fill);
         } else {
-            // Exact mode: use native SVG polygon element (already geometrically exact)
             double r = d / 2;
             double rotRad = Math.toRadians(rot);
             StringBuilder points = new StringBuilder();
@@ -60,11 +58,11 @@ public class PolygonPrimitive implements MacroPrimitive {
     }
 
     @Override
-    public BoundingBox getBoundingBox(Map<Integer, Double> variables) {
+    public BoundingBox getBoundingBox(Map<Integer, Double> variables, double unitFactor) {
         int n = (int) vertexCount.evaluate(variables);
-        double cx = centerX.evaluate(variables);
-        double cy = centerY.evaluate(variables);
-        double d = diameter.evaluate(variables);
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
+        double d = diameter.evaluate(variables) * unitFactor;
         double rot = rotation.evaluate(variables);
 
         double r = d / 2;

@@ -27,11 +27,11 @@ public class CirclePrimitive implements MacroPrimitive {
     }
 
     @Override
-    public String toSvg(Map<Integer, Double> variables, SvgOptions options) {
+    public String toSvg(Map<Integer, Double> variables, SvgOptions options, double unitFactor) {
         double exp = exposure.evaluate(variables);
-        double d = diameter.evaluate(variables);
-        double cx = centerX.evaluate(variables);
-        double cy = centerY.evaluate(variables);
+        double d = diameter.evaluate(variables) * unitFactor;
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
         double rot = rotation.evaluate(variables);
 
         // Apply rotation if specified
@@ -49,20 +49,18 @@ public class CirclePrimitive implements MacroPrimitive {
         String fill = exp >= 1 ? options.getDarkColor() : options.getClearColor();
 
         if (options.isPolygonize()) {
-            // Polygonized mode: approximate circle as path
             String pathData = SvgPathUtils.circlePath(cx, cy, r, options.getCircleSegments());
             return String.format("<path d=\"%s\" fill=\"%s\"/>", pathData, fill);
         } else {
-            // Exact mode: use native SVG circle element
             return String.format(Locale.US, "<circle cx=\"%.6f\" cy=\"%.6f\" r=\"%.6f\" fill=\"%s\"/>", cx, cy, r, fill);
         }
     }
 
     @Override
-    public BoundingBox getBoundingBox(Map<Integer, Double> variables) {
-        double d = diameter.evaluate(variables);
-        double cx = centerX.evaluate(variables);
-        double cy = centerY.evaluate(variables);
+    public BoundingBox getBoundingBox(Map<Integer, Double> variables, double unitFactor) {
+        double d = diameter.evaluate(variables) * unitFactor;
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
         double rot = rotation.evaluate(variables);
 
         if (rot != 0) {

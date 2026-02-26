@@ -30,21 +30,18 @@ public class ThermalPrimitive implements MacroPrimitive {
     }
 
     @Override
-    public String toSvg(Map<Integer, Double> variables, SvgOptions options) {
-        double cx = centerX.evaluate(variables);
-        double cy = centerY.evaluate(variables);
-        double od = outerDiameter.evaluate(variables);
-        double id = innerDiameter.evaluate(variables);
-        double gap = gapWidth.evaluate(variables);
+    public String toSvg(Map<Integer, Double> variables, SvgOptions options, double unitFactor) {
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
+        double od = outerDiameter.evaluate(variables) * unitFactor;
+        double id = innerDiameter.evaluate(variables) * unitFactor;
+        double gap = gapWidth.evaluate(variables) * unitFactor;
         double rot = rotation.evaluate(variables);
 
         if (options.isPolygonize()) {
-            // Polygonized mode: use path approximation
             String pathData = SvgPathUtils.thermalPath(cx, cy, od, id, gap, rot, options.getCircleSegments());
             return String.format(java.util.Locale.US, "<path d=\"%s\" fill=\"%s\"/>", pathData, options.getDarkColor());
         } else {
-            // Exact mode: use SVG clip-path for precise thermal relief
-            // Thermals are complex - use clip-path with circles and rectangles
             double or = od / 2;
             double ir = id / 2;
             double hw = gap / 2;
@@ -54,38 +51,30 @@ public class ThermalPrimitive implements MacroPrimitive {
             String clipId = String.format(java.util.Locale.US, "thermal-clip-%.0f-%.0f", cx * 1000, cy * 1000);
 
             svg.append(String.format("<defs><clipPath id=\"%s\">", clipId));
-            // Outer circle minus gap rectangles
             svg.append(String.format(java.util.Locale.US,
                 "<circle cx=\"%.6f\" cy=\"%.6f\" r=\"%.6f\"/>", cx, cy, or));
             svg.append("</clipPath></defs>");
 
             svg.append(String.format("<g clip-path=\"url(#%s)\">", clipId));
 
-            // Draw annulus (outer - inner)
             svg.append(String.format(java.util.Locale.US,
                 "<circle cx=\"%.6f\" cy=\"%.6f\" r=\"%.6f\" fill=\"%s\"/>", cx, cy, or, options.getDarkColor()));
             svg.append(String.format(java.util.Locale.US,
                 "<circle cx=\"%.6f\" cy=\"%.6f\" r=\"%.6f\" fill=\"%s\"/>", cx, cy, ir, options.getClearColor()));
 
-            // Draw gap rectangles (cut out four gaps)
             for (int i = 0; i < 4; i++) {
                 double angle = rotRad + (Math.PI / 2) * i;
                 double cos = Math.cos(angle);
                 double sin = Math.sin(angle);
 
-                // Rectangle along the angle direction
-                double rectCx = cx;
-                double rectCy = cy;
                 double rectW = od;
                 double rectH = gap;
 
-                // Rotated rectangle as polygon
                 double[] cornersX = new double[4];
                 double[] cornersY = new double[4];
                 double rhw = rectW / 2;
                 double rhh = rectH / 2;
 
-                // Corners before rotation
                 double[][] corners = {{-rhw, -rhh}, {rhw, -rhh}, {rhw, rhh}, {-rhw, rhh}};
                 for (int j = 0; j < 4; j++) {
                     cornersX[j] = cx + corners[j][0] * cos - corners[j][1] * sin;
@@ -104,10 +93,10 @@ public class ThermalPrimitive implements MacroPrimitive {
     }
 
     @Override
-    public BoundingBox getBoundingBox(Map<Integer, Double> variables) {
-        double cx = centerX.evaluate(variables);
-        double cy = centerY.evaluate(variables);
-        double od = outerDiameter.evaluate(variables);
+    public BoundingBox getBoundingBox(Map<Integer, Double> variables, double unitFactor) {
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
+        double od = outerDiameter.evaluate(variables) * unitFactor;
 
         double r = od / 2;
         return new BoundingBox(cx - r, cy - r, cx + r, cy + r);
@@ -115,6 +104,6 @@ public class ThermalPrimitive implements MacroPrimitive {
 
     @Override
     public boolean isExposed(Map<Integer, Double> variables) {
-        return true; // Thermal is always exposed
+        return true;
     }
 }

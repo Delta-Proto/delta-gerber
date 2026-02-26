@@ -17,12 +17,18 @@ public class MacroAperture extends Aperture {
     private final MacroTemplate template;
     private final List<Double> parameters;
     private final Map<Integer, Double> evaluatedVariables;
+    private final double unitFactor;
 
     public MacroAperture(int dCode, MacroTemplate template, List<Double> parameters) {
+        this(dCode, template, parameters, 1.0);
+    }
+
+    public MacroAperture(int dCode, MacroTemplate template, List<Double> parameters, double unitFactor) {
         super(dCode);
         this.template = template;
         this.parameters = new ArrayList<>(parameters);
         this.evaluatedVariables = template.evaluateVariables(parameters);
+        this.unitFactor = unitFactor;
     }
 
     public MacroTemplate getTemplate() {
@@ -42,7 +48,7 @@ public class MacroAperture extends Aperture {
     public BoundingBox getBoundingBox() {
         BoundingBox bbox = new BoundingBox();
         for (MacroPrimitive primitive : template.getPrimitives()) {
-            BoundingBox primBounds = primitive.getBoundingBox(evaluatedVariables);
+            BoundingBox primBounds = primitive.getBoundingBox(evaluatedVariables, unitFactor);
             bbox.extend(primBounds);
         }
         return bbox;
@@ -54,7 +60,7 @@ public class MacroAperture extends Aperture {
         svg.append(String.format("<g id=\"%s\">", id));
 
         for (MacroPrimitive primitive : template.getPrimitives()) {
-            String primSvg = primitive.toSvg(evaluatedVariables, options);
+            String primSvg = primitive.toSvg(evaluatedVariables, options, unitFactor);
             if (primSvg != null && !primSvg.isEmpty()) {
                 svg.append(primSvg);
             }

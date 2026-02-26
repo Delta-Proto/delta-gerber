@@ -28,8 +28,6 @@ public class OutlinePrimitive implements MacroPrimitive {
         this.verticesX = new ArrayList<>();
         this.verticesY = new ArrayList<>();
 
-        // Vertices start at params[2], each vertex is (x, y) pair
-        // Total vertices = vertexCount + 1 (including closing point)
         int numPoints = vertexCount + 1;
         for (int i = 0; i < numPoints; i++) {
             int idx = 2 + i * 2;
@@ -41,25 +39,23 @@ public class OutlinePrimitive implements MacroPrimitive {
             }
         }
 
-        // Rotation is the last parameter
         int rotIdx = 2 + numPoints * 2;
         this.rotation = rotIdx < params.length ? new MacroExpression(params[rotIdx]) : new MacroExpression("0");
     }
 
     @Override
-    public String toSvg(Map<Integer, Double> variables, SvgOptions options) {
+    public String toSvg(Map<Integer, Double> variables, SvgOptions options, double unitFactor) {
         double exp = exposure.evaluate(variables);
         double rot = rotation.evaluate(variables);
 
         List<double[]> points = new ArrayList<>();
         int numPoints = Math.min(verticesX.size(), verticesY.size());
         for (int i = 0; i < numPoints; i++) {
-            double x = verticesX.get(i).evaluate(variables);
-            double y = verticesY.get(i).evaluate(variables);
+            double x = verticesX.get(i).evaluate(variables) * unitFactor;
+            double y = verticesY.get(i).evaluate(variables) * unitFactor;
             points.add(new double[]{x, y});
         }
 
-        // Apply rotation
         if (rot != 0) {
             double radians = Math.toRadians(rot);
             double cos = Math.cos(radians);
@@ -75,13 +71,11 @@ public class OutlinePrimitive implements MacroPrimitive {
         String fill = exp >= 1 ? options.getDarkColor() : options.getClearColor();
 
         if (options.isPolygonize()) {
-            // Polygonized mode: use path
             String pathData = SvgPathUtils.outlinePath(points, true);
             return String.format(java.util.Locale.US, "<path d=\"%s\" fill=\"%s\"/>", pathData, fill);
         } else {
-            // Exact mode: use native SVG polygon element (outlines are already exact)
             StringBuilder pointsStr = new StringBuilder();
-            for (int i = 0; i < points.size() - 1; i++) { // Exclude closing point for polygon
+            for (int i = 0; i < points.size() - 1; i++) {
                 if (i > 0) pointsStr.append(" ");
                 pointsStr.append(String.format(java.util.Locale.US, "%.6f,%.6f", points.get(i)[0], points.get(i)[1]));
             }
@@ -90,14 +84,14 @@ public class OutlinePrimitive implements MacroPrimitive {
     }
 
     @Override
-    public BoundingBox getBoundingBox(Map<Integer, Double> variables) {
+    public BoundingBox getBoundingBox(Map<Integer, Double> variables, double unitFactor) {
         double rot = rotation.evaluate(variables);
         BoundingBox bbox = new BoundingBox();
 
         int numPoints = Math.min(verticesX.size(), verticesY.size());
         for (int i = 0; i < numPoints; i++) {
-            double x = verticesX.get(i).evaluate(variables);
-            double y = verticesY.get(i).evaluate(variables);
+            double x = verticesX.get(i).evaluate(variables) * unitFactor;
+            double y = verticesY.get(i).evaluate(variables) * unitFactor;
 
             if (rot != 0) {
                 double radians = Math.toRadians(rot);

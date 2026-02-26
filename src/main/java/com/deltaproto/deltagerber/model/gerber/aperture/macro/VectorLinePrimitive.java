@@ -31,16 +31,15 @@ public class VectorLinePrimitive implements MacroPrimitive {
     }
 
     @Override
-    public String toSvg(Map<Integer, Double> variables, SvgOptions options) {
+    public String toSvg(Map<Integer, Double> variables, SvgOptions options, double unitFactor) {
         double exp = exposure.evaluate(variables);
-        double w = width.evaluate(variables);
-        double sx = startX.evaluate(variables);
-        double sy = startY.evaluate(variables);
-        double ex = endX.evaluate(variables);
-        double ey = endY.evaluate(variables);
+        double w = width.evaluate(variables) * unitFactor;
+        double sx = startX.evaluate(variables) * unitFactor;
+        double sy = startY.evaluate(variables) * unitFactor;
+        double ex = endX.evaluate(variables) * unitFactor;
+        double ey = endY.evaluate(variables) * unitFactor;
         double rot = rotation.evaluate(variables);
 
-        // Calculate the line direction and perpendicular
         double dx = ex - sx;
         double dy = ey - sy;
         double len = Math.sqrt(dx * dx + dy * dy);
@@ -48,14 +47,10 @@ public class VectorLinePrimitive implements MacroPrimitive {
             return "";
         }
 
-        // Perpendicular unit vector
         double px = -dy / len;
         double py = dx / len;
-
-        // Half width
         double hw = w / 2;
 
-        // Four corners of the rectangle
         double[] cornersX = {
             sx + px * hw, ex + px * hw, ex - px * hw, sx - px * hw
         };
@@ -63,7 +58,6 @@ public class VectorLinePrimitive implements MacroPrimitive {
             sy + py * hw, ey + py * hw, ey - py * hw, sy - py * hw
         };
 
-        // Apply rotation around origin
         if (rot != 0) {
             double radians = Math.toRadians(rot);
             double cos = Math.cos(radians);
@@ -79,14 +73,12 @@ public class VectorLinePrimitive implements MacroPrimitive {
         String fill = exp >= 1 ? options.getDarkColor() : options.getClearColor();
 
         if (options.isPolygonize()) {
-            // Polygonized mode: use path (same as exact for rectangles)
             String pathData = String.format(Locale.US,
                 "M %.6f %.6f L %.6f %.6f L %.6f %.6f L %.6f %.6f Z",
                 cornersX[0], cornersY[0], cornersX[1], cornersY[1],
                 cornersX[2], cornersY[2], cornersX[3], cornersY[3]);
             return String.format(Locale.US, "<path d=\"%s\" fill=\"%s\"/>", pathData, fill);
         } else {
-            // Exact mode: use native SVG polygon element
             StringBuilder points = new StringBuilder();
             for (int i = 0; i < 4; i++) {
                 if (i > 0) points.append(" ");
@@ -97,12 +89,12 @@ public class VectorLinePrimitive implements MacroPrimitive {
     }
 
     @Override
-    public BoundingBox getBoundingBox(Map<Integer, Double> variables) {
-        double w = width.evaluate(variables);
-        double sx = startX.evaluate(variables);
-        double sy = startY.evaluate(variables);
-        double ex = endX.evaluate(variables);
-        double ey = endY.evaluate(variables);
+    public BoundingBox getBoundingBox(Map<Integer, Double> variables, double unitFactor) {
+        double w = width.evaluate(variables) * unitFactor;
+        double sx = startX.evaluate(variables) * unitFactor;
+        double sy = startY.evaluate(variables) * unitFactor;
+        double ex = endX.evaluate(variables) * unitFactor;
+        double ey = endY.evaluate(variables) * unitFactor;
         double rot = rotation.evaluate(variables);
 
         double dx = ex - sx;
