@@ -1,0 +1,6 @@
+{
+  "enabledMcpjsonServers": [
+    "jetbrains"
+  ],
+  "enableAllProjectMcpServers": true
+}
