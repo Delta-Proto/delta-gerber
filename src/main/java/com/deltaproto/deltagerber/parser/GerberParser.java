@@ -101,13 +101,15 @@ public class GerberParser {
 
     private void parseFormatSpec(Token token) {
         String content = token.getContent();
-        // Format: FSLAX<n><m>Y<n><m>
-        Pattern pattern = Pattern.compile("FSLA?X(\\d)(\\d)Y(\\d)(\\d)");
+        // Format: FS[LT][AI]X<n><m>Y<n><m>
+        Pattern pattern = Pattern.compile("FS([LT])([AI])X(\\d)(\\d)Y(\\d)(\\d)");
         Matcher matcher = pattern.matcher(content);
         if (matcher.find()) {
-            int intDigits = Integer.parseInt(matcher.group(1));
-            int decDigits = Integer.parseInt(matcher.group(2));
-            coordFormat = new CoordinateFormat(intDigits, decDigits, true, true);
+            boolean leadingZeroOmitted = matcher.group(1).equals("L");
+            boolean absolute = matcher.group(2).equals("A");
+            int intDigits = Integer.parseInt(matcher.group(3));
+            int decDigits = Integer.parseInt(matcher.group(4));
+            coordFormat = new CoordinateFormat(intDigits, decDigits, leadingZeroOmitted, absolute);
             document.setCoordinateFormat(coordFormat);
         }
     }
