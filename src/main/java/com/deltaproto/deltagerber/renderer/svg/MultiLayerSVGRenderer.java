@@ -321,12 +321,16 @@ public class MultiLayerSVGRenderer {
                 "Realistic rendering requires a Gerber layer with LayerType.OUTLINE");
         }
 
-        // Calculate global bounding box
-        BoundingBox globalBounds = new BoundingBox();
-        for (Layer layer : layers) {
-            BoundingBox layerBounds = layer.getBoundingBox();
-            if (layerBounds.isValid()) {
-                globalBounds.extend(layerBounds);
+        // Use outline bounding box for viewBox (content is clipped to outline anyway)
+        BoundingBox globalBounds = outlineLayer.getBoundingBox();
+        if (!globalBounds.isValid()) {
+            // Fall back to union of all layers
+            globalBounds = new BoundingBox();
+            for (Layer layer : layers) {
+                BoundingBox layerBounds = layer.getBoundingBox();
+                if (layerBounds.isValid()) {
+                    globalBounds.extend(layerBounds);
+                }
             }
         }
         if (!globalBounds.isValid()) {
