@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerber Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e; color: #eee; height: 100vh;
+            display: flex; flex-direction: column;
+        }
+        header {
+            background: #16213e; padding: 12px 20px; display: flex;
+            align-items: center; gap: 20px; border-bottom: 1px solid #0f3460;
+        }
+        header h1 { font-size: 1.3rem; font-weight: 500; color: #e94560; }
+        .upload-btn {
+            background: #0f3460; color: #fff; border: none; padding: 8px 16px;
+            border-radius: 6px; cursor: pointer; font-size: 0.9rem; transition: background 0.2s;
+        }
+        .upload-btn:hover { background: #1a4f7a; }
+        #file-input { display: none; }
+        .zoom-controls { display: flex; gap: 8px; margin-left: auto; }
+        .zoom-btn {
+            background: #0f3460; color: #fff; border: none; width: 32px; height: 32px;
+            border-radius: 6px; cursor: pointer; font-size: 1.2rem;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .zoom-btn:hover { background: #1a4f7a; }
+        .zoom-level {
+            background: #0f3460; padding: 6px 12px; border-radius: 6px;
+            font-size: 0.85rem; min-width: 60px; text-align: center;
+        }
+        .main-container { display: flex; flex: 1; overflow: hidden; }
+        .sidebar {
+            width: 280px; background: #16213e; border-right: 1px solid #0f3460;
+            padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
+        }
+        .sidebar h2 {
+            font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px;
+            color: #888; margin-bottom: 4px;
+        }
+        .view-tabs { display: flex; gap: 2px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; }
+        .view-tab {
+            background: #1a1a2e; color: #888; border: none; padding: 8px 16px;
+            border-radius: 6px 6px 0 0; cursor: pointer; font-size: 0.85rem;
+            transition: background 0.2s, color 0.2s;
+        }
+        .view-tab:hover { background: #252542; color: #ccc; }
+        .view-tab.active { background: #0d0d1a; color: #e94560; font-weight: 600; }
+        .view-tab:disabled { cursor: not-allowed; }
+        .layer-type-select {
+            background: #0f3460; color: #ccc; border: 1px solid #1a4f7a;
+            border-radius: 4px; padding: 2px 4px; font-size: 0.75rem;
+            cursor: pointer; max-width: 100px;
+        }
+        .layer-type-select:focus { outline: 1px solid #e94560; }
+        .layer-list { display: flex; flex-direction: column; gap: 4px; }
+        .layer-item {
+            display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+            background: #1a1a2e; border-radius: 6px; cursor: pointer; transition: background 0.2s;
+        }
+        .layer-item:hover { background: #252542; }
+        .layer-item input[type="checkbox"] { width: 16px; height: 16px; accent-color: #e94560; }
+        .layer-item .color-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+        .layer-item .name {
+            flex: 1; font-size: 0.9rem; white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis;
+        }
+        .viewer-container {
+            flex: 1; position: relative; overflow: hidden; background: #0d0d1a;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+        #svg-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: grab; }
+        #svg-container:active { cursor: grabbing; }
+        #svg-content { transform-origin: 0 0; }
+        .drop-zone {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            text-align: center; color: #666;
+        }
+        .drop-zone svg { width: 80px; height: 80px; margin-bottom: 16px; opacity: 0.5; }
+        .drop-zone p { font-size: 1.1rem; margin-bottom: 8px; }
+        .drop-zone small { font-size: 0.85rem; color: #555; }
+        .drag-over { background: rgba(233, 69, 96, 0.1) !important; }
+        .loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            text-align: center; background: rgba(22, 33, 62, 0.95); padding: 32px 48px;
+            border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); border: 1px solid #0f3460;
+        }
+        .spinner { width: 48px; height: 48px; border: 3px solid #333; border-top-color: #e94560; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-text { margin-top: 16px; font-size: 1rem; color: #eee; }
+        .loading-status { margin-top: 8px; font-size: 0.85rem; color: #888; min-height: 20px; }
+        .progress-bar { width: 200px; height: 4px; background: #333; border-radius: 2px; margin: 16px auto 0; overflow: hidden; }
+        .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #e94560, #ff6b8a); border-radius: 2px; transition: width 0.3s ease; width: 0%; }
+        .progress-bar-indeterminate .progress-bar-fill { width: 30%; animation: indeterminate 1.5s ease-in-out infinite; }
+        @keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
+        .hidden { display: none !important; }
+        .no-layers { color: #666; font-size: 0.9rem; padding: 20px; text-align: center; }
+        .recent-item {
+            display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+            background: #1a1a2e; border-radius: 6px; cursor: pointer; transition: background 0.2s;
+            font-size: 0.85rem;
+        }
+        .recent-item:hover { background: #252542; }
+        .recent-item .date { color: #666; font-size: 0.75rem; margin-left: auto; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Gerber Viewer</h1>
+        <label class="upload-btn">
+            <input type="file" id="file-input" accept=".zip">
+            Open ZIP File
+        </label>
+        <div class="zoom-controls">
+            <button class="zoom-btn" id="zoom-out" title="Zoom Out">-</button>
+            <span class="zoom-level" id="zoom-level">100%</span>
+            <button class="zoom-btn" id="zoom-in" title="Zoom In">+</button>
+            <button class="zoom-btn" id="zoom-fit" title="Fit to View">&#8644;</button>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <aside class="sidebar">
+            <div>
+                <h2>Layers</h2>
+                <div class="layer-list" id="layer-list">
+                    <div class="no-layers">No layers loaded</div>
+                </div>
+            </div>
+            <div id="recent-section" class="hidden">
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                    <h2 style="margin-bottom:0;">Recent</h2>
+                    <button onclick="clearRecentProjects()" style="background:none; border:none; color:#666; font-size:0.75rem; cursor:pointer; padding:2px 6px;" title="Clear recent projects">clear</button>
+                </div>
+                <div id="recent-list"></div>
+            </div>
+        </aside>
+
+        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+            <div class="view-tabs" id="view-tabs" style="display:none;">
+                <button class="view-tab active" data-view="layers" onclick="switchView('layers')">All Layers</button>
+                <button class="view-tab" data-view="top" onclick="switchView('top')">Board Top</button>
+                <button class="view-tab" data-view="bottom" onclick="switchView('bottom')">Board Bottom</button>
+            </div>
+            <div class="viewer-container" id="viewer-container">
+                <div class="drop-zone" id="drop-zone">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+                    </svg>
+                    <p>Drop a Gerber ZIP file here</p>
+                    <small>or click "Open ZIP File" above</small>
+                </div>
+                <div class="loading hidden" id="loading">
+                    <div class="spinner"></div>
+                    <div class="loading-text">Processing Gerber files</div>
+                    <div class="loading-status" id="loading-status">Extracting...</div>
+                    <div class="progress-bar progress-bar-indeterminate">
+                        <div class="progress-bar-fill" id="progress-fill"></div>
+                    </div>
+                </div>
+                <div id="svg-container">
+                    <div id="svg-content"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ===== State =====
+        let layers = [];
+        let projectFiles = [];  // [{name, content, fileType, layerType, color}]
+        let projectName = '';
+        let combinedSvg = '';
+        let realisticTopSvg = null;
+        let realisticBottomSvg = null;
+        let currentView = 'layers';
+        let scale = 1, panX = 0, panY = 0, isPanning = false, startX, startY;
+
+        // DOM refs
+        const fileInput = document.getElementById('file-input');
+        const layerList = document.getElementById('layer-list');
+        const svgContainer = document.getElementById('svg-container');
+        const svgContent = document.getElementById('svg-content');
+        const viewerContainer = document.getElementById('viewer-container');
+        const dropZone = document.getElementById('drop-zone');
+        const loading = document.getElementById('loading');
+        const zoomLevel = document.getElementById('zoom-level');
+
+        // ===== Browser-side file type detection (ported from Java) =====
+        function detectFileType(name, content) {
+            const lower = name.toLowerCase();
+            const drillExts = ['.drl','.xln','.exc','.ncd','.drd'];
+            if (drillExts.some(e => lower.endsWith(e))) return 'drill';
+            if (lower.endsWith('.txt') && (content.includes('M48') || content.includes('T01C') ||
+                content.includes('METRIC') || content.includes('INCH'))) return 'drill';
+            if (content.includes('M48') || content.includes('T01C')) return 'drill';
+            if (content.includes('%FS') || content.includes('%MO') ||
+                content.includes('G04') || content.includes('%ADD')) return 'gerber';
+            const gerberExts = ['.gbr','.ger','.gtl','.gbl','.gts','.gbs','.gto','.gbo',
+                '.gtp','.gbp','.gm1','.gko','.g1','.g2','.g3','.cmp','.sol','.stc','.sts','.plc','.pls'];
+            if (gerberExts.some(e => lower.endsWith(e))) return 'gerber';
+            return 'unknown';
+        }
+
+        function detectPcbLayerType(name, fileType) {
+            const lower = name.toLowerCase();
+            if (fileType === 'drill') return 'DRILL';
+            if (/gko|gm1|edge|outline|boardoutline|profile/.test(lower)) return 'OUTLINE';
+            if (/gtl|f_cu|f\\.cu/.test(lower) || lower.endsWith('.cmp') || /top_copper|copper_top/.test(lower)) return 'COPPER_TOP';
+            if (/gbl|b_cu|b\\.cu/.test(lower) || lower.endsWith('.sol') || /bottom_copper|copper_bottom/.test(lower)) return 'COPPER_BOTTOM';
+            if (/gts|f_mask|f\\.mask/.test(lower) || lower.endsWith('.stc') || /soldermask_top|top_mask/.test(lower)) return 'SOLDERMASK_TOP';
+            if (/gbs|b_mask|b\\.mask/.test(lower) || lower.endsWith('.sts') || /soldermask_bottom|bottom_mask/.test(lower)) return 'SOLDERMASK_BOTTOM';
+            if (/gto|f_silks|f\\.silkscreen/.test(lower) || lower.endsWith('.plc') || /silkscreen_top|top_silk/.test(lower)) return 'SILKSCREEN_TOP';
+            if (/gbo|b_silks|b\\.silkscreen/.test(lower) || lower.endsWith('.pls') || /silkscreen_bottom|bottom_silk/.test(lower)) return 'SILKSCREEN_BOTTOM';
+            if (/gtp|f_paste/.test(lower)) return 'PASTE_TOP';
+            if (/gbp|b_paste/.test(lower)) return 'PASTE_BOTTOM';
+            return 'OTHER';
+        }
+
+        const LAYER_COLORS = {
+            gtl:'#e94560', f_cu:'#e94560', cmp:'#e94560',
+            gbl:'#4169e1', b_cu:'#4169e1', sol:'#4169e1',
+            g1:'#ff6600', g2:'#ff8c00', g3:'#9932cc',
+            gts:'#00aa00', gbs:'#006600', f_mask:'#00aa00', b_mask:'#006600', stc:'#00aa00', sts:'#006600',
+            gto:'#ffffff', gbo:'#cccccc', f_silks:'#ffffff', b_silks:'#cccccc', plc:'#ffffff', pls:'#cccccc',
+            gtp:'#888888', gbp:'#666666',
+            gko:'#ffff00', gm1:'#ffff00', edge:'#ffff00',
+            drl:'#00ffff', xln:'#00ffff', drd:'#00ffff'
+        };
+
+        function getLayerColor(name) {
+            const lower = name.toLowerCase();
+            for (const [key, color] of Object.entries(LAYER_COLORS)) {
+                if (lower.includes(key)) return color;
+            }
+            return '#aaaaaa';
+        }
+
+        // ===== Browser-side ZIP extraction =====
+        async function extractZip(arrayBuffer) {
+            const view = new DataView(arrayBuffer);
+            const files = [];
+            let offset = 0;
+            while (offset < view.byteLength - 4) {
+                if (view.getUint32(offset, true) !== 0x04034b50) break;
+                const flags = view.getUint16(offset + 6, true);
+                const method = view.getUint16(offset + 8, true);
+                let compSize = view.getUint32(offset + 18, true);
+                const uncompSize = view.getUint32(offset + 22, true);
+                const nameLen = view.getUint16(offset + 26, true);
+                const extraLen = view.getUint16(offset + 28, true);
+                const name = new TextDecoder().decode(new Uint8Array(arrayBuffer, offset + 30, nameLen));
+                const dataStart = offset + 30 + nameLen + extraLen;
+
+                // Handle data descriptor (bit 3): sizes may be in trailing descriptor
+                const hasDataDesc = (flags & 0x08) !== 0;
+                if (hasDataDesc && compSize === 0) {
+                    // Scan for next local file header or end-of-central-dir signature
+                    let scanPos = dataStart;
+                    while (scanPos < view.byteLength - 4) {
+                        const sig = view.getUint32(scanPos, true);
+                        if (sig === 0x04034b50 || sig === 0x02014b50 || sig === 0x06054b50) break;
+                        // Check for data descriptor signature (optional)
+                        if (sig === 0x08074b50) { compSize = scanPos - dataStart; break; }
+                        scanPos++;
+                    }
+                    if (compSize === 0) compSize = scanPos - dataStart;
+                }
+
+                if (!name.endsWith('/') && !name.includes('__MACOSX') && !name.startsWith('.')) {
+                    const compData = new Uint8Array(arrayBuffer, dataStart, compSize);
+                    let content;
+                    try {
+                        if (method === 0) {
+                            content = compData;
+                        } else if (method === 8) {
+                            const ds = new DecompressionStream('deflate-raw');
+                            const writer = ds.writable.getWriter();
+                            writer.write(compData);
+                            writer.close();
+                            const reader = ds.readable.getReader();
+                            const chunks = [];
+                            while (true) {
+                                const {done, value} = await reader.read();
+                                if (done) break;
+                                chunks.push(value);
+                            }
+                            const total = chunks.reduce((s, c) => s + c.length, 0);
+                            content = new Uint8Array(total);
+                            let pos = 0;
+                            for (const chunk of chunks) { content.set(chunk, pos); pos += chunk.length; }
+                        }
+                        if (content) {
+                            const text = new TextDecoder().decode(content);
+                            const shortName = name.includes('/') ? name.substring(name.lastIndexOf('/') + 1) : name;
+                            if (shortName) files.push({name: shortName, content: text});
+                        }
+                    } catch (e) {
+                        console.warn('Failed to extract', name, e);
+                    }
+                }
+
+                // Advance past data + optional data descriptor
+                offset = dataStart + compSize;
+                if (hasDataDesc) {
+                    if (offset + 4 <= view.byteLength && view.getUint32(offset, true) === 0x08074b50) offset += 16;
+                    else if (offset + 12 <= view.byteLength) offset += 12;
+                }
+            }
+            return files;
+        }
+
+        // ===== IndexedDB persistence =====
+        function openDB() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open('gerber-viewer', 1);
+                req.onupgradeneeded = () => {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains('projects')) {
+                        db.createObjectStore('projects', {keyPath: 'id', autoIncrement: true});
+                    }
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function saveProject(name, files) {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('projects', 'readwrite');
+                const store = tx.objectStore('projects');
+                // Keep only the last 5 projects
+                const getAll = store.getAll();
+                getAll.onsuccess = () => {
+                    const existing = getAll.result.sort((a, b) => b.timestamp - a.timestamp);
+                    // Remove old projects beyond limit
+                    for (let i = 4; i < existing.length; i++) {
+                        store.delete(existing[i].id);
+                    }
+                    // Remove duplicate by name
+                    for (const p of existing) {
+                        if (p.name === name) store.delete(p.id);
+                    }
+                    const record = {name, timestamp: Date.now(), files};
+                    const addReq = store.add(record);
+                    addReq.onsuccess = () => resolve(addReq.result);
+                    addReq.onerror = () => reject(addReq.error);
+                };
+            });
+        }
+
+        async function loadProject(id) {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('projects', 'readonly');
+                const req = tx.objectStore('projects').get(id);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function listProjects() {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('projects', 'readonly');
+                const req = tx.objectStore('projects').getAll();
+                req.onsuccess = () => resolve(req.result.sort((a, b) => b.timestamp - a.timestamp));
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function clearRecentProjects() {
+            const db = await openDB();
+            const tx = db.transaction('projects', 'readwrite');
+            tx.objectStore('projects').clear();
+            document.getElementById('recent-section').classList.add('hidden');
+        }
+
+        // ===== Send files to server for rendering =====
+        async function sendRenderRequest(files) {
+            const encoder = new TextEncoder();
+            const parts = [];
+            for (const f of files) {
+                if (f.fileType === 'unknown') continue;
+                const contentBytes = encoder.encode(f.content);
+                const header = `FILE\t${f.name}\t${f.fileType}\t${f.layerType}\t${contentBytes.length}\n`;
+                parts.push(encoder.encode(header));
+                parts.push(contentBytes);
+                parts.push(encoder.encode('\n'));
+            }
+            const body = new Blob(parts);
+            const resp = await fetch('/api/render', {method: 'POST', body});
+            if (!resp.ok) throw new Error('Server error: ' + resp.status);
+            return await resp.json();
+        }
+
+        // ===== Layer type constants =====
+        const LAYER_TYPES = ['OUTLINE','COPPER_TOP','COPPER_BOTTOM','SOLDERMASK_TOP','SOLDERMASK_BOTTOM',
+            'SILKSCREEN_TOP','SILKSCREEN_BOTTOM','PASTE_TOP','PASTE_BOTTOM','DRILL','DRILL_PLATED','DRILL_NON_PLATED','OTHER'];
+        const LAYER_TYPE_LABELS = {
+            'OUTLINE':'Outline','COPPER_TOP':'Cu Top','COPPER_BOTTOM':'Cu Bot',
+            'SOLDERMASK_TOP':'Mask Top','SOLDERMASK_BOTTOM':'Mask Bot',
+            'SILKSCREEN_TOP':'Silk Top','SILKSCREEN_BOTTOM':'Silk Bot',
+            'PASTE_TOP':'Paste Top','PASTE_BOTTOM':'Paste Bot',
+            'DRILL':'Drill','DRILL_PLATED':'Drill PTH','DRILL_NON_PLATED':'Drill NPTH','OTHER':'Other'
+        };
+
+        // ===== File input & drag-drop =====
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) loadFile(e.target.files[0]);
+        });
+        viewerContainer.addEventListener('dragover', (e) => {
+            e.preventDefault(); viewerContainer.classList.add('drag-over');
+        });
+        viewerContainer.addEventListener('dragleave', () => viewerContainer.classList.remove('drag-over'));
+        viewerContainer.addEventListener('drop', (e) => {
+            e.preventDefault(); viewerContainer.classList.remove('drag-over');
+            if (e.dataTransfer.files.length > 0) loadFile(e.dataTransfer.files[0]);
+        });
+
+        // ===== Main load flow =====
+        async function loadFile(file) {
+            if (!file.name.endsWith('.zip')) { alert('Please select a ZIP file'); return; }
+            const loadingStatus = document.getElementById('loading-status');
+            const progressBar = document.querySelector('.progress-bar');
+            dropZone.classList.add('hidden');
+            loading.classList.remove('hidden');
+            progressBar.classList.add('progress-bar-indeterminate');
+
+            try {
+                loadingStatus.textContent = 'Extracting ' + file.name + '...';
+                const arrayBuffer = await file.arrayBuffer();
+                const rawFiles = await extractZip(arrayBuffer);
+
+                loadingStatus.textContent = 'Detected ' + rawFiles.length + ' files, analyzing...';
+                projectName = file.name;
+                projectFiles = rawFiles.map(f => {
+                    const fileType = detectFileType(f.name, f.content);
+                    const layerType = detectPcbLayerType(f.name, fileType);
+                    const color = getLayerColor(f.name);
+                    return {name: f.name, content: f.content, fileType, layerType, color};
+                }).filter(f => f.fileType !== 'unknown');
+
+                // Save to IndexedDB
+                try { await saveProject(projectName, projectFiles); } catch(e) { console.warn('IndexedDB save failed', e); }
+
+                loadingStatus.textContent = 'Rendering ' + projectFiles.length + ' layers...';
+                await renderFromFiles(projectFiles);
+            } catch (error) {
+                alert('Error: ' + error.message);
+                dropZone.classList.remove('hidden');
+            } finally {
+                loading.classList.add('hidden');
+                progressBar.classList.remove('progress-bar-indeterminate');
+            }
+        }
+
+        async function renderFromFiles(files) {
+            const data = await sendRenderRequest(files);
+            if (data.error) throw new Error(data.error);
+
+            layers = data.layers.map((layer, index) => ({...layer, visible: true, index}));
+            combinedSvg = data.svg;
+            realisticTopSvg = data.realisticTopSvg;
+            realisticBottomSvg = data.realisticBottomSvg;
+
+            // Sync layer types back to projectFiles (in case server assigned IDs differently)
+            for (let i = 0; i < layers.length && i < files.length; i++) {
+                layers[i].layerType = files[i].layerType;
+            }
+
+            document.getElementById('view-tabs').style.display = 'flex';
+            const topTab = document.querySelector('[data-view="top"]');
+            const botTab = document.querySelector('[data-view="bottom"]');
+            topTab.disabled = !realisticTopSvg; topTab.style.opacity = realisticTopSvg ? 1 : 0.4;
+            botTab.disabled = !realisticBottomSvg; botTab.style.opacity = realisticBottomSvg ? 1 : 0.4;
+
+            currentView = 'layers';
+            document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.dataset.view === 'layers'));
+            renderSvg();
+            renderLayerList();
+            fitToView();
+        }
+
+        // ===== Re-open from IndexedDB =====
+        async function reopenProject(id) {
+            const loadingStatus = document.getElementById('loading-status');
+            const progressBar = document.querySelector('.progress-bar');
+            dropZone.classList.add('hidden');
+            loading.classList.remove('hidden');
+            progressBar.classList.add('progress-bar-indeterminate');
+
+            try {
+                const project = await loadProject(id);
+                loadingStatus.textContent = 'Rendering ' + project.files.length + ' layers...';
+                projectName = project.name;
+                projectFiles = project.files;
+                await renderFromFiles(projectFiles);
+            } catch (error) {
+                alert('Error: ' + error.message);
+                dropZone.classList.remove('hidden');
+            } finally {
+                loading.classList.add('hidden');
+                progressBar.classList.remove('progress-bar-indeterminate');
+            }
+        }
+
+        // ===== Layer list =====
+        function renderLayerList() {
+            if (layers.length === 0) {
+                layerList.innerHTML = '<div class="no-layers">No layers loaded</div>';
+                return;
+            }
+            layerList.innerHTML = layers.map((layer, index) => {
+                const opts = LAYER_TYPES.map(t =>
+                    `<option value="${t}" ${layer.layerType === t ? 'selected' : ''}>${LAYER_TYPE_LABELS[t]}</option>`
+                ).join('');
+                return `<div class="layer-item">
+                    <input type="checkbox" ${layer.visible ? 'checked' : ''}
+                        onclick="event.stopPropagation(); toggleLayer(${index})">
+                    <div class="color-dot" style="background: ${layer.color}"></div>
+                    <span class="name" title="${layer.name}" onclick="toggleLayer(${index})" style="cursor:pointer">${layer.name}</span>
+                    <select class="layer-type-select" onchange="changeLayerType(${index}, this.value)" onclick="event.stopPropagation()">
+                        ${opts}
+                    </select>
+                </div>`;
+            }).join('');
+        }
+
+        function toggleLayer(index) {
+            layers[index].visible = !layers[index].visible;
+            const el = svgContent.querySelector(`#${CSS.escape(layers[index].id)}`);
+            if (el) el.setAttribute('display', layers[index].visible ? 'inline' : 'none');
+            renderLayerList();
+        }
+
+        let typeChangeTimer = null;
+        async function changeLayerType(index, newType) {
+            layers[index].layerType = newType;
+            if (projectFiles[index]) projectFiles[index].layerType = newType;
+            // Save updated types to IndexedDB
+            try { await saveProject(projectName, projectFiles); } catch(e) {}
+            // Debounce server call
+            clearTimeout(typeChangeTimer);
+            typeChangeTimer = setTimeout(async () => {
+                try {
+                    const data = await sendRenderRequest(projectFiles);
+                    combinedSvg = data.svg;
+                    realisticTopSvg = data.realisticTopSvg;
+                    realisticBottomSvg = data.realisticBottomSvg;
+                    const topTab = document.querySelector('[data-view="top"]');
+                    const botTab = document.querySelector('[data-view="bottom"]');
+                    topTab.disabled = !realisticTopSvg; topTab.style.opacity = realisticTopSvg ? 1 : 0.4;
+                    botTab.disabled = !realisticBottomSvg; botTab.style.opacity = realisticBottomSvg ? 1 : 0.4;
+                    renderSvg();
+                    if (currentView !== 'layers') fitToView();
+                } catch (e) { console.error('Re-render failed:', e); }
+            }, 500);
+        }
+
+        // ===== SVG rendering =====
+        function renderSvg() {
+            let svgStr = null, flipX = false;
+            if (currentView === 'layers') svgStr = combinedSvg;
+            else if (currentView === 'top') svgStr = realisticTopSvg;
+            else if (currentView === 'bottom') { svgStr = realisticBottomSvg; flipX = true; }
+
+            if (!svgStr) {
+                svgContent.innerHTML = '<div style="color:#666;text-align:center;padding:40px;">No realistic view available.<br><small>Ensure an Outline layer type is assigned.</small></div>';
+                return;
+            }
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(svgStr, 'image/svg+xml');
+            const svg = doc.querySelector('svg');
+            if (svg) {
+                const vb = svg.getAttribute('viewBox');
+                if (vb) {
+                    const [,,w,h] = vb.split(' ').map(Number);
+                    svg.setAttribute('width', w + 'mm');
+                    svg.setAttribute('height', h + 'mm');
+                }
+                svg.style.overflow = 'visible';
+                if (flipX && vb) {
+                    const [vx,,vw] = vb.split(' ').map(Number);
+                    const viewport = svg.querySelector('#viewport');
+                    if (viewport) {
+                        const t = viewport.getAttribute('transform') || '';
+                        viewport.setAttribute('transform', `translate(${vx + vw + vx}, 0) scale(-1, 1) ${t}`);
+                    }
+                }
+                svgContent.innerHTML = '';
+                svgContent.appendChild(svg);
+            }
+            updateTransform();
+        }
+
+        function switchView(view) {
+            if (view === 'top' && !realisticTopSvg) return;
+            if (view === 'bottom' && !realisticBottomSvg) return;
+            currentView = view;
+            document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
+            renderSvg();
+            fitToView();
+        }
+
+        // ===== Pan & Zoom =====
+        svgContainer.addEventListener('mousedown', (e) => {
+            if (e.button === 0) { isPanning = true; startX = e.clientX - panX; startY = e.clientY - panY; }
+        });
+        document.addEventListener('mousemove', (e) => {
+            if (isPanning) { panX = e.clientX - startX; panY = e.clientY - startY; updateTransform(); }
+        });
+        document.addEventListener('mouseup', () => { isPanning = false; });
+
+        svgContainer.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const rect = svgContainer.getBoundingClientRect();
+            const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            const ns = Math.max(0.1, Math.min(50, scale * delta));
+            panX = mx - (mx - panX) * (ns / scale);
+            panY = my - (my - panY) * (ns / scale);
+            scale = ns;
+            updateTransform();
+        });
+
+        document.getElementById('zoom-in').addEventListener('click', () => {
+            const r = svgContainer.getBoundingClientRect();
+            const cx = r.width/2, cy = r.height/2;
+            const ns = Math.min(50, scale * 1.25);
+            panX = cx - (cx - panX) * (ns / scale); panY = cy - (cy - panY) * (ns / scale);
+            scale = ns; updateTransform();
+        });
+        document.getElementById('zoom-out').addEventListener('click', () => {
+            const r = svgContainer.getBoundingClientRect();
+            const cx = r.width/2, cy = r.height/2;
+            const ns = Math.max(0.1, scale * 0.8);
+            panX = cx - (cx - panX) * (ns / scale); panY = cy - (cy - panY) * (ns / scale);
+            scale = ns; updateTransform();
+        });
+        document.getElementById('zoom-fit').addEventListener('click', fitToView);
+
+        function fitToView() {
+            const svg = svgContent.querySelector('svg');
+            if (!svg) return;
+            const rect = svgContainer.getBoundingClientRect();
+            const vb = svg.getAttribute('viewBox');
+            if (!vb) return;
+            const [,,w,h] = vb.split(' ').map(Number);
+            const pxPerMm = 3.78;
+            const sw = w * pxPerMm, sh = h * pxPerMm;
+            const pad = 40;
+            scale = Math.min((rect.width - pad*2) / sw, (rect.height - pad*2) / sh, 10);
+            panX = (rect.width - sw * scale) / 2;
+            panY = (rect.height - sh * scale) / 2;
+            updateTransform();
+        }
+
+        function updateTransform() {
+            svgContent.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+            zoomLevel.textContent = Math.round(scale * 100) + '%';
+        }
+
+        // ===== Init: show recent projects =====
+        (async function init() {
+            updateTransform();
+            try {
+                const projects = await listProjects();
+                if (projects.length > 0) {
+                    const section = document.getElementById('recent-section');
+                    const list = document.getElementById('recent-list');
+                    section.classList.remove('hidden');
+                    list.innerHTML = projects.map(p => {
+                        const date = new Date(p.timestamp).toLocaleDateString();
+                        return `<div class="recent-item" onclick="reopenProject(${p.id})">
+                            <span>${p.name}</span>
+                            <span class="date">${date}</span>
+                        </div>`;
+                    }).join('');
+                }
+            } catch (e) { console.warn('IndexedDB not available', e); }
+        })();
+    </script>
+</body>
+</html>
