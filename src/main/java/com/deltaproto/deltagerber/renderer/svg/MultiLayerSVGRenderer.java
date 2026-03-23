@@ -358,10 +358,13 @@ public class MultiLayerSVGRenderer {
         // Extract board outline path for clipPath and soldermask mask base
         SvgOptions outlineOptions = svgOptions.copy().setFlipY(flipY);
         String outlinePath = extractOutlinePath(outlineLayer.getGerberDoc(), outlineOptions);
+        boolean hasOutlinePath = outlinePath != null && !outlinePath.isBlank();
 
-        svg.append("  <clipPath id=\"board-outline\">\n");
-        svg.append(String.format("    <path d=\"%s\"/>\n", outlinePath));
-        svg.append("  </clipPath>\n");
+        if (hasOutlinePath) {
+            svg.append("  <clipPath id=\"board-outline\">\n");
+            svg.append(String.format("    <path d=\"%s\"/>\n", outlinePath));
+            svg.append("  </clipPath>\n");
+        }
 
         // Oversized rect covering the full viewbox (used for soldermask fill etc.)
         String fullRectAttrs = String.format(Locale.US,
@@ -429,7 +432,12 @@ public class MultiLayerSVGRenderer {
 
             // sm-mask: board outline white, soldermask objects black = where mask IS present
             svg.append(String.format("  <mask id=\"%s\">\n", smMaskId));
-            svg.append(String.format("    <path d=\"%s\" fill=\"white\"/>\n", outlinePath));
+            if (hasOutlinePath) {
+                svg.append(String.format("    <path d=\"%s\" fill=\"white\"/>\n", outlinePath));
+            } else {
+                // No outline path — use full viewbox rect as mask base
+                svg.append(String.format("    <rect %s fill=\"white\"/>\n", fullRectAttrs));
+            }
             smMaskOptions.setDarkColor("black").setClearColor("white");
             for (GraphicsObject obj : layer.getGerberDoc().getObjects()) {
                 String objSvg = obj.toSvg(smMaskOptions);
@@ -481,12 +489,13 @@ public class MultiLayerSVGRenderer {
         }
 
         // --- Layer stack (matches typical PCB viewer rendering) ---
-        // All content is clipped to board outline, with drill holes punching through
+        // All content is clipped to board outline (if available), with drill holes punching through
+        String clipAttr = hasOutlinePath ? " clip-path=\"url(#board-outline)\"" : "";
 
         if (hasDrills) {
-            svg.append("  <g mask=\"url(#mech-mask)\" clip-path=\"url(#board-outline)\">\n");
+            svg.append(String.format("  <g mask=\"url(#mech-mask)\"%s>\n", clipAttr));
         } else {
-            svg.append("  <g clip-path=\"url(#board-outline)\">\n");
+            svg.append(String.format("  <g%s>\n", clipAttr));
         }
 
         // 1. FR4 substrate background
