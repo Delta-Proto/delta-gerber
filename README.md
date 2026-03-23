@@ -2,6 +2,8 @@
 
 A Java library for parsing Gerber RS-274X and Excellon NC drill files with SVG rendering, realistic PCB visualization, and an interactive web viewer.
 
+**[Try the online viewer at deltaproto.com](https://deltaproto.com/opensource-gerber-viewer)** — no install needed, runs in your browser.
+
 ![All Layers View](screenshot-depr-layers.png)
 
 ## Realistic PCB Rendering
