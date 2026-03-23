@@ -2,15 +2,19 @@
 
 A Java library for parsing Gerber RS-274X and Excellon NC drill files with SVG rendering, realistic PCB visualization, and an interactive web viewer.
 
-![Delta Gerber Screenshot](Screenshot.png)
+![All Layers View](screenshot-depr-layers.png)
 
 ## Realistic PCB Rendering
 
 Generate photorealistic top and bottom views of your PCB with proper layer stacking — FR4 substrate, copper with HASL/ENIG finish, semi-transparent soldermask, silkscreen, and drill holes with true SVG transparency.
 
-| Top Side | Bottom Side |
-|----------|-------------|
-| ![Arduino Uno Top](arduino-realistic-top.png) | ![Arduino Uno Bottom](arduino-realistic-bottom.png) |
+| Board Top | Board Bottom |
+|-----------|--------------|
+| ![Arduino Uno Top](screenshot-arduino-realistic-top.png) | ![Arduino Uno Bottom](screenshot-arduino-realistic-bottom.png) |
+
+| All Layers | Realistic Top |
+|------------|---------------|
+| ![Arduino Layers](screenshot-arduino-layers.png) | ![DeltaProto Board Top](screenshot-depr-realistic-top.png) |
 
 ## Maven Dependency
 

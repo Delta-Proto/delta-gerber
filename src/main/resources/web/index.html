@@ -3,96 +3,197 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gerber Viewer</title>
+    <title>Gerber Viewer — DeltaProto</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
+        /* ===== DeltaProto Design Tokens ===== */
+        :root {
+            --bg: #f2f2f2;
+            --bg-card: #ffffff;
+            --bg-input: #ffffff;
+            --bg-viewer: #e8e8e8;
+            --fg: #262626;
+            --fg-muted: #595959;
+            --fg-faint: #999;
+            --border: #bfbfbf;
+            --border-subtle: #d9d9d9;
+            --primary: #2e84cc;
+            --primary-hover: #2574b8;
+            --primary-fg: #ffffff;
+            --accent-red: #d82a30;
+            --ring: #2e84cc;
+            --item-bg: #f5f5f5;
+            --item-hover: #ebebeb;
+            --tab-active-bg: #ffffff;
+            --tooltip-bg: #ffffff;
+            --tooltip-border: #d9d9d9;
+            --tooltip-shadow: rgba(0,0,0,0.1);
+            --drag-tint: rgba(46,132,204,0.08);
+            --loading-bg: rgba(255,255,255,0.95);
+            --grid-line: rgba(0,0,0,0.04);
+            --checkbox-accent: #2e84cc;
+            --progress-from: #2e84cc;
+            --progress-to: #5ba3dd;
+            --spinner-track: #d9d9d9;
+        }
+        .dark {
+            --bg: #1a1a1a;
+            --bg-card: #1f1f1f;
+            --bg-input: #2a2a2a;
+            --bg-viewer: #141414;
+            --fg: #d9d9d9;
+            --fg-muted: #8c8c8c;
+            --fg-faint: #666;
+            --border: #404040;
+            --border-subtle: #333;
+            --primary: #2e84cc;
+            --primary-hover: #3a93dd;
+            --primary-fg: #ffffff;
+            --accent-red: #d82a30;
+            --ring: #2e84cc;
+            --item-bg: #262626;
+            --item-hover: #333;
+            --tab-active-bg: #141414;
+            --tooltip-bg: #1f1f1f;
+            --tooltip-border: #404040;
+            --tooltip-shadow: rgba(0,0,0,0.5);
+            --drag-tint: rgba(46,132,204,0.1);
+            --loading-bg: rgba(31,31,31,0.95);
+            --grid-line: rgba(255,255,255,0.03);
+            --checkbox-accent: #2e84cc;
+            --progress-from: #2e84cc;
+            --progress-to: #5ba3dd;
+            --spinner-track: #404040;
+        }
+
+        /* ===== Base ===== */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e; color: #eee; height: 100vh;
-            display: flex; flex-direction: column;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg); color: var(--fg); height: 100vh;
+            display: flex; flex-direction: column; transition: background 0.2s, color 0.2s;
         }
+
+        /* ===== Scrollbar ===== */
+        * { scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+
+        /* ===== Header ===== */
         header {
-            background: #16213e; padding: 12px 20px; display: flex;
-            align-items: center; gap: 20px; border-bottom: 1px solid #0f3460;
+            background: var(--bg-card); padding: 10px 20px; display: flex;
+            align-items: center; gap: 16px; border-bottom: 1px solid var(--border);
+            height: 56px;
         }
-        header h1 { font-size: 1.3rem; font-weight: 500; color: #e94560; }
+        .header-brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+        .header-brand svg { height: 32px; width: 32px; flex-shrink: 0; }
+        header h1 { font-size: 1.125rem; font-weight: 600; color: var(--fg); }
+        header h1 span { color: var(--fg-muted); font-weight: 400; }
         .upload-btn {
-            background: #0f3460; color: #fff; border: none; padding: 8px 16px;
-            border-radius: 6px; cursor: pointer; font-size: 0.9rem; transition: background 0.2s;
+            background: var(--primary); color: var(--primary-fg); border: none; padding: 7px 16px;
+            border-radius: 8px; cursor: pointer; font-size: 0.875rem; font-weight: 500;
+            transition: background 0.15s; font-family: inherit;
         }
-        .upload-btn:hover { background: #1a4f7a; }
+        .upload-btn:hover { background: var(--primary-hover); }
         #file-input { display: none; }
-        .zoom-controls { display: flex; gap: 8px; margin-left: auto; }
+        .example-btn {
+            background: none; color: var(--primary); border: none; padding: 7px 4px;
+            cursor: pointer; font-size: 0.875rem; font-weight: 500; font-family: inherit;
+            text-decoration: underline; text-underline-offset: 2px;
+            transition: color 0.15s;
+        }
+        .example-btn:hover { color: var(--primary-hover); }
+        .theme-toggle {
+            background: none; border: 1px solid var(--border); width: 36px; height: 36px;
+            border-radius: 8px; cursor: pointer; display: flex; align-items: center;
+            justify-content: center; color: var(--fg-muted); transition: background 0.15s, color 0.15s;
+        }
+        .theme-toggle:hover { background: var(--item-hover); color: var(--fg); }
+        .zoom-controls { display: flex; gap: 6px; margin-left: auto; align-items: center; }
         .zoom-btn {
-            background: #0f3460; color: #fff; border: none; width: 32px; height: 32px;
-            border-radius: 6px; cursor: pointer; font-size: 1.2rem;
+            background: var(--bg-input); color: var(--fg); border: 1px solid var(--border);
+            width: 36px; height: 36px; border-radius: 8px; cursor: pointer; font-size: 1.1rem;
             display: flex; align-items: center; justify-content: center;
+            transition: background 0.15s; font-family: inherit;
         }
-        .zoom-btn:hover { background: #1a4f7a; }
+        .zoom-btn:hover { background: var(--item-hover); }
         .zoom-level {
-            background: #0f3460; padding: 6px 12px; border-radius: 6px;
-            font-size: 0.85rem; min-width: 60px; text-align: center;
+            background: var(--bg-input); border: 1px solid var(--border); padding: 6px 10px;
+            border-radius: 8px; font-size: 0.8rem; min-width: 56px; text-align: center;
+            color: var(--fg-muted);
         }
+
+        /* ===== Layout ===== */
         .main-container { display: flex; flex: 1; overflow: hidden; }
         .sidebar {
-            width: 280px; background: #16213e; border-right: 1px solid #0f3460;
-            padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
+            width: 280px; background: var(--bg-card); border-right: 1px solid var(--border);
+            padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px;
         }
         .sidebar h2 {
-            font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px;
-            color: #888; margin-bottom: 4px;
+            font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;
+            color: var(--fg-muted); margin-bottom: 4px; font-weight: 600;
         }
-        .view-tabs { display: flex; gap: 2px; padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460; }
+
+        /* ===== View Tabs ===== */
+        .view-tabs {
+            display: flex; gap: 2px; padding: 8px 16px; background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+        }
         .view-tab {
-            background: #1a1a2e; color: #888; border: none; padding: 8px 16px;
-            border-radius: 6px 6px 0 0; cursor: pointer; font-size: 0.85rem;
-            transition: background 0.2s, color 0.2s;
+            background: transparent; color: var(--fg-muted); border: none; padding: 8px 16px;
+            border-radius: 8px 8px 0 0; cursor: pointer; font-size: 0.8125rem;
+            transition: background 0.15s, color 0.15s; font-family: inherit; font-weight: 500;
         }
-        .view-tab:hover { background: #252542; color: #ccc; }
-        .view-tab.active { background: #0d0d1a; color: #e94560; font-weight: 600; }
-        .view-tab:disabled { cursor: not-allowed; }
+        .view-tab:hover { background: var(--item-hover); color: var(--fg); }
+        .view-tab.active { background: var(--tab-active-bg); color: var(--primary); font-weight: 600; }
+        .view-tab:disabled { cursor: not-allowed; opacity: 0.4; }
+
+        /* ===== Layer Controls ===== */
         .layer-type-select {
-            background: #0f3460; color: #ccc; border: 1px solid #1a4f7a;
-            border-radius: 4px; padding: 2px 4px; font-size: 0.75rem;
-            cursor: pointer; max-width: 100px;
+            background: var(--bg-input); color: var(--fg-muted); border: 1px solid var(--border);
+            border-radius: 6px; padding: 2px 4px; font-size: 0.6875rem;
+            cursor: pointer; max-width: 100px; font-family: inherit;
         }
-        .layer-type-select:focus { outline: 1px solid #e94560; }
+        .layer-type-select:focus { outline: 2px solid var(--ring); outline-offset: -1px; }
         .side-btn {
-            background: #0f3460; color: #888; border: none; padding: 2px 8px;
-            border-radius: 4px; cursor: pointer; font-size: 0.7rem; transition: background 0.2s, color 0.2s;
+            background: var(--bg-input); color: var(--fg-muted); border: 1px solid var(--border);
+            padding: 2px 8px; border-radius: 6px; cursor: pointer; font-size: 0.6875rem;
+            transition: background 0.15s, color 0.15s; font-family: inherit; font-weight: 500;
         }
-        .side-btn:hover { background: #1a4f7a; color: #eee; }
-        .layer-list { display: flex; flex-direction: column; gap: 4px; }
+        .side-btn:hover { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+        .layer-list { display: flex; flex-direction: column; gap: 3px; }
         .layer-item {
-            display: flex; align-items: center; gap: 10px; padding: 10px 12px;
-            background: #1a1a2e; border-radius: 6px; cursor: pointer; transition: background 0.2s;
+            display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+            background: var(--item-bg); border-radius: 8px; cursor: pointer;
+            transition: background 0.15s; border: 1px solid transparent;
         }
-        .layer-item:hover { background: #252542; }
-        .layer-item input[type="checkbox"] { width: 16px; height: 16px; accent-color: #e94560; }
-        .layer-item .color-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+        .layer-item:hover { background: var(--item-hover); border-color: var(--border-subtle); }
+        .layer-item input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--checkbox-accent); }
+        .layer-item .color-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.1); }
         .layer-item .name {
-            flex: 1; font-size: 0.9rem; white-space: nowrap;
+            flex: 1; font-size: 0.8125rem; white-space: nowrap;
             overflow: hidden; display: flex; min-width: 0;
         }
-        .layer-item .name-start {
-            overflow: hidden; text-overflow: ellipsis; flex-shrink: 1;
-        }
-        .layer-item .name-ext {
-            flex-shrink: 0;
-        }
+        .layer-item .name-start { overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; }
+        .layer-item .name-ext { flex-shrink: 0; }
         .layer-item .name[title] { position: relative; }
         .layer-item .name:hover::after {
             content: attr(title); position: absolute; left: 0; top: 100%;
-            background: #16213e; color: #eee; padding: 4px 8px; border-radius: 4px;
-            font-size: 0.8rem; white-space: nowrap; z-index: 100;
-            border: 1px solid #0f3460; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            background: var(--tooltip-bg); color: var(--fg); padding: 4px 8px; border-radius: 6px;
+            font-size: 0.75rem; white-space: nowrap; z-index: 100;
+            border: 1px solid var(--tooltip-border); box-shadow: 0 4px 12px var(--tooltip-shadow);
             pointer-events: none;
         }
+
+        /* ===== Viewer ===== */
         .viewer-container {
-            flex: 1; position: relative; overflow: hidden; background: #0d0d1a;
+            flex: 1; position: relative; overflow: hidden; background: var(--bg-viewer);
             background-image:
-                linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+                linear-gradient(var(--grid-line) 1px, transparent 1px),
+                linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
             background-size: 20px 20px;
         }
         #svg-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: grab; }
@@ -100,49 +201,71 @@
         #svg-content { transform-origin: 0 0; }
         .drop-zone {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            text-align: center; color: #666;
+            text-align: center; color: var(--fg-faint);
         }
-        .drop-zone svg { width: 80px; height: 80px; margin-bottom: 16px; opacity: 0.5; }
+        .drop-zone svg { width: 80px; height: 80px; margin-bottom: 16px; opacity: 0.4; }
         .drop-zone p { font-size: 1.1rem; margin-bottom: 8px; }
-        .drop-zone small { font-size: 0.85rem; color: #555; }
-        .drag-over { background: rgba(233, 69, 96, 0.1) !important; }
+        .drop-zone small { font-size: 0.85rem; color: var(--fg-faint); }
+        .drag-over { background: var(--drag-tint) !important; }
         .loading {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            text-align: center; background: rgba(22, 33, 62, 0.95); padding: 32px 48px;
-            border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); border: 1px solid #0f3460;
+            text-align: center; background: var(--loading-bg); padding: 32px 48px;
+            border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); border: 1px solid var(--border);
         }
-        .spinner { width: 48px; height: 48px; border: 3px solid #333; border-top-color: #e94560; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto; }
+        .spinner {
+            width: 48px; height: 48px; border: 3px solid var(--spinner-track);
+            border-top-color: var(--primary); border-radius: 50%;
+            animation: spin 1s linear infinite; margin: 0 auto;
+        }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .loading-text { margin-top: 16px; font-size: 1rem; color: #eee; }
-        .loading-status { margin-top: 8px; font-size: 0.85rem; color: #888; min-height: 20px; }
-        .progress-bar { width: 200px; height: 4px; background: #333; border-radius: 2px; margin: 16px auto 0; overflow: hidden; }
-        .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #e94560, #ff6b8a); border-radius: 2px; transition: width 0.3s ease; width: 0%; }
+        .loading-text { margin-top: 16px; font-size: 1rem; color: var(--fg); }
+        .loading-status { margin-top: 8px; font-size: 0.8125rem; color: var(--fg-muted); min-height: 20px; }
+        .progress-bar { width: 200px; height: 4px; background: var(--spinner-track); border-radius: 2px; margin: 16px auto 0; overflow: hidden; }
+        .progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--progress-from), var(--progress-to)); border-radius: 2px; transition: width 0.3s ease; width: 0%; }
         .progress-bar-indeterminate .progress-bar-fill { width: 30%; animation: indeterminate 1.5s ease-in-out infinite; }
         @keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
         .hidden { display: none !important; }
-        .no-layers { color: #666; font-size: 0.9rem; padding: 20px; text-align: center; }
+        .no-layers { color: var(--fg-faint); font-size: 0.8125rem; padding: 20px; text-align: center; }
         .recent-item {
-            display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-            background: #1a1a2e; border-radius: 6px; cursor: pointer; transition: background 0.2s;
-            font-size: 0.85rem;
+            display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+            background: var(--item-bg); border-radius: 8px; cursor: pointer;
+            transition: background 0.15s; font-size: 0.8125rem;
         }
-        .recent-item:hover { background: #252542; }
-        .recent-item .date { color: #666; font-size: 0.75rem; margin-left: auto; }
+        .recent-item:hover { background: var(--item-hover); }
+        .recent-item .date { color: var(--fg-faint); font-size: 0.6875rem; margin-left: auto; }
     </style>
 </head>
-<body>
+<body class="dark">
     <header>
-        <h1>Gerber Viewer</h1>
+        <a class="header-brand" href="https://deltaproto.com" target="_blank" title="DeltaProto">
+            <svg viewBox="0 0 1112 1112" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <rect x="97.836" y="0.93" width="915.819" height="1110.141" fill="#d82a30" rx="81.819" ry="81.819"/>
+                <rect x="424.184" y="106.923" width="138.535" height="506.722" fill="#fff"/>
+                <rect x="549.238" y="496.96" width="138.535" height="506.722" fill="#fff"/>
+                <ellipse cx="283.789" cy="555.93" rx="280.325" ry="277.536" fill="#fff"/>
+                <ellipse cx="827.238" cy="556.465" rx="280.325" ry="277.536" fill="#fff"/>
+                <path d="M 814 418 C 752.2 424.2 702.5 469.4 690.3 530.7 C 687.9 542.8 687.9 569.1 690.3 581.3 C 701.8 638.9 744.5 681.2 802.5 692.6 C 814.5 695 838.2 695 850.6 692.7 C 879.5 687.4 903 675 924.1 654 C 951.5 626.6 965 594.4 965 556 C 965 527.6 957.2 502 941.2 478.1 C 934.2 467.6 916.3 449.4 905.8 442.2 C 879.3 424.1 844.8 415 814 418 Z" fill="#d82a30"/>
+                <path d="M 272.2 418.1 C 227.7 422.4 188.3 447.7 164.9 487 C 155.6 502.7 149 523.7 147 544.2 C 143.1 583.8 158.1 624.8 187 653.8 C 206.6 673.4 230.4 686.2 258.3 692.2 C 272.8 695.2 297.2 695.2 311.7 692.2 C 361.9 681.5 400.6 647.3 416.5 599.7 C 421.5 584.7 423.4 572.9 423.4 556 C 423.4 519.2 410.6 487.3 385.2 460.9 C 360.9 435.5 331.6 421.3 297 418.1 C 284.4 416.9 284.3 416.9 272.2 418.1 Z" fill="#d82a30"/>
+            </svg>
+            <h1>Gerber Viewer</h1>
+        </a>
         <label class="upload-btn">
             <input type="file" id="file-input" accept=".zip">
             Open ZIP File
         </label>
+        <button class="example-btn" onclick="loadExample()" title="Load Arduino Uno example project">Try Example</button>
         <div class="zoom-controls">
             <button class="zoom-btn" id="zoom-out" title="Zoom Out">-</button>
             <span class="zoom-level" id="zoom-level">100%</span>
             <button class="zoom-btn" id="zoom-in" title="Zoom In">+</button>
             <button class="zoom-btn" id="zoom-fit" title="Fit to View">&#8644;</button>
         </div>
+        <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" onclick="toggleTheme()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="4" id="theme-icon-sun-parts"/>
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" id="theme-icon-rays"/>
+            </svg>
+        </button>
     </header>
 
     <div class="main-container">
@@ -150,7 +273,7 @@
             <div>
                 <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
                     <input type="checkbox" id="select-all-layers" onclick="toggleAllLayers()"
-                        style="width:16px; height:16px; accent-color:#e94560;">
+                        style="width:16px; height:16px; accent-color:var(--checkbox-accent);">
                     <h2 style="margin-bottom:0;">Layers</h2>
                     <div style="display:flex; gap:4px; margin-left:auto;">
                         <button class="side-btn" onclick="selectSide('top')" title="Show top layers only">Top</button>
@@ -473,6 +596,29 @@
         });
 
         // ===== Main load flow =====
+        async function loadExample() {
+            const loadingStatus = document.getElementById('loading-status');
+            const progressBar = document.querySelector('.progress-bar');
+            dropZone.classList.add('hidden');
+            loading.classList.remove('hidden');
+            progressBar.classList.add('progress-bar-indeterminate');
+            loadingStatus.textContent = 'Loading Arduino Uno example...';
+            try {
+                const resp = await fetch('/arduino-uno-example.zip');
+                if (!resp.ok) throw new Error('Failed to fetch example');
+                const blob = await resp.blob();
+                const file = new File([blob], 'arduino-uno-example.zip', {type: 'application/zip'});
+                loading.classList.add('hidden');
+                progressBar.classList.remove('progress-bar-indeterminate');
+                await loadFile(file);
+            } catch (e) {
+                alert('Failed to load example: ' + e.message);
+                loading.classList.add('hidden');
+                progressBar.classList.remove('progress-bar-indeterminate');
+                dropZone.classList.remove('hidden');
+            }
+        }
+
         async function loadFile(file) {
             if (!file.name.endsWith('.zip')) { alert('Please select a ZIP file'); return; }
             const loadingStatus = document.getElementById('loading-status');
@@ -775,6 +921,37 @@
             svgContent.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
             zoomLevel.textContent = Math.round(scale * 100) + '%';
         }
+
+        // ===== Theme toggle =====
+        function toggleTheme() {
+            const isDark = document.body.classList.toggle('dark');
+            document.body.classList.toggle('light', !isDark);
+            localStorage.setItem('gerber-viewer-theme', isDark ? 'dark' : 'light');
+            updateThemeIcon();
+        }
+
+        function updateThemeIcon() {
+            const isDark = document.body.classList.contains('dark');
+            const rays = document.getElementById('theme-icon-rays');
+            if (rays) rays.style.display = isDark ? '' : 'none';
+        }
+
+        function applyStoredTheme() {
+            const stored = localStorage.getItem('gerber-viewer-theme');
+            let isDark;
+            if (stored) {
+                isDark = stored === 'dark';
+            } else {
+                isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            }
+            document.body.classList.toggle('dark', isDark);
+            document.body.classList.toggle('light', !isDark);
+            updateThemeIcon();
+        }
+        applyStoredTheme();
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            if (!localStorage.getItem('gerber-viewer-theme')) applyStoredTheme();
+        });
 
         // ===== Init: show recent projects =====
         (async function init() {
