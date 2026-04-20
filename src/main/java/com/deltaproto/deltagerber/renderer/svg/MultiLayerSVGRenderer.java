@@ -384,6 +384,12 @@ public class MultiLayerSVGRenderer {
         gerberLayers.addAll(copperLayers);
         gerberLayers.addAll(soldermaskLayers);
         gerberLayers.addAll(silkscreenLayers);
+        // Gerber X2 drill files (e.g. KiCad's *-PTH-drl.gbr) are Gerber-backed but
+        // classified as DRILL layers. They still need aperture defs so the mech-mask
+        // can reference their flashes via <use>.
+        for (Layer drill : drillLayers) {
+            if (drill.isGerber()) gerberLayers.add(drill);
+        }
 
         for (Layer layer : gerberLayers) {
             if (!layer.isGerber()) continue;
@@ -471,6 +477,21 @@ public class MultiLayerSVGRenderer {
                 if (layer.isDrill()) {
                     svg.append("    <g fill=\"black\" color=\"black\" stroke=\"none\" stroke-width=\"0\">\n");
                     renderDrillContent(svg, layer.getDrillDoc());
+                    svg.append("    </g>\n");
+                } else if (layer.isGerber()) {
+                    // Gerber X2 drill layer — render its flashes as solid black into the mask.
+                    svg.append("    <g fill=\"black\" color=\"black\" stroke=\"none\" stroke-width=\"0\">\n");
+                    String apPrefix = aperturePrefixes.get(layer);
+                    SvgOptions maskOpt = svgOptions.copy()
+                        .setApertureIdPrefix(apPrefix)
+                        .setDarkColor("black").setClearColor("black")
+                        .setFlipY(flipY);
+                    for (GraphicsObject obj : layer.getGerberDoc().getObjects()) {
+                        String objSvg = obj.toSvg(maskOpt);
+                        if (objSvg != null && !objSvg.isEmpty()) {
+                            svg.append("      ").append(objSvg).append("\n");
+                        }
+                    }
                     svg.append("    </g>\n");
                 }
             }

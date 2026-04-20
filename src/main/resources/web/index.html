@@ -129,9 +129,17 @@
         /* ===== Layout ===== */
         .main-container { display: flex; flex: 1; overflow: hidden; }
         .sidebar {
-            width: 280px; background: var(--bg-card); border-right: 1px solid var(--border);
+            width: 280px; flex-shrink: 0; background: var(--bg-card);
+            border-right: 1px solid var(--border);
             padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px;
         }
+        .sidebar-resizer {
+            width: 5px; flex-shrink: 0; cursor: col-resize; background: transparent;
+            transition: background 0.15s; margin-left: -3px; z-index: 10; position: relative;
+        }
+        .sidebar-resizer:hover, .sidebar-resizer.dragging { background: var(--primary); }
+        body.resizing-sidebar { cursor: col-resize; user-select: none; }
+        body.resizing-sidebar * { cursor: col-resize !important; }
         .sidebar h2 {
             font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;
             color: var(--fg-muted); margin-bottom: 4px; font-weight: 600;
@@ -177,7 +185,10 @@
             flex: 1; font-size: 0.8125rem; white-space: nowrap;
             overflow: hidden; display: flex; min-width: 0;
         }
-        .layer-item .name-start { overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; }
+        .layer-item .name-start {
+            overflow: hidden; text-overflow: ellipsis;
+            flex: 0 1 auto; min-width: 0;
+        }
         .layer-item .name-ext { flex-shrink: 0; }
         .layer-item .name[title] { position: relative; }
         .layer-item .name:hover::after {
@@ -292,8 +303,9 @@
                 <div id="recent-list"></div>
             </div>
         </aside>
+        <div class="sidebar-resizer" id="sidebar-resizer" title="Drag to resize"></div>
 
-        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+        <div style="flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0;">
             <div class="view-tabs" id="view-tabs" style="display:none;">
                 <button class="view-tab active" data-view="layers" onclick="switchView('layers')">All Layers</button>
                 <button class="view-tab" data-view="top" onclick="switchView('top')">Board Top</button>
@@ -362,6 +374,29 @@
         function detectPcbLayerType(name, fileType, content) {
             const lower = name.toLowerCase();
             if (fileType === 'drill') return 'DRILL';
+
+            // KiCad (and other EDAs) emit drill data as Gerber X2 with .gbr extension.
+            // The TF.FileFunction attribute is the authoritative signal; filename
+            // patterns like "-pth-drl.gbr" / "-npth-drl.gbr" / "-drill.gbr" are the
+            // fallback when the content hasn't been scanned.
+            if (content) {
+                const ffMatch = content.match(/%TF\.FileFunction,([^*%]+)\*/);
+                if (ffMatch) {
+                    const parts = ffMatch[1].split(',').map(s => s.trim());
+                    // KiCad's NPTH export omits the trailing "Drill" token, so the
+                    // PTH/NPTH tokens on their own are treated as drill signals too.
+                    if (parts.some(p => p === 'NPTH')) return 'DRILL_NON_PLATED';
+                    if (parts.some(p => p === 'PTH')) return 'DRILL_PLATED';
+                    if (parts.some(p => p === 'Drill' || p === 'Route')) {
+                        if (parts.some(p => p === 'NonPlated')) return 'DRILL_NON_PLATED';
+                        if (parts.some(p => p === 'Plated')) return 'DRILL_PLATED';
+                        return 'DRILL';
+                    }
+                }
+            }
+            if (/-npth(?:[-_.]|$)|nonplated.*drl|npth.*drl/.test(lower)) return 'DRILL_NON_PLATED';
+            if (/-pth(?:[-_.]|$)|[-_.]drl\.|drill\.gbr$/.test(lower)) return 'DRILL_PLATED';
+
             if (/\.gko$|\.gm\d*$|edge|outline|boardoutline|profile/.test(lower)) {
                 // Only assign OUTLINE if the file has actual connected drawing content
                 if (!content) return 'OUTLINE';
@@ -404,12 +439,26 @@
             return '#aaaaaa';
         }
 
+        let commonPrefix = '';
+        function computeCommonPrefix(names) {
+            if (names.length < 2) return '';
+            let p = names[0];
+            for (let i = 1; i < names.length; i++) {
+                let j = 0;
+                while (j < p.length && j < names[i].length && p[j] === names[i][j]) j++;
+                p = p.substring(0, j);
+                if (!p) return '';
+            }
+            return p.length >= 3 ? p : '';
+        }
+
         function splitFilename(name) {
-            const dotIdx = name.lastIndexOf('.');
-            if (dotIdx <= 0) return `<span class="name-start">${name}</span>`;
-            const start = name.substring(0, dotIdx);
-            const ext = name.substring(dotIdx);
-            return `<span class="name-start">${start}</span><span class="name-ext">${ext}</span>`;
+            // Ellipsize the shared project prefix first so each unique suffix stays intact.
+            if (commonPrefix && name.length > commonPrefix.length && name.startsWith(commonPrefix)) {
+                const suffix = name.substring(commonPrefix.length);
+                return `<span class="name-start">${commonPrefix}</span><span class="name-ext">${suffix}</span>`;
+            }
+            return `<span class="name-start">${name}</span>`;
         }
 
         // ===== Browser-side ZIP extraction =====
@@ -713,6 +762,7 @@
                 layerList.innerHTML = '<div class="no-layers">No layers loaded</div>';
                 return;
             }
+            commonPrefix = computeCommonPrefix(layers.map(l => l.name));
             layerList.innerHTML = layers.map((layer, index) => {
                 const opts = LAYER_TYPES.map(t =>
                     `<option value="${t}" ${layer.layerType === t ? 'selected' : ''}>${LAYER_TYPE_LABELS[t]}</option>`
@@ -921,6 +971,39 @@
             svgContent.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
             zoomLevel.textContent = Math.round(scale * 100) + '%';
         }
+
+        // ===== Sidebar resize =====
+        (function initSidebarResize() {
+            const sidebar = document.querySelector('.sidebar');
+            const resizer = document.getElementById('sidebar-resizer');
+            const MIN = 180, MAX = 600;
+            const stored = parseInt(localStorage.getItem('gerber-viewer-sidebar-width'), 10);
+            if (!isNaN(stored) && stored >= MIN && stored <= MAX) {
+                sidebar.style.width = stored + 'px';
+            }
+            let dragging = false;
+            resizer.addEventListener('mousedown', (e) => {
+                dragging = true;
+                resizer.classList.add('dragging');
+                document.body.classList.add('resizing-sidebar');
+                e.preventDefault();
+            });
+            document.addEventListener('mousemove', (e) => {
+                if (!dragging) return;
+                const rect = sidebar.getBoundingClientRect();
+                let w = e.clientX - rect.left;
+                if (w < MIN) w = MIN;
+                if (w > MAX) w = MAX;
+                sidebar.style.width = w + 'px';
+            });
+            document.addEventListener('mouseup', () => {
+                if (!dragging) return;
+                dragging = false;
+                resizer.classList.remove('dragging');
+                document.body.classList.remove('resizing-sidebar');
+                localStorage.setItem('gerber-viewer-sidebar-width', parseInt(sidebar.style.width, 10));
+            });
+        })();
 
         // ===== Theme toggle =====
         function toggleTheme() {

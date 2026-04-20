@@ -42,12 +42,52 @@ public class GerberDocument {
     }
 
     /**
-     * Get the file function from .FileFunction attribute.
+     * Get the file function from .FileFunction attribute (first comma-separated value,
+     * e.g. "Plated" or "Copper"). See {@link #getFileFunctionValues()} for the full list.
      */
     public String getFileFunction() {
         FileAttribute attr = fileAttributes.get(".FileFunction");
         if (attr == null) attr = fileAttributes.get("FileFunction");
         return attr != null ? attr.getFirstValue() : null;
+    }
+
+    /**
+     * All comma-separated values of the .FileFunction attribute, or an empty list if
+     * the attribute is absent. Needed when the trailing values carry the interesting
+     * classification — e.g. KiCad emits ".FileFunction,Plated,1,4,PTH,Drill" for a
+     * plated drill layer, and the "Drill" token only appears at the tail.
+     */
+    public List<String> getFileFunctionValues() {
+        FileAttribute attr = fileAttributes.get(".FileFunction");
+        if (attr == null) attr = fileAttributes.get("FileFunction");
+        return attr != null ? attr.getValues() : java.util.Collections.emptyList();
+    }
+
+    /**
+     * True when the .FileFunction attribute declares this file as a drill or route
+     * layer (Gerber X2 drill format, as emitted by KiCad etc.). This is the
+     * authoritative way to recognize a Gerber-backed drill file — filename heuristics
+     * are unreliable because such files use the plain .gbr extension.
+     */
+    public boolean isDrillFileFunction() {
+        List<String> values = getFileFunctionValues();
+        if (values.isEmpty()) return false;
+        for (String v : values) {
+            if ("Drill".equalsIgnoreCase(v) || "Route".equalsIgnoreCase(v)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * True when .FileFunction identifies a non-plated drill (NPTH), false for any
+     * other drill function or when the attribute is absent.
+     */
+    public boolean isNonPlatedDrillFileFunction() {
+        if (!isDrillFileFunction()) return false;
+        for (String v : getFileFunctionValues()) {
+            if ("NonPlated".equalsIgnoreCase(v) || "NPTH".equalsIgnoreCase(v)) return true;
+        }
+        return false;
     }
 
     /**
