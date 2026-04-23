@@ -433,6 +433,99 @@ public class RealisticSvgRenderTest {
         }
     }
 
+    @Test
+    @Order(9)
+    @DisplayName("Outline with rounded corners and sub-aperture endpoint gaps chains into one loop")
+    void testOutlineWithRoundingErrorGaps() throws Exception {
+        // Reproduces another real-world Altium quirk: the board outline uses arcs
+        // for rounded corners and straight lines for the edges, but the arc's start/end
+        // point doesn't exactly match the adjacent straight segment's endpoint — there
+        // can be a gap of several tens of microns. A strict 1 µm chaining tolerance
+        // breaks here, leaving the outline fragmented. The renderer tolerates
+        // sub-feature-size gaps (~50 µm) to handle this.
+
+        String outlineGerber = buildOutlineWithGaps();
+        GerberDocument outlineDoc = gerberParser.parse(outlineGerber);
+
+        List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
+        layers.add(new MultiLayerSVGRenderer.Layer("outline", outlineDoc)
+            .setLayerType(LayerType.OUTLINE));
+
+        MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer();
+        String svg = renderer.renderRealistic(layers);
+
+        Document parsed = parseSvg(svg);
+        Element clipPath = (Element) parsed.getElementsByTagName("clipPath").item(0);
+        Element pathEl = (Element) clipPath.getElementsByTagName("path").item(0);
+        String d = pathEl.getAttribute("d");
+
+        Files.writeString(OUTPUT_DIR.resolve("realistic-rounding-gaps.svg"), svg);
+
+        // Rectangle with 4 rounded corners → exactly 1 closed subpath with 4 arcs and 4 lines
+        int moveCount = countOccurrences(d, "M ");
+        int closeCount = countOccurrences(d, "Z");
+        int arcCount = countOccurrences(d, "A ");
+        int lineCount = countOccurrences(d, "L ");
+        assertEquals(1, moveCount,
+            "Expected exactly 1 subpath despite rounding-error gaps, got " + moveCount
+            + ". Path: " + d);
+        assertEquals(1, closeCount, "Expected 1 close command");
+        assertEquals(4, arcCount, "Expected 4 rounded corners, got " + arcCount);
+        assertEquals(4, lineCount, "Expected 4 straight edges, got " + lineCount);
+    }
+
+    /**
+     * Rectangle with four CCW-quarter-arc corners, where straight edges don't quite
+     * meet the adjacent arc's tangent point — a 40 µm gap at each corner joint.
+     * Simulates the rounding error seen in some Altium-generated GM1 outlines.
+     */
+    private String buildOutlineWithGaps() {
+        int gap = 400;                    // 40 µm in 4.4 MM (1 unit = 0.1 µm)
+        int x0 = 100000, y0 = 100000;     // 10 mm
+        int x1 = 900000, y1 = 500000;     // 90 × 50 mm rectangle
+        int r  =  50000;                  // 5 mm corner radius
+
+        StringBuilder g = new StringBuilder();
+        g.append("G04 synthetic outline with rounded corners and rounding-error gaps*\n");
+        g.append("%FSLAX44Y44*%\n");
+        g.append("%MOMM*%\n");
+        g.append("G01*\n");
+        g.append("G75*\n");
+        g.append("%ADD10C,0.1000*%\n");
+        g.append("D10*\n");
+
+        // Straight edges — endpoints offset by `gap` from the true arc tangent
+        appendLine(g, x0 + r + gap, y0,         x1 - r - gap, y0);         // bottom
+        appendLine(g, x1,           y0 + r + gap, x1,          y1 - r - gap); // right
+        appendLine(g, x1 - r - gap, y1,         x0 + r + gap, y1);         // top
+        appendLine(g, x0,           y1 - r - gap, x0,          y0 + r + gap); // left
+
+        // CCW quarter-arc corners at their true tangent points
+        appendCCWArc(g, x0,     y0 + r, x0 + r, y0,     x0 + r, y0 + r);   // BL
+        appendCCWArc(g, x1 - r, y0,     x1,     y0 + r, x1 - r, y0 + r);   // BR
+        appendCCWArc(g, x1,     y1 - r, x1 - r, y1,     x1 - r, y1 - r);   // TR
+        appendCCWArc(g, x0 + r, y1,     x0,     y1 - r, x0 + r, y1 - r);   // TL
+
+        g.append("M02*\n");
+        return g.toString();
+    }
+
+    private static void appendLine(StringBuilder g, int x0, int y0, int x1, int y1) {
+        g.append("X").append(x0).append("Y").append(y0).append("D02*\n");
+        g.append("X").append(x1).append("Y").append(y1).append("D01*\n");
+    }
+
+    private static void appendCCWArc(StringBuilder g, int sx, int sy, int ex, int ey,
+                                     int cx, int cy) {
+        g.append("X").append(sx).append("Y").append(sy).append("D02*\n");
+        g.append("G03*\n");
+        int i = cx - sx;
+        int j = cy - sy;
+        g.append("X").append(ex).append("Y").append(ey);
+        g.append("I").append(i).append("J").append(j).append("D01*\n");
+        g.append("G01*\n");
+    }
+
     /**
      * Builds a Gerber outline describing a rectangle plus an inner circular cutout,
      * where many segments are written in reversed direction (start/end swapped)

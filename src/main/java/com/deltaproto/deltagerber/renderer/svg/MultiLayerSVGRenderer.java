@@ -245,6 +245,12 @@ public class MultiLayerSVGRenderer {
         return svg.toString();
     }
 
+    // Outline-chain tolerance (mm). Altium/other EDA tools sometimes emit
+    // straight-edge endpoints that don't exactly meet the adjacent arc's
+    // tangent point — observed gaps up to ~50 µm. 0.1 mm is still well below
+    // typical PCB outline feature sizes (drills, slots, tabs are ≥0.3 mm).
+    private static final double OUTLINE_CHAIN_TOLERANCE_MM = 0.1;
+
     // Default realistic PCB colors (matches typical PCB viewer rendering)
     private static final String FR4_COLOR = "#666666";           // Dark gray substrate
     private static final String COPPER_COLOR = "#cccccc";         // Silver/gray copper under soldermask
@@ -652,6 +658,12 @@ public class MultiLayerSVGRenderer {
      * on the reversed ones and fragments the path into single-segment subpaths.
      * We chain bidirectionally: each new segment can match the running head on
      * either endpoint, reversing the segment's direction when its end matches.
+     * <p>
+     * Matching uses nearest-neighbor within {@link #OUTLINE_CHAIN_TOLERANCE_MM}
+     * — Altium sometimes emits straight-edge endpoints that don't exactly meet
+     * the tangent point of the adjacent corner arc (observed gaps up to ~50 µm).
+     * The tolerance is well below typical PCB feature sizes so it can't fuse
+     * distinct outline features together.
      */
     private String extractOutlinePath(GerberDocument outlineDoc, SvgOptions options) {
         List<GraphicsObject> objects = outlineDoc.getObjects();
@@ -686,7 +698,7 @@ public class MultiLayerSVGRenderer {
         }
         if (segments.isEmpty()) return "";
 
-        double tolerance = 0.001;
+        double toleranceSq = OUTLINE_CHAIN_TOLERANCE_MM * OUTLINE_CHAIN_TOLERANCE_MM;
         StringBuilder path = new StringBuilder();
 
         for (Segment seed : segments) {
@@ -700,19 +712,19 @@ public class MultiLayerSVGRenderer {
             double headX = seed.endX;
             double headY = seed.endY;
 
-            while (Math.abs(headX - loopStartX) > tolerance
-                    || Math.abs(headY - loopStartY) > tolerance) {
+            while (distSq(headX, headY, loopStartX, loopStartY) > toleranceSq) {
                 Segment next = null;
                 boolean reverse = false;
+                double bestSq = toleranceSq;
                 for (Segment s : segments) {
                     if (s.used) continue;
-                    if (Math.abs(s.startX - headX) < tolerance
-                            && Math.abs(s.startY - headY) < tolerance) {
-                        next = s; reverse = false; break;
+                    double d1 = distSq(s.startX, s.startY, headX, headY);
+                    if (d1 < bestSq) {
+                        bestSq = d1; next = s; reverse = false;
                     }
-                    if (Math.abs(s.endX - headX) < tolerance
-                            && Math.abs(s.endY - headY) < tolerance) {
-                        next = s; reverse = true; break;
+                    double d2 = distSq(s.endX, s.endY, headX, headY);
+                    if (d2 < bestSq) {
+                        bestSq = d2; next = s; reverse = true;
                     }
                 }
                 if (next == null) break; // open loop — emit Z anyway to let SVG fill it
@@ -725,6 +737,11 @@ public class MultiLayerSVGRenderer {
         }
 
         return path.toString().trim();
+    }
+
+    private static double distSq(double ax, double ay, double bx, double by) {
+        double dx = ax - bx, dy = ay - by;
+        return dx * dx + dy * dy;
     }
 
     private void appendSegment(StringBuilder path, Segment s, boolean reverse,
