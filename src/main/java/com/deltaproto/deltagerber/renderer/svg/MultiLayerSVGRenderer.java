@@ -852,11 +852,39 @@ public class MultiLayerSVGRenderer {
      * The caller can pass their full layer set (both top and bottom); this method
      * selects the appropriate subset. Returns {@code null} if no outline layer is
      * present or the filtered set would have no content.
+     * <p>
+     * Equivalent to {@link #renderRealisticSide(List, Side, boolean)} with
+     * {@code mirrorBottom = false} — the bottom side is rendered from the
+     * top-looking-down perspective (horizontally mirrored relative to the real
+     * underside of the board). This is the natural orientation for viewers that
+     * apply their own horizontal flip on display.
      */
     public String renderRealisticSide(List<Layer> layers, Side side) {
+        return renderRealisticSide(layers, side, false);
+    }
+
+    /**
+     * Render a single-side realistic SVG with optional horizontal mirroring of
+     * the bottom side.
+     *
+     * @param layers       the full layer set (both sides may be present)
+     * @param side         which side to render
+     * @param mirrorBottom if {@code true} and {@code side == BOTTOM}, flip the
+     *                     rendering horizontally so the output matches the real
+     *                     physical underside of the board (as if you'd turned the
+     *                     board over around its Y axis). Has no effect for
+     *                     {@link Side#TOP}.
+     * @return the SVG string, or {@code null} if no outline layer is present or
+     *         the filtered layer set would have no content.
+     */
+    public String renderRealisticSide(List<Layer> layers, Side side, boolean mirrorBottom) {
         List<Layer> sideLayers = filterForSide(layers, side);
         if (sideLayers == null) return null;
-        return renderRealistic(sideLayers);
+        String svg = renderRealistic(sideLayers);
+        if (mirrorBottom && side == Side.BOTTOM) {
+            svg = applyHorizontalFlip(svg);
+        }
+        return svg;
     }
 
     /**
@@ -893,6 +921,10 @@ public class MultiLayerSVGRenderer {
      * thumbnail-scaled margin) so the PNG's aspect ratio matches the board.
      * When both are given, the board is fitted into that box with
      * {@code preserveAspectRatio="xMidYMid meet"} — letterboxed to match.
+     * <p>
+     * The bottom side is mirrored horizontally by default so the PNG shows the
+     * real physical underside of the board. Pass the 5-argument overload to
+     * control this explicitly.
      *
      * @param layers   full layer set (both sides may be present)
      * @param side     which side to render
@@ -903,6 +935,24 @@ public class MultiLayerSVGRenderer {
      */
     public byte[] renderRealisticSidePng(List<Layer> layers, Side side,
                                          int widthPx, int heightPx) {
+        return renderRealisticSidePng(layers, side, widthPx, heightPx, true);
+    }
+
+    /**
+     * Render a realistic-view PNG with explicit control over bottom-side mirroring.
+     *
+     * @param layers       full layer set (both sides may be present)
+     * @param side         which side to render
+     * @param widthPx      target width in pixels, or {@code <= 0} to derive from height
+     * @param heightPx     target height in pixels, or {@code <= 0} to derive from width
+     * @param mirrorBottom if {@code true} and {@code side == BOTTOM}, the bottom is
+     *                     flipped horizontally so the PNG shows the real underside.
+     *                     Has no effect for {@link Side#TOP}.
+     * @return PNG bytes, or {@code null} if the side couldn't be rendered
+     * @throws IllegalArgumentException if both dimensions are {@code <= 0}
+     */
+    public byte[] renderRealisticSidePng(List<Layer> layers, Side side,
+                                         int widthPx, int heightPx, boolean mirrorBottom) {
         if (widthPx <= 0 && heightPx <= 0) {
             throw new IllegalArgumentException(
                 "At least one of widthPx/heightPx must be positive");
@@ -914,7 +964,7 @@ public class MultiLayerSVGRenderer {
         this.margin = computeThumbnailMargin(layers);
         String svg;
         try {
-            svg = renderRealisticSide(layers, side);
+            svg = renderRealisticSide(layers, side, mirrorBottom);
         } finally {
             this.margin = prevMargin;
         }
@@ -947,6 +997,39 @@ public class MultiLayerSVGRenderer {
         if (bb == null || !bb.isValid()) return 1.5;
         double maxDim = Math.max(bb.getWidth(), bb.getHeight());
         return Math.max(1.5, maxDim * 0.03);
+    }
+
+    /**
+     * Mirror the rendered SVG horizontally around the viewBox's vertical
+     * centreline. Used to turn the top-looking-down bottom-side render into the
+     * real underside view. Modifies the {@code #viewport} group's {@code transform}
+     * so downstream rasterisation sees a properly flipped image.
+     */
+    private static String applyHorizontalFlip(String svg) {
+        double[] vb = parseViewBox(svg);
+        if (vb == null) return svg;
+        // Mirror x around (minX + width/2): maps x -> 2*minX + width - x.
+        double tx = 2 * vb[0] + vb[2];
+        String mirror = String.format(Locale.US, "translate(%.6f,0) scale(-1,1)", tx);
+
+        int vpStart = svg.indexOf("<g id=\"viewport\"");
+        if (vpStart < 0) return svg;
+        int vpEnd = svg.indexOf('>', vpStart);
+        if (vpEnd < 0) return svg;
+        String vpTag = svg.substring(vpStart, vpEnd);
+
+        int txIdx = vpTag.indexOf("transform=\"");
+        String newVpTag;
+        if (txIdx >= 0) {
+            int txStart = txIdx + 11;
+            int txEnd = vpTag.indexOf('"', txStart);
+            if (txEnd < 0) return svg;
+            String existing = vpTag.substring(txStart, txEnd);
+            newVpTag = vpTag.substring(0, txStart) + mirror + " " + existing + vpTag.substring(txEnd);
+        } else {
+            newVpTag = vpTag + " transform=\"" + mirror + "\"";
+        }
+        return svg.substring(0, vpStart) + newVpTag + svg.substring(vpEnd);
     }
 
     private static double[] parseViewBox(String svg) {
