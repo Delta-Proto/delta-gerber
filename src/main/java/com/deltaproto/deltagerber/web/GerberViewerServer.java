@@ -43,6 +43,7 @@ public class GerberViewerServer {
         server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/", new StaticHandler());
         server.createContext("/api/gerber/render", new RenderHandler());
+        server.createContext("/api/gerber/thumbnail", new ThumbnailHandler());
         server.setExecutor(null);
         server.start();
         log.info("Gerber Viewer Server started at http://localhost:{}", port);
@@ -204,19 +205,137 @@ public class GerberViewerServer {
             }
         }
 
-        private static int indexOf(byte[] data, byte target, int from) {
-            for (int i = from; i < data.length; i++) {
-                if (data[i] == target) return i;
-            }
-            return -1;
-        }
-
         private static class LayerMeta {
             final String name, id, color, type, layerType;
             LayerMeta(String name, String id, String color, String type, String layerType) {
                 this.name = name; this.id = id; this.color = color; this.type = type; this.layerType = layerType;
             }
         }
+    }
+
+    /**
+     * Returns a PNG thumbnail of the realistic top/bottom view — used by project
+     * list UIs that show many boards at once. Accepts the same request body as
+     * {@link RenderHandler}. Query params: {@code side=top|bottom}, {@code width=<px>}
+     * (default 400, max 2000).
+     */
+    static class ThumbnailHandler implements HttpHandler {
+        private static final Logger log = LoggerFactory.getLogger(ThumbnailHandler.class);
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                sendResponse(exchange, 405, "text/plain", "Method Not Allowed");
+                return;
+            }
+
+            try {
+                Map<String, String> q = parseQuery(exchange.getRequestURI().getRawQuery());
+                String sideStr = q.getOrDefault("side", "top").toLowerCase();
+                MultiLayerSVGRenderer.Side side = "bottom".equals(sideStr)
+                    ? MultiLayerSVGRenderer.Side.BOTTOM : MultiLayerSVGRenderer.Side.TOP;
+                int width  = parseIntOrDefault(q.get("width"),  400);
+                int height = parseIntOrDefault(q.get("height"), 0);
+                width  = clampDim(width,  0, 4000); // 0 = auto
+                height = clampDim(height, 0, 4000);
+                if (width == 0 && height == 0) width = 400;
+
+                byte[] body = exchange.getRequestBody().readAllBytes();
+                List<MultiLayerSVGRenderer.Layer> layers = parseLayerBody(body);
+
+                byte[] png = new MultiLayerSVGRenderer().renderRealisticSidePng(layers, side, width, height);
+                if (png == null) {
+                    sendResponse(exchange, 422, "application/json",
+                        "{\"error\":\"no outline layer or side has no content\"}");
+                    return;
+                }
+
+                exchange.getResponseHeaders().set("Content-Type", "image/png");
+                exchange.getResponseHeaders().set("Cache-Control", "no-store");
+                exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+                exchange.sendResponseHeaders(200, png.length);
+                try (OutputStream os = exchange.getResponseBody()) { os.write(png); }
+            } catch (Exception e) {
+                log.error("Thumbnail render failed", e);
+                sendResponse(exchange, 500, "application/json",
+                    "{\"error\":" + escapeJson(e.getMessage()) + "}");
+            }
+        }
+    }
+
+    private static int indexOf(byte[] data, byte target, int from) {
+        for (int i = from; i < data.length; i++) {
+            if (data[i] == target) return i;
+        }
+        return -1;
+    }
+
+    /**
+     * Parse the length-prefixed file protocol shared by /render and /thumbnail.
+     * Silently drops files that fail to parse (per-file try/catch) so a single
+     * bad layer can't take down the whole request.
+     */
+    static List<MultiLayerSVGRenderer.Layer> parseLayerBody(byte[] body) {
+        GerberParser gerberParser = new GerberParser();
+        ExcellonParser drillParser = new ExcellonParser();
+        List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
+
+        int pos = 0;
+        while (pos < body.length) {
+            int lineEnd = indexOf(body, (byte) '\n', pos);
+            if (lineEnd < 0) break;
+            String header = new String(body, pos, lineEnd - pos, StandardCharsets.UTF_8);
+            if (!header.startsWith("FILE\t")) break;
+            String[] parts = header.substring(5).split("\t");
+            if (parts.length < 4) break;
+            String name = parts[0];
+            String fileType = parts[1];
+            String layerTypeStr = parts[2];
+            int contentLength = Integer.parseInt(parts[3]);
+            pos = lineEnd + 1;
+            String content = new String(body, pos, contentLength, StandardCharsets.UTF_8);
+            pos += contentLength;
+            if (pos < body.length && body[pos] == '\n') pos++;
+            try {
+                MultiLayerSVGRenderer.Layer layer = null;
+                LayerType layerType = LayerType.valueOf(layerTypeStr);
+                if ("drill".equals(fileType)) {
+                    layer = new MultiLayerSVGRenderer.Layer(name, drillParser.parse(content));
+                } else if ("gerber".equals(fileType)) {
+                    layer = new MultiLayerSVGRenderer.Layer(name, gerberParser.parse(content));
+                }
+                if (layer != null) {
+                    layer.setColor(getLayerColor(name)).setOpacity(0.85).setLayerType(layerType);
+                    layers.add(layer);
+                }
+            } catch (Exception e) {
+                LoggerFactory.getLogger(GerberViewerServer.class)
+                    .warn("Failed to parse {}: {}", name, e.getMessage());
+            }
+        }
+        return layers;
+    }
+
+    private static Map<String, String> parseQuery(String raw) {
+        Map<String, String> out = new LinkedHashMap<>();
+        if (raw == null || raw.isEmpty()) return out;
+        for (String pair : raw.split("&")) {
+            int eq = pair.indexOf('=');
+            if (eq < 0) out.put(pair, "");
+            else out.put(pair.substring(0, eq), pair.substring(eq + 1));
+        }
+        return out;
+    }
+
+    private static int parseIntOrDefault(String s, int def) {
+        if (s == null || s.isEmpty()) return def;
+        try { return Integer.parseInt(s); } catch (NumberFormatException e) { return def; }
+    }
+
+    private static int clampDim(int v, int min, int max) {
+        if (v < min) return min;
+        if (v > max) return max;
+        return v;
     }
 
     // --- Shared helpers ---

@@ -154,10 +154,17 @@
             background: transparent; color: var(--fg-muted); border: none; padding: 8px 16px;
             border-radius: 8px 8px 0 0; cursor: pointer; font-size: 0.8125rem;
             transition: background 0.15s, color 0.15s; font-family: inherit; font-weight: 500;
+            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
         }
         .view-tab:hover { background: var(--item-hover); color: var(--fg); }
         .view-tab.active { background: var(--tab-active-bg); color: var(--primary); font-weight: 600; }
         .view-tab:disabled { cursor: not-allowed; opacity: 0.4; }
+        .view-tab svg { width: 14px; height: 14px; flex-shrink: 0; }
+        .btn-spinner {
+            width: 14px; height: 14px; border: 2px solid var(--spinner-track);
+            border-top-color: var(--primary); border-radius: 50%;
+            animation: spin 1s linear infinite; display: inline-block; flex-shrink: 0;
+        }
 
         /* ===== Layer Controls ===== */
         .layer-type-select {
@@ -310,6 +317,27 @@
                 <button class="view-tab active" data-view="layers" onclick="switchView('layers')">All Layers</button>
                 <button class="view-tab" data-view="top" onclick="switchView('top')">Board Top</button>
                 <button class="view-tab" data-view="bottom" onclick="switchView('bottom')">Board Bottom</button>
+                <span style="flex:1"></span>
+                <button class="view-tab" id="png-top-btn" onclick="downloadThumbnail('top')"
+                    title="Download PNG thumbnail of the realistic top view">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    <span>PNG Top</span>
+                </button>
+                <button class="view-tab" id="png-bot-btn" onclick="downloadThumbnail('bottom')"
+                    title="Download PNG thumbnail of the realistic bottom view">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    <span>PNG Bottom</span>
+                </button>
             </div>
             <div class="viewer-container" id="viewer-container">
                 <div class="drop-zone" id="drop-zone">
@@ -603,7 +631,7 @@
         }
 
         // ===== Send files to server for rendering =====
-        async function sendRenderRequest(files) {
+        function buildLayerBody(files) {
             const encoder = new TextEncoder();
             const parts = [];
             for (const f of files) {
@@ -614,10 +642,53 @@
                 parts.push(contentBytes);
                 parts.push(encoder.encode('\n'));
             }
-            const body = new Blob(parts);
-            const resp = await fetch('/api/gerber/render', {method: 'POST', body});
+            return new Blob(parts);
+        }
+
+        async function sendRenderRequest(files) {
+            const resp = await fetch('/api/gerber/render', {method: 'POST', body: buildLayerBody(files)});
             if (!resp.ok) throw new Error('Server error: ' + resp.status);
             return await resp.json();
+        }
+
+        // ===== Download realistic view as PNG thumbnail =====
+        async function downloadThumbnail(side) {
+            if (!projectFiles || projectFiles.length === 0) return;
+            const btn = document.getElementById(side === 'top' ? 'png-top-btn' : 'png-bot-btn');
+            if (btn.disabled) return;
+            // Lock the button's current size so swapping to a spinner doesn't reflow the tab bar.
+            const rect = btn.getBoundingClientRect();
+            const originalHtml = btn.innerHTML;
+            btn.style.width = rect.width + 'px';
+            btn.style.height = rect.height + 'px';
+            btn.disabled = true;
+            btn.innerHTML = '<span class="btn-spinner" aria-label="Generating"></span>';
+            try {
+                // Request a reasonably large width — usable as a thumbnail AND for
+                // closer inspection. Project-list consumers can call the endpoint
+                // directly with a smaller width.
+                const width = 800;
+                const resp = await fetch(`/api/gerber/thumbnail?side=${side}&width=${width}`,
+                    {method: 'POST', body: buildLayerBody(projectFiles)});
+                if (!resp.ok) throw new Error('Server error: ' + resp.status);
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                const base = (projectName || 'board').replace(/[^a-zA-Z0-9._-]/g, '_');
+                a.download = `${base}-${side}.png`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Failed to render PNG: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+                btn.style.width = '';
+                btn.style.height = '';
+            }
         }
 
         // ===== Layer type constants =====
@@ -723,6 +794,10 @@
             const botTab = document.querySelector('[data-view="bottom"]');
             topTab.disabled = !realisticTopSvg; topTab.style.opacity = realisticTopSvg ? 1 : 0.4;
             botTab.disabled = !realisticBottomSvg; botTab.style.opacity = realisticBottomSvg ? 1 : 0.4;
+            const pngTopBtn = document.getElementById('png-top-btn');
+            const pngBotBtn = document.getElementById('png-bot-btn');
+            pngTopBtn.disabled = !realisticTopSvg; pngTopBtn.style.opacity = realisticTopSvg ? 1 : 0.4;
+            pngBotBtn.disabled = !realisticBottomSvg; pngBotBtn.style.opacity = realisticBottomSvg ? 1 : 0.4;
 
             currentView = 'layers';
             document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.dataset.view === 'layers'));
@@ -863,6 +938,10 @@
                     const botTab = document.querySelector('[data-view="bottom"]');
                     topTab.disabled = !realisticTopSvg; topTab.style.opacity = realisticTopSvg ? 1 : 0.4;
                     botTab.disabled = !realisticBottomSvg; botTab.style.opacity = realisticBottomSvg ? 1 : 0.4;
+                    const pngTopBtn = document.getElementById('png-top-btn');
+                    const pngBotBtn = document.getElementById('png-bot-btn');
+                    pngTopBtn.disabled = !realisticTopSvg; pngTopBtn.style.opacity = realisticTopSvg ? 1 : 0.4;
+                    pngBotBtn.disabled = !realisticBottomSvg; pngBotBtn.style.opacity = realisticBottomSvg ? 1 : 0.4;
                     renderSvg();
                     if (currentView !== 'layers') fitToView();
                 } catch (e) { console.error('Re-render failed:', e); }

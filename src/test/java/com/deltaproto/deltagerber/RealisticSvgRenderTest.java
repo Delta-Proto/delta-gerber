@@ -475,6 +475,132 @@ public class RealisticSvgRenderTest {
     }
 
     @Test
+    @Order(11)
+    @DisplayName("renderRealisticSidePng produces a valid PNG thumbnail")
+    void testRealisticSidePng() throws Exception {
+        if (!Files.exists(DEPR_TEST_DIR)) {
+            System.out.println("DEPR test directory not found, skipping");
+            return;
+        }
+
+        Map<String, GerberDocument> docs = loadGerberFiles(
+            "uP-H Main PCBA Assy V04.GKO",
+            "uP-H Main PCBA Assy V04.GTL",
+            "uP-H Main PCBA Assy V04.GTS",
+            "uP-H Main PCBA Assy V04.GTO",
+            "uP-H Main PCBA Assy V04.GBL",
+            "uP-H Main PCBA Assy V04.GBS"
+        );
+
+        List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
+        layers.add(new MultiLayerSVGRenderer.Layer("outline", docs.get("GKO"))
+            .setLayerType(LayerType.OUTLINE));
+        layers.add(new MultiLayerSVGRenderer.Layer("copper-top", docs.get("GTL"))
+            .setLayerType(LayerType.COPPER_TOP));
+        layers.add(new MultiLayerSVGRenderer.Layer("sm-top", docs.get("GTS"))
+            .setLayerType(LayerType.SOLDERMASK_TOP));
+        layers.add(new MultiLayerSVGRenderer.Layer("ss-top", docs.get("GTO"))
+            .setLayerType(LayerType.SILKSCREEN_TOP));
+        layers.add(new MultiLayerSVGRenderer.Layer("copper-bot", docs.get("GBL"))
+            .setLayerType(LayerType.COPPER_BOTTOM));
+        layers.add(new MultiLayerSVGRenderer.Layer("sm-bot", docs.get("GBS"))
+            .setLayerType(LayerType.SOLDERMASK_BOTTOM));
+
+        MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer();
+
+        int widthPx = 400;
+        byte[] topPng = renderer.renderRealisticSidePng(layers, MultiLayerSVGRenderer.Side.TOP, widthPx);
+        byte[] botPng = renderer.renderRealisticSidePng(layers, MultiLayerSVGRenderer.Side.BOTTOM, widthPx);
+
+        assertNotNull(topPng, "Top PNG should not be null");
+        assertNotNull(botPng, "Bottom PNG should not be null");
+        // PNG magic: 89 50 4E 47 0D 0A 1A 0A
+        assertEquals((byte) 0x89, topPng[0], "Missing PNG signature byte 0");
+        assertEquals('P', topPng[1]);
+        assertEquals('N', topPng[2]);
+        assertEquals('G', topPng[3]);
+        // Non-trivial content — an empty PNG header alone is ~70 bytes; real content is > 1 KB
+        assertTrue(topPng.length > 1024, "Top PNG suspiciously small: " + topPng.length);
+        assertTrue(botPng.length > 1024, "Bottom PNG suspiciously small: " + botPng.length);
+
+        // IHDR chunk: bytes 16-19 big-endian = width, 20-23 = height
+        int width = ((topPng[16] & 0xff) << 24) | ((topPng[17] & 0xff) << 16)
+                  | ((topPng[18] & 0xff) << 8)  |  (topPng[19] & 0xff);
+        assertEquals(widthPx, width, "PNG width should match requested widthPx");
+
+        Files.write(OUTPUT_DIR.resolve("thumbnail-top.png"), topPng);
+        Files.write(OUTPUT_DIR.resolve("thumbnail-bottom.png"), botPng);
+        System.out.println("Top PNG: " + topPng.length + " bytes, width=" + width);
+    }
+
+    @Test
+    @Order(13)
+    @DisplayName("renderRealisticSidePng honours explicit width+height and preserves transparency")
+    void testRealisticSidePngExplicitDimensions() throws Exception {
+        if (!Files.exists(DEPR_TEST_DIR)) return;
+
+        Map<String, GerberDocument> docs = loadGerberFiles(
+            "uP-H Main PCBA Assy V04.GKO",
+            "uP-H Main PCBA Assy V04.GTL",
+            "uP-H Main PCBA Assy V04.GTS"
+        );
+
+        List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
+        layers.add(new MultiLayerSVGRenderer.Layer("outline", docs.get("GKO"))
+            .setLayerType(LayerType.OUTLINE));
+        layers.add(new MultiLayerSVGRenderer.Layer("copper-top", docs.get("GTL"))
+            .setLayerType(LayerType.COPPER_TOP));
+        layers.add(new MultiLayerSVGRenderer.Layer("sm-top", docs.get("GTS"))
+            .setLayerType(LayerType.SOLDERMASK_TOP));
+
+        MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer();
+        byte[] png = renderer.renderRealisticSidePng(
+            layers, MultiLayerSVGRenderer.Side.TOP, 300, 200);
+
+        assertNotNull(png);
+        int width  = ((png[16] & 0xff) << 24) | ((png[17] & 0xff) << 16)
+                   | ((png[18] & 0xff) << 8)  |  (png[19] & 0xff);
+        int height = ((png[20] & 0xff) << 24) | ((png[21] & 0xff) << 16)
+                   | ((png[22] & 0xff) << 8)  |  (png[23] & 0xff);
+        assertEquals(300, width, "Explicit width must be honoured");
+        assertEquals(200, height, "Explicit height must be honoured");
+
+        // Colour type byte (IHDR offset 25): 6 = RGBA (transparency supported)
+        assertEquals(6, png[25] & 0xff,
+            "PNG must be RGBA so the outside-outline and drill holes stay transparent");
+
+        // Decode and confirm at least one fully-transparent pixel exists (the
+        // margin around the board outline is empty SVG content → alpha 0).
+        java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(
+            new java.io.ByteArrayInputStream(png));
+        boolean sawTransparent = false;
+        for (int y = 0; y < img.getHeight() && !sawTransparent; y++) {
+            for (int x = 0; x < img.getWidth() && !sawTransparent; x++) {
+                if ((img.getRGB(x, y) >>> 24) == 0) sawTransparent = true;
+            }
+        }
+        assertTrue(sawTransparent,
+            "Expected at least one fully-transparent pixel outside the board outline");
+
+        Files.write(OUTPUT_DIR.resolve("thumbnail-explicit-dims.png"), png);
+    }
+
+    @Test
+    @Order(12)
+    @DisplayName("renderRealisticSidePng returns null when no outline layer is present")
+    void testRealisticSidePngNoOutline() throws Exception {
+        if (!Files.exists(DEPR_TEST_DIR)) return;
+
+        Map<String, GerberDocument> docs = loadGerberFiles("uP-H Main PCBA Assy V04.GTL");
+        List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
+        layers.add(new MultiLayerSVGRenderer.Layer("copper-top", docs.get("GTL"))
+            .setLayerType(LayerType.COPPER_TOP));
+
+        MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer();
+        assertNull(renderer.renderRealisticSidePng(layers, MultiLayerSVGRenderer.Side.TOP, 300));
+    }
+
+    @Test
     @Order(10)
     @DisplayName("Outline built from short (<tolerance) segments still chains into one loop")
     void testOutlineWithShortSegments() throws Exception {

@@ -11,7 +11,13 @@ import com.deltaproto.deltagerber.model.gerber.operation.Contour;
 import com.deltaproto.deltagerber.model.gerber.operation.Draw;
 import com.deltaproto.deltagerber.model.gerber.operation.GraphicsObject;
 import com.deltaproto.deltagerber.model.gerber.operation.Region;
+import org.apache.batik.transcoder.TranscoderException;
+import org.apache.batik.transcoder.TranscoderInput;
+import org.apache.batik.transcoder.TranscoderOutput;
+import org.apache.batik.transcoder.image.PNGTranscoder;
 
+import java.io.ByteArrayOutputStream;
+import java.io.StringReader;
 import java.util.*;
 
 /**
@@ -34,6 +40,9 @@ import java.util.*;
  * </pre>
  */
 public class MultiLayerSVGRenderer {
+
+    /** Which side of the board to render for realistic/thumbnail output. */
+    public enum Side { TOP, BOTTOM }
 
     private double margin = 0.5;
     private boolean flipY = true;
@@ -834,6 +843,209 @@ public class MultiLayerSVGRenderer {
                 svg.append("    ").append(opSvg).append("\n");
             }
         }
+    }
+
+    /**
+     * Render a single-side realistic SVG — the input layer list is automatically
+     * filtered to the outline, drills, and the layers matching the requested side.
+     * <p>
+     * The caller can pass their full layer set (both top and bottom); this method
+     * selects the appropriate subset. Returns {@code null} if no outline layer is
+     * present or the filtered set would have no content.
+     */
+    public String renderRealisticSide(List<Layer> layers, Side side) {
+        List<Layer> sideLayers = filterForSide(layers, side);
+        if (sideLayers == null) return null;
+        return renderRealistic(sideLayers);
+    }
+
+    /**
+     * Render a realistic view of the given side rasterised as a PNG thumbnail
+     * with height auto-derived from the SVG's aspect ratio.
+     * <p>
+     * Intended for project-list cards: for 20–100 projects, inlining full realistic
+     * SVGs (tens of thousands of {@code <use>} elements each) is prohibitively
+     * expensive in a browser — a fixed-size PNG is orders of magnitude smaller and
+     * cheaper to decode.
+     * <p>
+     * The PNG is 8-bit RGBA with transparent background: areas outside the board
+     * outline and through drill holes are fully transparent, so the thumbnail can
+     * be composited onto any card/background colour.
+     *
+     * @param layers  the full layer set (both sides may be present; the side is
+     *                selected automatically)
+     * @param side    which side to render
+     * @param widthPx target PNG width in pixels; height follows aspect ratio
+     * @return PNG bytes, or {@code null} if the side couldn't be rendered (e.g.
+     *         no outline layer)
+     * @throws IllegalArgumentException if widthPx is not positive
+     * @throws RuntimeException         if SVG rasterisation fails
+     */
+    public byte[] renderRealisticSidePng(List<Layer> layers, Side side, int widthPx) {
+        return renderRealisticSidePng(layers, side, widthPx, 0);
+    }
+
+    /**
+     * Render a realistic-view PNG at explicit dimensions.
+     * <p>
+     * When one of {@code widthPx}/{@code heightPx} is {@code <= 0} it is derived
+     * from the other using the board's X/Y extent (outline bounds plus a
+     * thumbnail-scaled margin) so the PNG's aspect ratio matches the board.
+     * When both are given, the board is fitted into that box with
+     * {@code preserveAspectRatio="xMidYMid meet"} — letterboxed to match.
+     *
+     * @param layers   full layer set (both sides may be present)
+     * @param side     which side to render
+     * @param widthPx  target width in pixels, or {@code <= 0} to derive from height
+     * @param heightPx target height in pixels, or {@code <= 0} to derive from width
+     * @return PNG bytes, or {@code null} if the side couldn't be rendered
+     * @throws IllegalArgumentException if both dimensions are {@code <= 0}
+     */
+    public byte[] renderRealisticSidePng(List<Layer> layers, Side side,
+                                         int widthPx, int heightPx) {
+        if (widthPx <= 0 && heightPx <= 0) {
+            throw new IllegalArgumentException(
+                "At least one of widthPx/heightPx must be positive");
+        }
+        // Thumbnails want a more generous, visible margin than the default 0.5 mm
+        // used for overlay/DRC work — scale with board size so small and large
+        // boards both get visible breathing room around the outline.
+        double prevMargin = this.margin;
+        this.margin = computeThumbnailMargin(layers);
+        String svg;
+        try {
+            svg = renderRealisticSide(layers, side);
+        } finally {
+            this.margin = prevMargin;
+        }
+        if (svg == null) return null;
+
+        // Derive the missing dimension from the SVG's viewBox so the PNG's
+        // aspect ratio exactly matches the board's X/Y extent (plus margin).
+        // Passing both dimensions explicitly avoids any ambiguity in how
+        // Batik resolves a single KEY_WIDTH/KEY_HEIGHT hint.
+        if (widthPx <= 0 || heightPx <= 0) {
+            double[] vb = parseViewBox(svg);
+            if (vb != null && vb[2] > 0 && vb[3] > 0) {
+                double aspect = vb[2] / vb[3];
+                if (widthPx <= 0)  widthPx  = Math.max(1, (int) Math.round(heightPx * aspect));
+                if (heightPx <= 0) heightPx = Math.max(1, (int) Math.round(widthPx / aspect));
+            }
+        }
+        return rasterizeSvgToPng(svg, widthPx, heightPx);
+    }
+
+    /** 3% of the max outline dimension, floored at 1.5 mm. */
+    private static double computeThumbnailMargin(List<Layer> layers) {
+        BoundingBox bb = null;
+        for (Layer l : layers) {
+            if (l.getLayerType() == LayerType.OUTLINE) {
+                bb = l.getBoundingBox();
+                break;
+            }
+        }
+        if (bb == null || !bb.isValid()) return 1.5;
+        double maxDim = Math.max(bb.getWidth(), bb.getHeight());
+        return Math.max(1.5, maxDim * 0.03);
+    }
+
+    private static double[] parseViewBox(String svg) {
+        int i = svg.indexOf("viewBox=\"");
+        if (i < 0) return null;
+        int start = i + 9;
+        int end = svg.indexOf('"', start);
+        if (end < 0) return null;
+        String[] parts = svg.substring(start, end).trim().split("\\s+");
+        if (parts.length != 4) return null;
+        try {
+            double[] out = new double[4];
+            for (int k = 0; k < 4; k++) out[k] = Double.parseDouble(parts[k]);
+            return out;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Rasterise an SVG string to a PNG. Either dimension can be {@code <= 0}
+     * to mean "derive from the other via aspect ratio". The SVG's
+     * {@code preserveAspectRatio} setting controls how the image fits when
+     * both dimensions are given.
+     */
+    public static byte[] rasterizeSvgToPng(String svg, int widthPx, int heightPx) {
+        if (widthPx <= 0 && heightPx <= 0) {
+            throw new IllegalArgumentException(
+                "At least one of widthPx/heightPx must be positive");
+        }
+        PNGTranscoder transcoder = new PNGTranscoder();
+        if (widthPx > 0)  transcoder.addTranscodingHint(PNGTranscoder.KEY_WIDTH,  (float) widthPx);
+        if (heightPx > 0) transcoder.addTranscodingHint(PNGTranscoder.KEY_HEIGHT, (float) heightPx);
+        String batikSvg = makeBatikCompatible(svg);
+        TranscoderInput input = new TranscoderInput(new StringReader(batikSvg));
+        int buf = Math.max(widthPx, heightPx) * 32;
+        ByteArrayOutputStream out = new ByteArrayOutputStream(buf > 0 ? buf : 16384);
+        TranscoderOutput output = new TranscoderOutput(out);
+        try {
+            transcoder.transcode(input, output);
+        } catch (TranscoderException e) {
+            throw new RuntimeException("SVG→PNG rasterisation failed", e);
+        }
+        return out.toByteArray();
+    }
+
+    /** Width-only convenience overload — height follows aspect ratio. */
+    public static byte[] rasterizeSvgToPng(String svg, int widthPx) {
+        return rasterizeSvgToPng(svg, widthPx, 0);
+    }
+
+    /**
+     * Rewrite the SVG so Batik (which enforces SVG 1.1) accepts our SVG 2 output:
+     * declare the xlink namespace on the root and swap bare {@code href=} on
+     * {@code <use>} elements to {@code xlink:href=}. Browsers accept either, so
+     * we only do this when handing the SVG to Batik.
+     */
+    private static String makeBatikCompatible(String svg) {
+        // Add xmlns:xlink to root <svg> if not already present.
+        String out = svg;
+        if (!out.contains("xmlns:xlink=")) {
+            int svgTagEnd = out.indexOf("<svg");
+            if (svgTagEnd >= 0) {
+                int insertAt = out.indexOf(' ', svgTagEnd);
+                if (insertAt >= 0) {
+                    out = out.substring(0, insertAt)
+                        + " xmlns:xlink=\"http://www.w3.org/1999/xlink\""
+                        + out.substring(insertAt);
+                }
+            }
+        }
+        // Replace `href="#...` with `xlink:href="#...` inside <use> attrs. The
+        // realistic/multi-layer SVGs only use href on <use> elements (aperture
+        // references), so a global swap is safe.
+        out = out.replace("<use href=\"", "<use xlink:href=\"");
+        return out;
+    }
+
+    private static List<Layer> filterForSide(List<Layer> allLayers, Side side) {
+        List<Layer> out = new ArrayList<>();
+        boolean hasOutline = false;
+        for (Layer layer : allLayers) {
+            LayerType lt = layer.getLayerType();
+            if (lt == LayerType.OUTLINE) {
+                out.add(layer);
+                hasOutline = true;
+            } else if (side == Side.TOP && (lt == LayerType.COPPER_TOP
+                    || lt == LayerType.SOLDERMASK_TOP || lt == LayerType.SILKSCREEN_TOP)) {
+                out.add(layer);
+            } else if (side == Side.BOTTOM && (lt == LayerType.COPPER_BOTTOM
+                    || lt == LayerType.SOLDERMASK_BOTTOM || lt == LayerType.SILKSCREEN_BOTTOM)) {
+                out.add(layer);
+            } else if (lt == LayerType.DRILL || lt == LayerType.DRILL_PLATED
+                    || lt == LayerType.DRILL_NON_PLATED) {
+                out.add(layer);
+            }
+        }
+        if (!hasOutline || out.size() < 2) return null;
+        return out;
     }
 
     /**
