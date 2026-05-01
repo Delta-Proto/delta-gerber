@@ -2,6 +2,7 @@ package com.deltaproto.deltagerber;
 
 import com.deltaproto.deltagerber.model.gerber.*;
 import com.deltaproto.deltagerber.model.gerber.aperture.*;
+import com.deltaproto.deltagerber.model.gerber.aperture.MacroAperture;
 import com.deltaproto.deltagerber.model.gerber.operation.*;
 import com.deltaproto.deltagerber.parser.GerberParser;
 import com.deltaproto.deltagerber.renderer.svg.SVGRenderer;
@@ -207,13 +208,12 @@ public class GerberParserTest {
 
         GerberDocument doc = parser.parse(gerber);
 
-        // Check macro template was stored
-        assertNotNull(doc.getMacroTemplate("ROUNDRECT"));
-
-        // Check aperture was created
-        Aperture ap10 = doc.getAperture(10);
-        assertNotNull(ap10);
-        assertEquals("ROUNDRECT", ap10.getTemplateCode());
+        // Check macro template was stored and body primitives were not discarded
+        MacroAperture ap10Template = (MacroAperture) doc.getAperture(10);
+        assertNotNull(ap10Template);
+        assertEquals("ROUNDRECT", ap10Template.getTemplateCode());
+        assertEquals(5, ap10Template.getTemplate().getPrimitives().size(),
+            "macro body must survive lexer tokenisation (1 rect + 4 circles)");
 
         // Check we have a flash operation
         assertEquals(1, doc.getObjects().size());
@@ -236,10 +236,111 @@ public class GerberParserTest {
 
         GerberDocument doc = parser.parse(gerber);
 
-        assertNotNull(doc.getMacroTemplate("TARGET"));
-        Aperture ap15 = doc.getAperture(15);
+        MacroAperture ap15 = (MacroAperture) doc.getAperture(15);
         assertNotNull(ap15);
         assertEquals("TARGET", ap15.getTemplateCode());
+        assertEquals(2, ap15.getTemplate().getPrimitives().size(),
+            "TARGET macro must retain both circle primitives");
+    }
+
+    @Test
+    void testMacroApertureDefDoesNotBakeCurrentColor() {
+        // Regression: macro primitive shapes used to emit fill="currentColor" in their SVG.
+        // In SVG, currentColor reads the CSS `color` property, not `fill`, so
+        // <use fill="white"> in the cf-mask (copper-finish mask) left primitives black —
+        // no gold showed through at RoundRect pad positions in the realistic render.
+        // After the fix, toSvgDef strips fill="currentColor" so shapes inherit fill from <use>.
+        String gerber = """
+            %FSLAX46Y46*%
+            %MOMM*%
+            %AMRoundRect*
+            4,1,4,$2,$3,$4,$5,$6,$7,$8,$9,$2,$3,0*
+            1,1,$1+$1,$2,$3*
+            20,1,$1+$1,$2,$3,$4,$5,0*%
+            %ADD10RoundRect,0.150000X-0.175000X-0.200000X0.175000X-0.200000X0.175000X0.200000X-0.175000X0.200000X0*%
+            D10*
+            X0Y0D03*
+            M02*
+            """;
+
+        MacroAperture ap = (MacroAperture) new GerberParser().parse(gerber).getAperture(10);
+        String def = ap.toSvgDef("D10", new com.deltaproto.deltagerber.renderer.svg.SvgOptions());
+        assertFalse(def.contains("fill=\"currentColor\""),
+            "macro aperture SVG def must not contain fill=\"currentColor\" — " +
+            "it prevents fill from <use> elements (e.g., cf-mask fill=\"white\") from cascading in");
+        assertFalse(def.equals("<g id=\"D10\"></g>"),
+            "def must contain non-empty primitive shapes");
+    }
+
+    @Test
+    void testKiCadRoundRectMacroBodyNotDiscarded() {
+        // Regression: the lexer used to split every %...% block by '*', which stripped
+        // the aperture macro body (each statement is '*'-terminated within the block).
+        // The KiCad variant uses a single %AM...body...*% block (not a bare '%' closer).
+        // After the fix, all 9 primitives (1 outline polygon, 4 circles, 4 vector-lines)
+        // must survive tokenisation and produce non-empty SVG defs.
+        String gerber = """
+            %FSLAX46Y46*%
+            %MOMM*%
+            %AMRoundRect*
+            0 Rectangle with rounded corners*
+            0 $1 Rounding radius*
+            0 $2 $3 $4 $5 $6 $7 $8 $9 X,Y pos of 4 corners*
+            4,1,4,$2,$3,$4,$5,$6,$7,$8,$9,$2,$3,0*
+            1,1,$1+$1,$2,$3*
+            1,1,$1+$1,$4,$5*
+            1,1,$1+$1,$6,$7*
+            1,1,$1+$1,$8,$9*
+            20,1,$1+$1,$2,$3,$4,$5,0*
+            20,1,$1+$1,$4,$5,$6,$7,0*
+            20,1,$1+$1,$6,$7,$8,$9,0*
+            20,1,$1+$1,$8,$9,$2,$3,0*%
+            %ADD10RoundRect,0.150000X-0.175000X-0.200000X0.175000X-0.200000X0.175000X0.200000X-0.175000X0.200000X0*%
+            D10*
+            X1750000Y1750000D03*
+            M02*
+            """;
+
+        GerberDocument doc = parser.parse(gerber);
+
+        MacroAperture ap = (MacroAperture) doc.getAperture(10);
+        assertNotNull(ap);
+        assertEquals("RoundRect", ap.getTemplateCode());
+        assertEquals(9, ap.getTemplate().getPrimitives().size(),
+            "KiCad RoundRect: 1 outline + 4 circles + 4 vector-lines");
+        assertFalse(ap.toSvgDef("D10", new com.deltaproto.deltagerber.renderer.svg.SvgOptions()).equals("<g id=\"D10\"></g>"),
+            "SVG def must not be empty after macro body is parsed");
+        assertEquals(1, doc.getObjects().size());
+    }
+
+    @Test
+    void testMultiLineMacroPrimitiveBody() {
+        // Regression: a macro primitive whose parameter list spans multiple lines
+        // (like KiCad's FreePoly outline with many vertices) must be parsed correctly.
+        // The newlines inside the parameter list must not confuse the split-by-'*' logic.
+        String gerber = """
+            %FSLAX46Y46*%
+            %MOMM*%
+            %AMFreePoly*
+            4,1,3,
+            0.100000,0.000000,
+            -0.050000,0.086603,
+            -0.050000,-0.086603,
+            0.100000,0.000000,0*%
+            %ADD10FreePoly,0*%
+            D10*
+            X0Y0D03*
+            M02*
+            """;
+
+        GerberDocument doc = parser.parse(gerber);
+
+        MacroAperture ap = (MacroAperture) doc.getAperture(10);
+        assertNotNull(ap);
+        assertEquals("FreePoly", ap.getTemplateCode());
+        assertEquals(1, ap.getTemplate().getPrimitives().size(),
+            "multi-line outline primitive must be parsed as a single primitive");
+        assertEquals(1, doc.getObjects().size());
     }
 
     @Test

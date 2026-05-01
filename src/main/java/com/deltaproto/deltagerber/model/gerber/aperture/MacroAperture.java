@@ -62,7 +62,13 @@ public class MacroAperture extends Aperture {
         for (MacroPrimitive primitive : template.getPrimitives()) {
             String primSvg = primitive.toSvg(evaluatedVariables, options, unitFactor);
             if (primSvg != null && !primSvg.isEmpty()) {
-                svg.append(primSvg);
+                // Primitives render fill="currentColor" (the sentinel used for defs).
+                // In SVG, currentColor reads the CSS `color` property — not `fill` — so
+                // fill="white" on a <use> element does NOT cascade into the shapes.
+                // Removing the fill attribute lets shapes inherit fill from the <use>,
+                // which is the correct behaviour for both normal rendering and mask contexts
+                // (sm-mask uses fill="black", cf-mask uses fill="white").
+                svg.append(primSvg.replace(" fill=\"currentColor\"", ""));
             }
         }
 

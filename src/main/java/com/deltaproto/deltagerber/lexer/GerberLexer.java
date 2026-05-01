@@ -53,7 +53,15 @@ public class GerberLexer {
 
             // A single %...% block can contain multiple commands separated by *.
             // e.g. %FSLAX25Y25*MOIN*% contains both a format spec and a unit command.
+            // Exception: aperture macro blocks use * as statement terminators within
+            // the body, so the whole block must be kept as one token.
             String blockContent = extMatcher.group(1);
+            if (blockContent.trim().startsWith("AM")) {
+                extendedTokens.add(new PositionedToken(
+                    new Token(TokenType.APERTURE_MACRO, blockContent.trim(), lineNum), position));
+                lastEnd = extMatcher.end();
+                continue;
+            }
             String[] commands = blockContent.split("\\*");
             for (String cmd : commands) {
                 cmd = cmd.trim();
