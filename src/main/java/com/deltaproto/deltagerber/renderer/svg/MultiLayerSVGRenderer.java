@@ -377,7 +377,8 @@ public class MultiLayerSVGRenderer {
 
         if (hasOutlinePath) {
             svg.append("  <clipPath id=\"board-outline\">\n");
-            svg.append(String.format("    <path d=\"%s\"/>\n", outlinePath));
+            // evenodd so region cutouts inside the stroked outline subtract as holes.
+            svg.append(String.format("    <path d=\"%s\" fill-rule=\"evenodd\"/>\n", outlinePath));
             svg.append("  </clipPath>\n");
         }
 
@@ -454,7 +455,7 @@ public class MultiLayerSVGRenderer {
             // sm-mask: board outline white, soldermask objects black = where mask IS present
             svg.append(String.format("  <mask id=\"%s\">\n", smMaskId));
             if (hasOutlinePath) {
-                svg.append(String.format("    <path d=\"%s\" fill=\"white\"/>\n", outlinePath));
+                svg.append(String.format("    <path d=\"%s\" fill=\"white\" fill-rule=\"evenodd\"/>\n", outlinePath));
             } else {
                 // No outline path — use full viewbox rect as mask base
                 svg.append(String.format("    <rect %s fill=\"white\"/>\n", fullRectAttrs));
@@ -677,19 +678,27 @@ public class MultiLayerSVGRenderer {
     private String extractOutlinePath(GerberDocument outlineDoc, SvgOptions options) {
         List<GraphicsObject> objects = outlineDoc.getObjects();
 
-        // Prefer regions — they're already filled closed paths
-        StringBuilder regionPaths = new StringBuilder();
+        // Region contours (G36/G37) are already closed filled paths. Collect each
+        // contour as a standalone subpath. Two layouts occur in the wild:
+        //   1. The board profile is expressed *entirely* as regions (outer contour
+        //      plus inner hole contours). With no stroked profile present these
+        //      regions ARE the outline.
+        //   2. The board profile is stroked (D02/D01 draws/arcs) and the regions
+        //      are cutouts/holes punched inside it (e.g. Altium emits internal
+        //      rounded-rectangle openings this way).
+        // We keep the regions separate from the stroked chain and emit the combined
+        // path under the evenodd fill rule (set on the clip path and mask base), so
+        // regions inside the stroked outline subtract as holes rather than being the
+        // only thing drawn. Returning regions alone (the previous behaviour) made the
+        // board clip to just the holes — inverting the realistic view.
+        List<String> regionSubpaths = new ArrayList<>();
         for (GraphicsObject obj : objects) {
             if (obj instanceof Region) {
                 Region region = (Region) obj;
                 for (Contour contour : region.getContours()) {
-                    if (regionPaths.length() > 0) regionPaths.append(" ");
-                    regionPaths.append(contour.toSvgPath(options));
+                    regionSubpaths.add(contour.toSvgPath(options));
                 }
             }
-        }
-        if (regionPaths.length() > 0) {
-            return regionPaths.toString();
         }
 
         List<Segment> segments = new ArrayList<>();
@@ -705,7 +714,10 @@ public class MultiLayerSVGRenderer {
                     a.getRadius(), a.isClockwise()));
             }
         }
-        if (segments.isEmpty()) return "";
+        if (segments.isEmpty()) {
+            // No stroked profile — the regions (if any) are the entire outline.
+            return String.join(" ", regionSubpaths).trim();
+        }
 
         // Overall bounding box of all segments — used below to identify the outer
         // panel frame rectangle. Panels (e.g. flex-PCB production panels) include an
@@ -858,7 +870,20 @@ public class MultiLayerSVGRenderer {
             path.append(subpathList.get(i));
         }
 
-        return path.toString().trim();
+        // Prepend region subpaths (holes/cutouts inside the stroked profile). Under
+        // the evenodd fill rule of the clip path / mask base they punch through the
+        // outline interior instead of being drawn as the only shape.
+        StringBuilder combined = new StringBuilder();
+        for (String regionSubpath : regionSubpaths) {
+            if (combined.length() > 0) combined.append(" ");
+            combined.append(regionSubpath);
+        }
+        if (path.length() > 0) {
+            if (combined.length() > 0) combined.append(" ");
+            combined.append(path);
+        }
+
+        return combined.toString().trim();
     }
 
     private static double distSq(double ax, double ay, double bx, double by) {
