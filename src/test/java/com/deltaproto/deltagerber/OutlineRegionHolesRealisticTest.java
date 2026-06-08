@@ -85,10 +85,12 @@ public class OutlineRegionHolesRealisticTest {
         String d = m.group(1);
         String pathAttrs = m.group(2);
 
-        // The clip must use even-odd so the regions subtract as holes rather than
-        // (under nonzero winding) cancelling the outline or filling solid.
-        assertTrue(pathAttrs.contains("fill-rule=\"evenodd\""),
-            "board-outline clip path must use fill-rule=evenodd, was: " + pathAttrs);
+        // A clipPath child is governed by clip-rule, NOT fill-rule (SVG ignores
+        // fill-rule here). It must be evenodd so the regions clip away as holes
+        // rather than — under the default nonzero winding — letting the grey FR4
+        // substrate fill them.
+        assertTrue(pathAttrs.contains("clip-rule=\"evenodd\""),
+            "board-outline clip path must use clip-rule=evenodd, was: " + pathAttrs);
 
         // It must contain the stroked edge AND both windows: three subpaths. The
         // pre-fix renderer dropped the stroked edge and kept only the windows.

@@ -377,8 +377,7 @@ public class MultiLayerSVGRenderer {
 
         if (hasOutlinePath) {
             svg.append("  <clipPath id=\"board-outline\">\n");
-            // evenodd so region cutouts inside the stroked outline subtract as holes.
-            svg.append(String.format("    <path d=\"%s\" fill-rule=\"evenodd\"/>\n", outlinePath));
+            svg.append(String.format("    <path d=\"%s\" clip-rule=\"evenodd\"/>\n", outlinePath));
             svg.append("  </clipPath>\n");
         }
 
