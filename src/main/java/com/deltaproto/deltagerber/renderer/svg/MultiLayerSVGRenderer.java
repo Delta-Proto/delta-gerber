@@ -260,6 +260,16 @@ public class MultiLayerSVGRenderer {
     // typical PCB outline feature sizes (drills, slots, tabs are ≥0.3 mm).
     private static final double OUTLINE_CHAIN_TOLERANCE_MM = 0.1;
 
+    // A subpath that spans the overall bounds is treated as an outer panel frame (and
+    // dropped) only when another subpath reaches at least this fraction of its area —
+    // the actual board nested inside the frame. Below it, the spanning subpath is the
+    // board itself and its smaller neighbours are holes/slots, so it is kept.
+    private static final double FRAME_BOARD_MIN_FRACTION = 0.5;
+
+    // Coincidence tolerance for collapsing duplicate (re-emitted) profile segments.
+    // Far tighter than the chain tolerance so genuinely distinct short segments survive.
+    private static final double DEDUPE_TOLERANCE_MM = 0.001;
+
     // Default realistic PCB colors (matches typical PCB viewer rendering)
     private static final String FR4_COLOR = "#666666";           // Dark gray substrate
     private static final String COPPER_COLOR = "#cccccc";         // Silver/gray copper under soldermask
@@ -718,13 +728,22 @@ public class MultiLayerSVGRenderer {
             return String.join(" ", regionSubpaths).trim();
         }
 
-        // Overall bounding box of all segments — used below to identify the outer
-        // panel frame rectangle. Panels (e.g. flex-PCB production panels) include an
-        // outer rectangular frame in the outline layer in addition to the actual PCB
-        // outline. When both form closed loops in the clip path, the nonzero fill rule
-        // cancels their opposing windings in the PCB interior, making the board
-        // invisible. We detect the frame by its bounding box matching the overall
-        // bounds and exclude it from the final path.
+        double toleranceSq = OUTLINE_CHAIN_TOLERANCE_MM * OUTLINE_CHAIN_TOLERANCE_MM;
+
+        // Some tools (notably Altium) emit the profile twice — identical, overlapping
+        // segments. Under the evenodd clip rule a doubled loop cancels itself and the
+        // board disappears, so collapse exact duplicate segments first. This uses a
+        // tight coincidence tolerance (not the chain tolerance): duplicates are bit-for-
+        // bit re-emitted coordinates, and a loose tolerance would wrongly fuse distinct
+        // sub-tolerance segments (mouse-bite teeth, arc-approx polylines).
+        double dedupeTolSq = DEDUPE_TOLERANCE_MM * DEDUPE_TOLERANCE_MM;
+        segments = dedupeSegments(segments, dedupeTolSq);
+
+        // Overall bounding box of all (deduped) segments — used below to identify the
+        // outer panel frame rectangle. Panels (e.g. flex-PCB production panels) carry an
+        // outer rectangular frame in the outline layer in addition to the PCB outline;
+        // under evenodd it would turn the board interior into a ring, so we detect it by
+        // its bounding box matching the overall bounds and exclude it.
         double allMinX = Double.MAX_VALUE, allMinY = Double.MAX_VALUE;
         double allMaxX = -Double.MAX_VALUE, allMaxY = -Double.MAX_VALUE;
         for (Segment s : segments) {
@@ -734,135 +753,45 @@ public class MultiLayerSVGRenderer {
             allMaxY = Math.max(allMaxY, Math.max(s.startY, s.endY));
         }
 
-        double toleranceSq = OUTLINE_CHAIN_TOLERANCE_MM * OUTLINE_CHAIN_TOLERANCE_MM;
+        // Outline / mechanical layers frequently carry more than the board edge —
+        // stroked text ("Do not forget the cut-out"), dimension lines, internal slots.
+        // Group the segments into connected components (shared endpoints or T-junctions)
+        // and chain each component into a single subpath. Chaining a whole component at
+        // once bridges small gaps in the edge (some tools omit a short closing edge)
+        // instead of shattering the loop into overlapping force-closed pieces; the
+        // component split then lets us keep the board and drop the decorative noise.
+        List<List<Segment>> components = groupConnectedSegments(segments, toleranceSq);
 
-        // Collect subpaths separately so we can filter out the outer panel frame.
         List<String> subpathList = new ArrayList<>();
         List<double[]> subpathBoundsList = new ArrayList<>();  // [minX, minY, maxX, maxY]
         List<Boolean> subpathHasArcList = new ArrayList<>();
-
-        // Index-based so we can safely append near-half splits to segments mid-iteration.
-        for (int si = 0; si < segments.size(); si++) {
-            Segment seed = segments.get(si);
-            if (seed.used) continue;
-            seed.used = true;
-
-            StringBuilder subpath = new StringBuilder();
-            double loopStartX = seed.startX;
-            double loopStartY = seed.startY;
-            subpath.append(String.format(Locale.US, "M %.6f %.6f", loopStartX, loopStartY));
-            appendSegment(subpath, seed, false, options);
-            double headX = seed.endX;
-            double headY = seed.endY;
-
-            double spMinX = Math.min(seed.startX, seed.endX);
-            double spMinY = Math.min(seed.startY, seed.endY);
-            double spMaxX = Math.max(seed.startX, seed.endX);
-            double spMaxY = Math.max(seed.startY, seed.endY);
-            boolean spHasArc = seed.isArc;
-
-            // Chain greedily: at each step pick the best unused segment whose endpoint
-            // meets the head within tolerance. Close only once no such continuation
-            // exists that is at least as close as the loop start — this prevents two
-            // failure modes:
-            //   1. A short seed (< tolerance length) short-circuits loop closure on
-            //      iteration 0 — e.g. mouse-bite teeth, V-score rails, arc-approx
-            //      polylines. Must leave the tolerance ball before closure counts.
-            //   2. A chain built from short segments hits a point one segment before
-            //      the true close that happens to lie ≤ tolerance from the start —
-            //      we must prefer extending if an unused segment continues the chain
-            //      at least as well as snapping back to the start would.
-            boolean leftToleranceBall = false;
-            while (true) {
-                Segment next = null;
-                boolean reverse = false;
-                double bestSq = toleranceSq;
-                for (Segment s : segments) {
-                    if (s.used) continue;
-                    double d1 = distSq(s.startX, s.startY, headX, headY);
-                    if (d1 < bestSq) {
-                        bestSq = d1; next = s; reverse = false;
-                    }
-                    double d2 = distSq(s.endX, s.endY, headX, headY);
-                    if (d2 < bestSq) {
-                        bestSq = d2; next = s; reverse = true;
-                    }
-                }
-                double headDistSq = distSq(headX, headY, loopStartX, loopStartY);
-                if (leftToleranceBall && headDistSq <= toleranceSq
-                        && (next == null || bestSq >= headDistSq)) {
-                    break; // loop closed — no better continuation than snapping back
-                }
-                if (next == null) {
-                    // T-intersection fallback: the head may lie on the interior of a
-                    // collinear segment (not at its endpoints). This occurs in flex-PCB
-                    // or panel outlines where adjacent rigid/flex boundary segments
-                    // overlap — e.g. a top-tab left edge (y=79–91) and a flex-body
-                    // left edge (y=70–84) share the y=79–84 range. Endpoint matching
-                    // fails because neither endpoint of the lower segment is within
-                    // tolerance of the chain head. We detect the T-junction, split the
-                    // overlapping segment, continue toward the farther endpoint, and put
-                    // the near-half back into the pool for later pickup.
-                    Segment tSeg = findTIntersection(segments, headX, headY, toleranceSq);
-                    if (tSeg != null) {
-                        tSeg.used = true;
-                        double d1sq = distSq(tSeg.startX, tSeg.startY, headX, headY);
-                        double d2sq = distSq(tSeg.endX, tSeg.endY, headX, headY);
-                        double farX, farY, nearX, nearY;
-                        if (d1sq > d2sq) {
-                            farX = tSeg.startX; farY = tSeg.startY;
-                            nearX = tSeg.endX;  nearY = tSeg.endY;
-                        } else {
-                            farX = tSeg.endX;   farY = tSeg.endY;
-                            nearX = tSeg.startX; nearY = tSeg.startY;
-                        }
-                        // Return the near half to the pool so it can be picked up later.
-                        segments.add(Segment.draw(headX, headY, nearX, nearY));
-                        subpath.append(String.format(Locale.US, " L %.6f %.6f", farX, farY));
-                        headX = farX;
-                        headY = farY;
-                        spMinX = Math.min(spMinX, headX); spMinY = Math.min(spMinY, headY);
-                        spMaxX = Math.max(spMaxX, headX); spMaxY = Math.max(spMaxY, headY);
-                        if (!leftToleranceBall
-                                && distSq(headX, headY, loopStartX, loopStartY) > toleranceSq) {
-                            leftToleranceBall = true;
-                        }
-                        continue;
-                    }
-                    break; // open loop — emit Z anyway to let SVG fill it
-                }
-                next.used = true;
-                appendSegment(subpath, next, reverse, options);
-                headX = reverse ? next.startX : next.endX;
-                headY = reverse ? next.startY : next.endY;
-                spMinX = Math.min(spMinX, headX); spMinY = Math.min(spMinY, headY);
-                spMaxX = Math.max(spMaxX, headX); spMaxY = Math.max(spMaxY, headY);
-                if (next.isArc) spHasArc = true;
-                if (!leftToleranceBall
-                    && distSq(headX, headY, loopStartX, loopStartY) > toleranceSq) {
-                    leftToleranceBall = true;
-                }
-            }
-            subpath.append(" Z");
-
-            subpathList.add(subpath.toString());
-            subpathBoundsList.add(new double[]{spMinX, spMinY, spMaxX, spMaxY});
-            subpathHasArcList.add(spHasArc);
+        for (List<Segment> component : components) {
+            chainComponent(component, options, toleranceSq,
+                subpathList, subpathBoundsList, subpathHasArcList);
         }
 
-        // When there are multiple subpaths, filter out any non-arc subpath whose
-        // bounding box equals the overall bounding box — that is the outer panel frame
-        // rectangle. Keeping it causes its winding to cancel the PCB outline's winding
-        // under the nonzero fill rule, making the board interior transparent.
+        // Drop the outer panel frame: a non-arc subpath whose bounding box equals the
+        // overall bounds AND that encloses another comparably large subpath — the real
+        // board nested inside the frame. Keeping it would, under evenodd, turn the board
+        // into a ring. The size test is what separates a true frame (board fills most of
+        // it) from an ordinary board whose own edge defines the overall bounds and whose
+        // other subpaths are merely small holes/slots — that board must be kept.
         double bbTol = OUTLINE_CHAIN_TOLERANCE_MM;
+        // Keep every remaining component. The board edge, real internal cut-outs, and
+        // any small stroked text or dimension marks the layer carries all go into the
+        // clip. Stray marks render as harmless little filled features; keeping them is
+        // more robust than guessing what is decorative, and it can never drop a genuine
+        // but small board section (e.g. a second board on a panel).
         StringBuilder path = new StringBuilder();
         for (int i = 0; i < subpathList.size(); i++) {
             double[] sb = subpathBoundsList.get(i);
-            if (subpathList.size() > 1 && !subpathHasArcList.get(i)
+            boolean spansOverall = !subpathHasArcList.get(i)
                     && Math.abs(sb[0] - allMinX) <= bbTol
                     && Math.abs(sb[1] - allMinY) <= bbTol
                     && Math.abs(sb[2] - allMaxX) <= bbTol
-                    && Math.abs(sb[3] - allMaxY) <= bbTol) {
+                    && Math.abs(sb[3] - allMaxY) <= bbTol;
+            if (subpathList.size() > 1 && spansOverall && hasComparableInnerSubpath(
+                    subpathBoundsList, i, FRAME_BOARD_MIN_FRACTION)) {
                 continue; // outer panel frame rectangle — skip
             }
             if (path.length() > 0) path.append(" ");
@@ -915,6 +844,253 @@ public class MultiLayerSVGRenderer {
             if (px * px + py * py <= toleranceSq) return s;
         }
         return null;
+    }
+
+    /** True if some subpath other than {@code frameIdx} has at least {@code fraction}
+     * of the frame candidate's bounding-box area — i.e. a real board nested in a frame. */
+    private static boolean hasComparableInnerSubpath(List<double[]> bounds, int frameIdx,
+                                                     double fraction) {
+        double[] f = bounds.get(frameIdx);
+        double frameArea = (f[2] - f[0]) * (f[3] - f[1]);
+        if (frameArea <= 0) return false;
+        for (int j = 0; j < bounds.size(); j++) {
+            if (j == frameIdx) continue;
+            double[] b = bounds.get(j);
+            double area = (b[2] - b[0]) * (b[3] - b[1]);
+            if (area >= fraction * frameArea) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Remove exact duplicate segments (same endpoints in either direction, same
+     * arc geometry) within {@link #OUTLINE_CHAIN_TOLERANCE_MM}. Some EDA tools emit
+     * the board profile twice; left in place, a doubled loop cancels itself under the
+     * evenodd clip rule and the board renders empty.
+     */
+    private static List<Segment> dedupeSegments(List<Segment> segments, double toleranceSq) {
+        List<Segment> out = new ArrayList<>();
+        for (Segment s : segments) {
+            boolean dup = false;
+            for (Segment k : out) {
+                if (s.isArc != k.isArc) continue;
+                boolean sameDir = distSq(s.startX, s.startY, k.startX, k.startY) <= toleranceSq
+                               && distSq(s.endX, s.endY, k.endX, k.endY) <= toleranceSq;
+                boolean revDir = distSq(s.startX, s.startY, k.endX, k.endY) <= toleranceSq
+                              && distSq(s.endX, s.endY, k.startX, k.startY) <= toleranceSq;
+                if (sameDir || revDir) { dup = true; break; }
+            }
+            if (!dup) out.add(s);
+        }
+        return out;
+    }
+
+    /**
+     * Group segments into connected components: two segments share a component when an
+     * endpoint of one is within {@link #OUTLINE_CHAIN_TOLERANCE_MM} of an endpoint or
+     * the interior (T-junction) of the other. The board edge, each text glyph, and each
+     * floating mark each form their own component.
+     */
+    private static List<List<Segment>> groupConnectedSegments(List<Segment> segments,
+                                                              double toleranceSq) {
+        int n = segments.size();
+        int[] parent = new int[n];
+        for (int i = 0; i < n; i++) parent[i] = i;
+        for (int i = 0; i < n; i++) {
+            for (int j = i + 1; j < n; j++) {
+                if (segmentsConnected(segments.get(i), segments.get(j), toleranceSq)) {
+                    int ri = find(parent, i), rj = find(parent, j);
+                    if (ri != rj) parent[ri] = rj;
+                }
+            }
+        }
+        Map<Integer, List<Segment>> groups = new LinkedHashMap<>();
+        for (int i = 0; i < n; i++) {
+            groups.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(segments.get(i));
+        }
+        return new ArrayList<>(groups.values());
+    }
+
+    private static int find(int[] parent, int i) {
+        while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+        return i;
+    }
+
+    private static boolean segmentsConnected(Segment a, Segment b, double toleranceSq) {
+        if (distSq(a.startX, a.startY, b.startX, b.startY) <= toleranceSq
+         || distSq(a.startX, a.startY, b.endX, b.endY) <= toleranceSq
+         || distSq(a.endX, a.endY, b.startX, b.startY) <= toleranceSq
+         || distSq(a.endX, a.endY, b.endX, b.endY) <= toleranceSq) {
+            return true;
+        }
+        // Endpoint-on-interior (T-junctions) — arcs are treated as their chord here.
+        return pointOnSegment(b, a.startX, a.startY, toleranceSq)
+            || pointOnSegment(b, a.endX, a.endY, toleranceSq)
+            || pointOnSegment(a, b.startX, b.startY, toleranceSq)
+            || pointOnSegment(a, b.endX, b.endY, toleranceSq);
+    }
+
+    private static boolean pointOnSegment(Segment s, double px, double py, double toleranceSq) {
+        double dx = s.endX - s.startX, dy = s.endY - s.startY;
+        double lenSq = dx * dx + dy * dy;
+        if (lenSq < 1e-12) return false;
+        double t = ((px - s.startX) * dx + (py - s.startY) * dy) / lenSq;
+        if (t < 0 || t > 1) return false;
+        double qx = s.startX + t * dx - px, qy = s.startY + t * dy - py;
+        return qx * qx + qy * qy <= toleranceSq;
+    }
+
+    /**
+     * Chain one connected component into closed subpath(s), appending each to the
+     * given lists. Mirrors the greedy bidirectional chaining with T-junction handling,
+     * but when the head gets stuck with segments still unused it bridges straight to
+     * the nearest one (rather than abandoning the loop), so a board whose closing edge
+     * is missing still yields one whole loop instead of overlapping fragments.
+     */
+    private void chainComponent(List<Segment> pool, SvgOptions options, double toleranceSq,
+                                List<String> subpathList, List<double[]> subpathBoundsList,
+                                List<Boolean> subpathHasArcList) {
+        // Index-based so we can safely append near-half splits to the pool mid-iteration.
+        for (int si = 0; si < pool.size(); si++) {
+            Segment seed = pool.get(si);
+            if (seed.used) continue;
+            seed.used = true;
+
+            StringBuilder subpath = new StringBuilder();
+            double loopStartX = seed.startX;
+            double loopStartY = seed.startY;
+            subpath.append(String.format(Locale.US, "M %.6f %.6f", loopStartX, loopStartY));
+            appendSegment(subpath, seed, false, options);
+            double headX = seed.endX;
+            double headY = seed.endY;
+
+            double spMinX = Math.min(seed.startX, seed.endX);
+            double spMinY = Math.min(seed.startY, seed.endY);
+            double spMaxX = Math.max(seed.startX, seed.endX);
+            double spMaxY = Math.max(seed.startY, seed.endY);
+            boolean spHasArc = seed.isArc;
+
+            // Chain greedily: at each step pick the best unused segment whose endpoint
+            // meets the head within tolerance. Close only once no such continuation
+            // exists that is at least as close as the loop start — this prevents two
+            // failure modes:
+            //   1. A short seed (< tolerance length) short-circuits loop closure on
+            //      iteration 0 — e.g. mouse-bite teeth, V-score rails, arc-approx
+            //      polylines. Must leave the tolerance ball before closure counts.
+            //   2. A chain built from short segments hits a point one segment before
+            //      the true close that happens to lie ≤ tolerance from the start —
+            //      we must prefer extending if an unused segment continues the chain
+            //      at least as well as snapping back to the start would.
+            boolean leftToleranceBall = false;
+            while (true) {
+                Segment next = null;
+                boolean reverse = false;
+                double bestSq = toleranceSq;
+                for (Segment s : pool) {
+                    if (s.used) continue;
+                    double d1 = distSq(s.startX, s.startY, headX, headY);
+                    if (d1 < bestSq) {
+                        bestSq = d1; next = s; reverse = false;
+                    }
+                    double d2 = distSq(s.endX, s.endY, headX, headY);
+                    if (d2 < bestSq) {
+                        bestSq = d2; next = s; reverse = true;
+                    }
+                }
+                double headDistSq = distSq(headX, headY, loopStartX, loopStartY);
+                if (leftToleranceBall && headDistSq <= toleranceSq
+                        && (next == null || bestSq >= headDistSq)) {
+                    break; // loop closed — no better continuation than snapping back
+                }
+                if (next == null) {
+                    // T-intersection fallback: the head may lie on the interior of a
+                    // collinear segment (not at its endpoints). This occurs in flex-PCB
+                    // or panel outlines where adjacent rigid/flex boundary segments
+                    // overlap — e.g. a top-tab left edge (y=79–91) and a flex-body
+                    // left edge (y=70–84) share the y=79–84 range. Endpoint matching
+                    // fails because neither endpoint of the lower segment is within
+                    // tolerance of the chain head. We detect the T-junction, split the
+                    // overlapping segment, continue toward the farther endpoint, and put
+                    // the near-half back into the pool for later pickup.
+                    Segment tSeg = findTIntersection(pool, headX, headY, toleranceSq);
+                    if (tSeg != null) {
+                        tSeg.used = true;
+                        double d1sq = distSq(tSeg.startX, tSeg.startY, headX, headY);
+                        double d2sq = distSq(tSeg.endX, tSeg.endY, headX, headY);
+                        double farX, farY, nearX, nearY;
+                        if (d1sq > d2sq) {
+                            farX = tSeg.startX; farY = tSeg.startY;
+                            nearX = tSeg.endX;  nearY = tSeg.endY;
+                        } else {
+                            farX = tSeg.endX;   farY = tSeg.endY;
+                            nearX = tSeg.startX; nearY = tSeg.startY;
+                        }
+                        // Return the near half to the pool so it can be picked up later.
+                        pool.add(Segment.draw(headX, headY, nearX, nearY));
+                        subpath.append(String.format(Locale.US, " L %.6f %.6f", farX, farY));
+                        headX = farX;
+                        headY = farY;
+                        spMinX = Math.min(spMinX, headX); spMinY = Math.min(spMinY, headY);
+                        spMaxX = Math.max(spMaxX, headX); spMaxY = Math.max(spMaxY, headY);
+                        if (!leftToleranceBall
+                                && distSq(headX, headY, loopStartX, loopStartY) > toleranceSq) {
+                            leftToleranceBall = true;
+                        }
+                        continue;
+                    }
+                    // Bridge an internal gap: jump straight to the nearest unused segment
+                    // in this component and carry on. The component is one shape, so the
+                    // nearest unused endpoint is the far side of the gap (e.g. the missing
+                    // closing edge of a cut-out), not unrelated geometry.
+                    Segment bridge = null;
+                    boolean bridgeRev = false;
+                    double bridgeSq = Double.MAX_VALUE;
+                    for (Segment s : pool) {
+                        if (s.used) continue;
+                        double d1 = distSq(s.startX, s.startY, headX, headY);
+                        if (d1 < bridgeSq) { bridgeSq = d1; bridge = s; bridgeRev = false; }
+                        double d2 = distSq(s.endX, s.endY, headX, headY);
+                        if (d2 < bridgeSq) { bridgeSq = d2; bridge = s; bridgeRev = true; }
+                    }
+                    if (bridge != null) {
+                        double bx = bridgeRev ? bridge.endX : bridge.startX;
+                        double by = bridgeRev ? bridge.endY : bridge.startY;
+                        subpath.append(String.format(Locale.US, " L %.6f %.6f", bx, by));
+                        spMinX = Math.min(spMinX, bx); spMinY = Math.min(spMinY, by);
+                        spMaxX = Math.max(spMaxX, bx); spMaxY = Math.max(spMaxY, by);
+                        bridge.used = true;
+                        appendSegment(subpath, bridge, bridgeRev, options);
+                        headX = bridgeRev ? bridge.startX : bridge.endX;
+                        headY = bridgeRev ? bridge.startY : bridge.endY;
+                        if (bridge.isArc) spHasArc = true;
+                        spMinX = Math.min(spMinX, headX); spMinY = Math.min(spMinY, headY);
+                        spMaxX = Math.max(spMaxX, headX); spMaxY = Math.max(spMaxY, headY);
+                        if (!leftToleranceBall
+                                && distSq(headX, headY, loopStartX, loopStartY) > toleranceSq) {
+                            leftToleranceBall = true;
+                        }
+                        continue;
+                    }
+                    break; // open loop — emit Z anyway to let SVG fill it
+                }
+                next.used = true;
+                appendSegment(subpath, next, reverse, options);
+                headX = reverse ? next.startX : next.endX;
+                headY = reverse ? next.startY : next.endY;
+                spMinX = Math.min(spMinX, headX); spMinY = Math.min(spMinY, headY);
+                spMaxX = Math.max(spMaxX, headX); spMaxY = Math.max(spMaxY, headY);
+                if (next.isArc) spHasArc = true;
+                if (!leftToleranceBall
+                    && distSq(headX, headY, loopStartX, loopStartY) > toleranceSq) {
+                    leftToleranceBall = true;
+                }
+            }
+            subpath.append(" Z");
+
+            subpathList.add(subpath.toString());
+            subpathBoundsList.add(new double[]{spMinX, spMinY, spMaxX, spMaxY});
+            subpathHasArcList.add(spHasArc);
+        }
     }
 
     private void appendSegment(StringBuilder path, Segment s, boolean reverse,

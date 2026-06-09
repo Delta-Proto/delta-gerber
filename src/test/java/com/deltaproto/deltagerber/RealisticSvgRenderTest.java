@@ -414,30 +414,34 @@ public class RealisticSvgRenderTest {
 
         Files.writeString(OUTPUT_DIR.resolve("realistic-mixed-direction.svg"), svg);
 
-        // The outer rectangle spans the overall bounding box of all segments, so the
-        // panel-frame filter removes it from the clip path (it would cancel the inner
-        // loop's winding under the nonzero rule if kept). The inner 12-segment polygon
-        // is the only subpath retained in the clip.
+        // The inner 12-segment polygon is only ~10% of the outer rectangle's area, so
+        // the outer rectangle is the board and the inner loop is a cut-out, not a panel
+        // frame. Both subpaths are retained and, under the evenodd clip rule, render as
+        // a rectangle with a circular hole.
         //
         // This test still exercises bidirectional chaining: the inner circle uses
         // alternating forward/reverse segments (half emitted in each direction), so
         // correct endpoint-graph walking is required to assemble the 12-sided polygon.
         int moveCount = countOccurrences(d, "M ");
         int closeCount = countOccurrences(d, "Z");
-        assertEquals(1, moveCount,
-            "Expected 1 subpath (inner polygon; outer rect treated as panel frame), got "
-            + moveCount + ". Path: " + d);
-        assertEquals(1, closeCount,
-            "Expected 1 close command, got " + closeCount);
+        assertEquals(2, moveCount,
+            "Expected 2 subpaths (outer board + inner cut-out), got " + moveCount + ". Path: " + d);
+        assertEquals(2, closeCount,
+            "Expected 2 close commands, got " + closeCount);
 
-        // The retained subpath must have all 12 segments (no orphaned M..L..Z pairs)
+        // The clip path must subtract the cut-out via the evenodd rule.
+        assertTrue(clipPath.getElementsByTagName("path").item(0) != null);
+        assertEquals("evenodd", pathEl.getAttribute("clip-rule"),
+            "Clip path must use clip-rule=evenodd so the cut-out subtracts");
+
+        // The inner polygon subpath must have all 12 segments (no orphaned M..L..Z pairs).
         String[] subpaths = d.split("(?=M )");
+        boolean foundPolygon = false;
         for (String sp : subpaths) {
             if (sp.isBlank()) continue;
-            int lines = countOccurrences(sp, "L ");
-            assertTrue(lines >= 11,
-                "Inner polygon subpath should have ≥11 L segments, got " + lines + ": " + sp);
+            if (countOccurrences(sp, "L ") >= 11) foundPolygon = true;
         }
+        assertTrue(foundPolygon, "Inner 12-sided polygon subpath should be present: " + d);
     }
 
     @Test
