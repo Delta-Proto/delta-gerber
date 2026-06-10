@@ -16,6 +16,14 @@ public class GerberLexer {
 
     private static final Logger log = LoggerFactory.getLogger(GerberLexer.class);
 
+    // Non-fatal anomalies observed during tokenization (e.g. a truncated %...% block).
+    // The parser drains these into the document so they reach the caller.
+    private final List<String> warnings = new ArrayList<>();
+
+    public List<String> getWarnings() {
+        return warnings;
+    }
+
     // Multi-line pattern for extended commands (can span multiple lines)
     private static final Pattern EXTENDED_COMMAND = Pattern.compile("%([^%]+)%", Pattern.DOTALL);
     private static final Pattern COORD_PATTERN = Pattern.compile(
@@ -31,6 +39,7 @@ public class GerberLexer {
         log.trace("Starting tokenization, content length: {} chars", content.length());
 
         List<Token> tokens = new ArrayList<>();
+        warnings.clear();
 
         // First pass: extract all extended commands from the entire content
         // Track their position for proper ordering, and build a mapping for position lookup
@@ -78,6 +87,16 @@ public class GerberLexer {
 
         // Add remaining content after the last extended command
         remaining.append(content.substring(lastEnd));
+
+        // A stray '%' in the tail means an extended command was opened but never closed
+        // (truncated file or corrupt block). The EXTENDED_COMMAND regex requires a closing
+        // '%', so that block — possibly the format spec or an aperture macro — was dropped
+        // entirely. Surface it rather than letting it vanish (this class of failure has
+        // produced blank renders before).
+        if (content.indexOf('%', lastEnd) >= 0) {
+            warnings.add("Unterminated extended command (a '%' block was opened but never "
+                + "closed) — that command was dropped; the file may be truncated or corrupt");
+        }
 
         // Pre-compute cumulative offset array for O(1) position lookup
         int[] cumulativeOffset = new int[extRanges.size() + 1];

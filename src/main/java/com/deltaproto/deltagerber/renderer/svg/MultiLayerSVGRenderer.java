@@ -222,7 +222,7 @@ public class MultiLayerSVGRenderer {
         for (Layer layer : layers) {
             String layerId = sanitizeId(layer.getName());
             String display = layer.isVisible() ? "inline" : "none";
-            String fillColor = layer.getColor() != null ? layer.getColor() : "#000000";
+            String fillColor = sanitizeColor(layer.getColor());
 
             svg.append(String.format(Locale.US,
                 "  <g class=\"layer\" id=\"%s\" display=\"%s\" " +
@@ -269,6 +269,15 @@ public class MultiLayerSVGRenderer {
     // Coincidence tolerance for collapsing duplicate (re-emitted) profile segments.
     // Far tighter than the chain tolerance so genuinely distinct short segments survive.
     private static final double DEDUPE_TOLERANCE_MM = 0.001;
+
+    // When a set has no dedicated outline layer, the board edge is derived from the union
+    // of the copper layers. Copper keeps roughly this clearance from the routed edge, so
+    // the derived silhouette is outset by this much to approximate the true board edge.
+    private static final double DERIVED_OUTLINE_OUTSET_MM = 0.2;
+
+    // Morphological close radius for the derived silhouette: bridges copper-free seams
+    // between separately-poured zones so the board comes out as a single piece.
+    private static final double DERIVED_OUTLINE_CLOSE_MM = 0.6;
 
     // Default realistic PCB colors (matches typical PCB viewer rendering)
     private static final String FR4_COLOR = "#666666";           // Dark gray substrate
@@ -341,15 +350,18 @@ public class MultiLayerSVGRenderer {
             }
         }
 
-        if (outlineLayer == null || !outlineLayer.isGerber()) {
+        boolean haveOutlineLayer = outlineLayer != null && outlineLayer.isGerber();
+        if (!haveOutlineLayer && copperLayers.isEmpty()) {
             throw new IllegalArgumentException(
-                "Realistic rendering requires a Gerber layer with LayerType.OUTLINE");
+                "Realistic rendering requires an OUTLINE layer, or copper layers to derive "
+                + "the board edge from");
         }
 
-        // Use outline bounding box for viewBox (content is clipped to outline anyway)
-        BoundingBox globalBounds = outlineLayer.getBoundingBox();
+        // Use outline bounding box for viewBox (content is clipped to outline anyway);
+        // with no outline layer, fall back to the union of all layers' bounds.
+        BoundingBox globalBounds = haveOutlineLayer
+            ? outlineLayer.getBoundingBox() : new BoundingBox();
         if (!globalBounds.isValid()) {
-            // Fall back to union of all layers
             globalBounds = new BoundingBox();
             for (Layer layer : layers) {
                 BoundingBox layerBounds = layer.getBoundingBox();
@@ -380,9 +392,23 @@ public class MultiLayerSVGRenderer {
 
         svg.append("<defs>\n");
 
-        // Extract board outline path for clipPath and soldermask mask base
+        // Extract board outline path for clipPath and soldermask mask base. With a real
+        // profile layer, chain it; otherwise derive the board edge from the copper.
         SvgOptions outlineOptions = svgOptions.copy().setFlipY(flipY);
-        String outlinePath = extractOutlinePath(outlineLayer.getGerberDoc(), outlineOptions);
+        String outlinePath;
+        if (haveOutlineLayer) {
+            outlinePath = extractOutlinePath(outlineLayer.getGerberDoc(), outlineOptions);
+        } else {
+            List<GerberDocument> silhouetteDocs = new ArrayList<>();
+            for (Layer l : copperLayers) {
+                if (l.isGerber() && l.getGerberDoc() != null) silhouetteDocs.add(l.getGerberDoc());
+            }
+            for (Layer l : soldermaskLayers) {
+                if (l.isGerber() && l.getGerberDoc() != null) silhouetteDocs.add(l.getGerberDoc());
+            }
+            outlinePath = OutlineDeriver.deriveOutlineSvgPath(
+                silhouetteDocs, DERIVED_OUTLINE_CLOSE_MM, DERIVED_OUTLINE_OUTSET_MM);
+        }
         boolean hasOutlinePath = outlinePath != null && !outlinePath.isBlank();
 
         if (hasOutlinePath) {
@@ -1430,6 +1456,7 @@ public class MultiLayerSVGRenderer {
     private static List<Layer> filterForSide(List<Layer> allLayers, Side side) {
         List<Layer> out = new ArrayList<>();
         boolean hasOutline = false;
+        boolean hasCopper = false;
         for (Layer layer : allLayers) {
             LayerType lt = layer.getLayerType();
             if (lt == LayerType.OUTLINE) {
@@ -1438,15 +1465,18 @@ public class MultiLayerSVGRenderer {
             } else if (side == Side.TOP && (lt == LayerType.COPPER_TOP
                     || lt == LayerType.SOLDERMASK_TOP || lt == LayerType.SILKSCREEN_TOP)) {
                 out.add(layer);
+                if (lt == LayerType.COPPER_TOP) hasCopper = true;
             } else if (side == Side.BOTTOM && (lt == LayerType.COPPER_BOTTOM
                     || lt == LayerType.SOLDERMASK_BOTTOM || lt == LayerType.SILKSCREEN_BOTTOM)) {
                 out.add(layer);
+                if (lt == LayerType.COPPER_BOTTOM) hasCopper = true;
             } else if (lt == LayerType.DRILL || lt == LayerType.DRILL_PLATED
                     || lt == LayerType.DRILL_NON_PLATED) {
                 out.add(layer);
             }
         }
-        if (!hasOutline || out.size() < 2) return null;
+        // Need either a real outline or copper to derive one from, plus some content.
+        if ((!hasOutline && !hasCopper) || out.size() < 2) return null;
         return out;
     }
 
@@ -1456,6 +1486,20 @@ public class MultiLayerSVGRenderer {
     private String sanitizeId(String name) {
         // Replace spaces and special characters that are invalid in SVG IDs
         return name.replaceAll("[^a-zA-Z0-9._-]", "_");
+    }
+
+    // Accepts only well-formed CSS colors: #rgb/#rgba/#rrggbb/#rrggbbaa, rgb()/rgba(),
+    // or a bare color keyword. The layer color is settable via the public Layer API, so an
+    // untrusted value (e.g. '#000" onload="...') must not be able to break out of the
+    // color="..." attribute and inject markup. Anything else falls back to black.
+    private static final java.util.regex.Pattern SAFE_COLOR = java.util.regex.Pattern.compile(
+        "#[0-9a-fA-F]{3,8}|[a-zA-Z]+|rgba?\\([0-9.,%\\s]+\\)");
+
+    private String sanitizeColor(String color) {
+        if (color != null && SAFE_COLOR.matcher(color).matches()) {
+            return color;
+        }
+        return "#000000";
     }
 
     private String createEmptySvg() {

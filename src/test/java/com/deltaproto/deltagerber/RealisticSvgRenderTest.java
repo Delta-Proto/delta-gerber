@@ -183,8 +183,8 @@ public class RealisticSvgRenderTest {
 
     @Test
     @Order(3)
-    @DisplayName("Realistic render - requires outline layer")
-    void testRealisticRequiresOutline() throws Exception {
+    @DisplayName("Realistic render - derives outline from copper when no outline layer")
+    void testRealisticDerivesOutlineFromCopper() throws Exception {
         if (!Files.exists(DEPR_TEST_DIR)) {
             System.out.println("DEPR test directory not found, skipping");
             return;
@@ -194,15 +194,28 @@ public class RealisticSvgRenderTest {
             "uP-H Main PCBA Assy V04.GTL"
         );
 
+        // No OUTLINE layer — only copper. The renderer must derive a board edge from it
+        // (the copper-union silhouette) instead of failing.
         List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
         layers.add(new MultiLayerSVGRenderer.Layer("copper-top", docs.get("GTL"))
             .setLayerType(LayerType.COPPER_TOP));
 
         MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer();
-        assertThrows(IllegalArgumentException.class, () -> renderer.renderRealistic(layers),
-            "Should throw when no outline layer is provided");
+        String svg = renderer.renderRealistic(layers);
+        assertNotNull(svg);
+        assertTrue(svg.contains("<clipPath id=\"board-outline\">"),
+            "Should derive a board-outline clip path from copper");
+        assertTrue(svg.contains("clip-path=\"url(#board-outline)\""),
+            "Layers should be clipped to the derived outline");
 
-        System.out.println("Outline requirement validated!");
+        // With neither an outline nor copper to derive from, it must still fail.
+        List<MultiLayerSVGRenderer.Layer> silkOnly = new ArrayList<>();
+        silkOnly.add(new MultiLayerSVGRenderer.Layer("silk-top", docs.get("GTL"))
+            .setLayerType(LayerType.SILKSCREEN_TOP));
+        assertThrows(IllegalArgumentException.class, () -> renderer.renderRealistic(silkOnly),
+            "Should throw when there is no outline and no copper to derive one from");
+
+        System.out.println("Outline derivation from copper validated!");
     }
 
     @Test

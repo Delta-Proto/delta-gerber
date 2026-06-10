@@ -23,6 +23,7 @@ public class DrillDocument {
     private final Map<Integer, Tool> tools = new LinkedHashMap<>();
     private final List<DrillOperation> operations = new ArrayList<>();
     private final List<String> comments = new ArrayList<>();
+    private final List<String> warnings = new ArrayList<>();
 
     private BoundingBox boundingBox;
 
@@ -56,6 +57,22 @@ public class DrillDocument {
 
     public void addComment(String comment) {
         comments.add(comment);
+    }
+
+    /**
+     * Record a non-fatal parsing anomaly (e.g. a malformed coordinate that was skipped,
+     * a drill hit before any tool was selected). Warnings let callers surface data-quality
+     * problems to the user instead of silently dropping geometry. Duplicates are collapsed
+     * so a repeated problem reports once rather than flooding the list.
+     */
+    public void addWarning(String warning) {
+        if (warning != null && !warnings.contains(warning)) {
+            warnings.add(warning);
+        }
+    }
+
+    public List<String> getWarnings() {
+        return warnings;
     }
 
     // Coordinate parsing helpers

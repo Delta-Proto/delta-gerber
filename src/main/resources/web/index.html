@@ -160,6 +160,10 @@
         .view-tab.active { background: var(--tab-active-bg); color: var(--primary); font-weight: 600; }
         .view-tab:disabled { cursor: not-allowed; opacity: 0.4; }
         .view-tab svg { width: 14px; height: 14px; flex-shrink: 0; }
+        /* Warnings tab: amber when there are findings, so it reads as "attention" not "error". */
+        .view-tab.has-warnings { color: #b45309; }
+        .view-tab.has-warnings.active { color: #b45309; }
+        .view-tab.has-warnings::before { content: '⚠ '; }
         .btn-spinner {
             width: 14px; height: 14px; border: 2px solid var(--spinner-track);
             border-top-color: var(--primary); border-radius: 50%;
@@ -289,6 +293,29 @@
         .centroid-refdes-pill.side-top    { background: rgba(106,174,214,0.18); color: #6aaed6; }
         .centroid-refdes-pill.side-bottom { background: rgba(232,150,84,0.18);  color: #e89654; }
         .centroid-num { color: var(--fg-faint); font-size: 0.75rem; }
+
+        /* ===== Warnings Panel ===== */
+        #warnings-panel { flex: 1; display: flex; flex-direction: column; overflow: auto; background: var(--bg); padding: 16px 20px; }
+        .warnings-intro { font-size: 0.8125rem; color: var(--fg-muted); margin-bottom: 14px; }
+        .warnings-file { margin-bottom: 18px; }
+        .warnings-file-name {
+            font-size: 0.8125rem; font-weight: 600; color: var(--fg);
+            display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+        }
+        .warnings-file-count {
+            font-size: 0.6875rem; font-weight: 500; color: #b45309;
+            background: rgba(180,83,9,0.12); border-radius: 10px; padding: 1px 8px;
+        }
+        .warnings-list { list-style: none; margin: 0; padding: 0; }
+        .warnings-list li {
+            font-size: 0.8125rem; color: var(--fg); line-height: 1.45;
+            padding: 7px 12px 7px 28px; position: relative;
+            border-left: 3px solid #f59e0b; background: var(--item-hover);
+            border-radius: 4px; margin-bottom: 5px;
+        }
+        .warnings-list li::before {
+            content: '⚠'; color: #f59e0b; position: absolute; left: 9px; top: 7px; font-size: 0.75rem;
+        }
     </style>
 </head>
 <body class="dark">
@@ -356,6 +383,7 @@
                 <button class="view-tab" data-view="top" onclick="switchView('top')">Board Top</button>
                 <button class="view-tab" data-view="bottom" onclick="switchView('bottom')">Board Bottom</button>
                 <button class="view-tab" id="centroid-tab" data-view="centroid" onclick="switchView('centroid')" disabled style="opacity:0.4">Centroid</button>
+                <button class="view-tab" id="warnings-tab" data-view="warnings" onclick="switchView('warnings')" disabled style="opacity:0.4">Warnings</button>
                 <span style="flex:1"></span>
                 <button class="view-tab" id="png-top-btn" onclick="downloadThumbnail('top')"
                     title="Download PNG thumbnail of the realistic top view">
@@ -425,6 +453,13 @@
                     </table>
                 </div>
             </div>
+            <div id="warnings-panel" class="hidden">
+                <div class="warnings-intro">
+                    Non-fatal issues found while parsing. The affected geometry was skipped or
+                    adjusted so the rest of the board still renders — review these if something looks wrong.
+                </div>
+                <div id="warnings-content"></div>
+            </div>
         </div>
     </div>
 
@@ -439,6 +474,7 @@
         let currentView = 'layers';
         let scale = 1, panX = 0, panY = 0, isPanning = false, startX, startY;
         let components = [];  // [{refdes, value, footprint, mountType, x, y, rotation, side}]
+        let warnings = [];    // [{file, messages:[...]}]
 
         // DOM refs
         const fileInput = document.getElementById('file-input');
@@ -861,6 +897,8 @@
             realisticBottomSvg = data.realisticBottomSvg;
             components = data.components || [];
             renderCentroidTable();
+            warnings = data.warnings || [];
+            renderWarningsTab();
 
             // Sync layer types back to projectFiles (in case server assigned IDs differently)
             for (let i = 0; i < layers.length && i < files.length; i++) {
@@ -1020,8 +1058,11 @@
                     const pngBotBtn = document.getElementById('png-bot-btn');
                     pngTopBtn.disabled = !realisticTopSvg; pngTopBtn.style.opacity = realisticTopSvg ? 1 : 0.4;
                     pngBotBtn.disabled = !realisticBottomSvg; pngBotBtn.style.opacity = realisticBottomSvg ? 1 : 0.4;
+                    warnings = data.warnings || [];
+                    renderWarningsTab();
+                    if (currentView === 'warnings') { refreshWarningsPanel(); }
                     renderSvg();
-                    if (currentView !== 'layers') fitToView();
+                    if (currentView !== 'layers' && currentView !== 'warnings') fitToView();
                 } catch (e) { console.error('Re-render failed:', e); }
             }, 500);
         }
@@ -1066,16 +1107,25 @@
             if (view === 'top' && !realisticTopSvg) return;
             if (view === 'bottom' && !realisticBottomSvg) return;
             if (view === 'centroid' && (!components || components.length === 0)) return;
+            if (view === 'warnings' && (!warnings || warnings.length === 0)) return;
             currentView = view;
             document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
             const vc = document.getElementById('viewer-container');
             const cp = document.getElementById('centroid-panel');
+            const wp = document.getElementById('warnings-panel');
             if (view === 'centroid') {
                 vc.classList.add('hidden');
+                wp.classList.add('hidden');
                 cp.classList.remove('hidden');
                 refreshCentroidTable();
+            } else if (view === 'warnings') {
+                vc.classList.add('hidden');
+                cp.classList.add('hidden');
+                wp.classList.remove('hidden');
+                refreshWarningsPanel();
             } else {
                 cp.classList.add('hidden');
+                wp.classList.add('hidden');
                 vc.classList.remove('hidden');
                 renderSvg();
                 fitToView();
@@ -1156,6 +1206,48 @@
             tab.disabled = false;
             tab.style.opacity = '1';
             tab.textContent = `Centroid (${components.length})`;
+        }
+
+        // ===== Warnings =====
+        function warningCount() {
+            return (warnings || []).reduce((n, w) => n + (w.messages ? w.messages.length : 0), 0);
+        }
+
+        function renderWarningsTab() {
+            const tab = document.getElementById('warnings-tab');
+            if (!tab) return;
+            const total = warningCount();
+            if (total === 0) {
+                tab.disabled = true;
+                tab.style.opacity = '0.4';
+                tab.classList.remove('has-warnings');
+                tab.textContent = 'Warnings';
+                return;
+            }
+            tab.disabled = false;
+            tab.style.opacity = '1';
+            tab.classList.add('has-warnings');
+            tab.textContent = `Warnings (${total})`;
+        }
+
+        function refreshWarningsPanel() {
+            const el = document.getElementById('warnings-content');
+            if (!el) return;
+            if (!warnings || warnings.length === 0) {
+                el.innerHTML = '<div class="warnings-intro">No warnings.</div>';
+                return;
+            }
+            el.innerHTML = warnings.map(w => {
+                const msgs = w.messages || [];
+                const items = msgs.map(m => `<li>${escapeHtml(m)}</li>`).join('');
+                return `<div class="warnings-file">
+                    <div class="warnings-file-name">
+                        ${escapeHtml(w.file)}
+                        <span class="warnings-file-count">${msgs.length} issue${msgs.length !== 1 ? 's' : ''}</span>
+                    </div>
+                    <ul class="warnings-list">${items}</ul>
+                </div>`;
+            }).join('');
         }
 
         function refreshCentroidTable() {

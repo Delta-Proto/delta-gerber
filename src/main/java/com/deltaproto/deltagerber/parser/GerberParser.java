@@ -97,6 +97,11 @@ public class GerberParser {
         List<Token> tokens = lexer.tokenize(content);
         log.trace("Lexer produced {} tokens in {}ms", tokens.size(), System.currentTimeMillis() - lexStart);
 
+        // Lexer-level anomalies (e.g. a truncated %...% block) surface as document warnings.
+        for (String w : lexer.getWarnings()) {
+            document.addWarning(w);
+        }
+
         long parseStart = System.currentTimeMillis();
         for (Token token : tokens) {
             processToken(token);
@@ -283,6 +288,26 @@ public class GerberParser {
         }
     }
 
+    /**
+     * Parse a double from Gerber text, rejecting non-finite results (NaN/Infinity, which
+     * {@link Double#parseDouble} happily accepts from literals like "NaN"/"Infinity" and which
+     * then propagate silently through all downstream geometry math). On a malformed or
+     * non-finite value, records a warning and returns {@code fallback}.
+     */
+    private double safeParseDouble(String s, double fallback, String context) {
+        try {
+            double v = Double.parseDouble(s);
+            if (!Double.isFinite(v)) {
+                document.addWarning("Non-finite value '" + s + "' in " + context + " — using " + fallback);
+                return fallback;
+            }
+            return v;
+        } catch (NumberFormatException e) {
+            document.addWarning("Invalid number '" + s + "' in " + context + " — using " + fallback);
+            return fallback;
+        }
+    }
+
     private List<Double> parseApertureParams(String params) {
         List<Double> values = new ArrayList<>();
         if (params == null || params.isEmpty()) {
@@ -292,9 +317,14 @@ public class GerberParser {
         for (String part : parts) {
             if (!part.isEmpty()) {
                 try {
-                    values.add(Double.parseDouble(part));
+                    double v = Double.parseDouble(part);
+                    if (Double.isFinite(v)) {
+                        values.add(v);
+                    } else {
+                        document.addWarning("Non-finite macro aperture parameter '" + part + "' — skipped");
+                    }
                 } catch (NumberFormatException e) {
-                    // Skip invalid values
+                    document.addWarning("Invalid macro aperture parameter '" + part + "' — skipped");
                 }
             }
         }
@@ -305,7 +335,7 @@ public class GerberParser {
         String[] parts = params.split("X");
         double[] raw = new double[parts.length];
         for (int i = 0; i < parts.length; i++) {
-            raw[i] = parts[i].isEmpty() ? 0 : Double.parseDouble(parts[i]);
+            raw[i] = parts[i].isEmpty() ? 0 : safeParseDouble(parts[i], 0, "aperture D" + dCode + " parameters");
         }
         double f = unit.toMm(1.0);
 
@@ -332,8 +362,21 @@ public class GerberParser {
 
     private void parseApertureSelect(Token token) {
         String content = token.getContent();
-        int dCode = Integer.parseInt(content.substring(1));
+        int dCode;
+        try {
+            dCode = Integer.parseInt(content.substring(1));
+        } catch (NumberFormatException | IndexOutOfBoundsException e) {
+            document.addWarning("Malformed aperture select '" + content + "' — ignored");
+            return;
+        }
         currentAperture = document.getAperture(dCode);
+        if (currentAperture == null) {
+            // Selecting an aperture that was never defined means every draw/flash that
+            // follows is silently dropped (the executeD0x guards require a non-null aperture).
+            // Surface it so the missing geometry is explainable.
+            document.addWarning("Aperture D" + dCode + " selected but never defined — "
+                + "geometry using it will not be rendered");
+        }
     }
 
     private void parseFileAttribute(Token token) {
@@ -461,8 +504,8 @@ public class GerberParser {
         Pattern pattern = Pattern.compile("OFA([\\d.+-]+)B([\\d.+-]+)");
         Matcher matcher = pattern.matcher(content);
         if (matcher.find()) {
-            double offsetA = Double.parseDouble(matcher.group(1));
-            double offsetB = Double.parseDouble(matcher.group(2));
+            double offsetA = safeParseDouble(matcher.group(1), 0, "image offset A");
+            double offsetB = safeParseDouble(matcher.group(2), 0, "image offset B");
             if (offsetA != 0 || offsetB != 0) {
                 document.addWarning("Non-zero image offset detected: A=" + offsetA + " B=" + offsetB);
             }
@@ -495,14 +538,36 @@ public class GerberParser {
         Pattern pattern = Pattern.compile("SRX(\\d+)Y(\\d+)I([\\d.+-]+)J([\\d.+-]+)");
         Matcher matcher = pattern.matcher(content);
         if (matcher.find()) {
-            srRepeatX = Integer.parseInt(matcher.group(1));
-            srRepeatY = Integer.parseInt(matcher.group(2));
+            int rawX = Math.max(1, Integer.parseInt(matcher.group(1)));
+            int rawY = Math.max(1, Integer.parseInt(matcher.group(2)));
+            // A step-repeat replays the enclosed objects rawX*rawY times. A corrupt or
+            // hostile SRX<huge>Y<huge> would multiply the object list into an OOM (a forked
+            // test VM died with exactly this). Bound the *product*, not each axis: 10000x10000
+            // clamped per-axis is still 100M replays. Real panels stay well under MAX_SR_GRID.
+            if ((long) rawX * rawY > MAX_SR_GRID) {
+                document.addWarning("Step-repeat grid " + rawX + "x" + rawY + " exceeds limit "
+                    + MAX_SR_GRID + " replications — clamped to avoid exhausting memory");
+                // Keep the smaller axis intact, clamp the larger so the product fits the budget.
+                if (rawX >= rawY) {
+                    rawY = Math.min(rawY, Math.max(1, MAX_SR_GRID / Math.max(1, rawX)));
+                    rawX = Math.min(rawX, Math.max(1, MAX_SR_GRID / Math.max(1, rawY)));
+                } else {
+                    rawX = Math.min(rawX, Math.max(1, MAX_SR_GRID / Math.max(1, rawY)));
+                    rawY = Math.min(rawY, Math.max(1, MAX_SR_GRID / Math.max(1, rawX)));
+                }
+            }
+            srRepeatX = rawX;
+            srRepeatY = rawY;
             double f = unit.toMm(1.0);
-            srStepX = Double.parseDouble(matcher.group(3)) * f;
-            srStepY = Double.parseDouble(matcher.group(4)) * f;
+            srStepX = safeParseDouble(matcher.group(3), 0, "step-repeat I step") * f;
+            srStepY = safeParseDouble(matcher.group(4), 0, "step-repeat J step") * f;
             srStartIndex = document.getObjects().size();
         }
     }
+
+    // Maximum total step-repeat replications (rawX * rawY). 40k covers any realistic panel
+    // (e.g. a 200x200 array) while keeping a malicious SR from ballooning the object list.
+    private static final int MAX_SR_GRID = 40_000;
 
     private void parseBlockAperture(Token token) {
         String content = token.getContent();
@@ -519,6 +584,17 @@ public class GerberParser {
 
     private void parseCoordinate(Token token) {
         String content = token.getContent();
+
+        // A coordinate cannot be interpreted without a format spec (FS). Some files put
+        // coordinates before FS, or omit FS entirely (truncated/corrupt). Dereferencing a
+        // null coordFormat here previously threw NPE, which the web layer swallowed into a
+        // blank render. Warn and skip instead so the rest of the file still parses.
+        if (coordFormat == null) {
+            document.addWarning("Coordinate '" + content + "' appears before a format spec (FS) "
+                + "— skipped. The file may be truncated or missing its %FS...% block.");
+            return;
+        }
+
         double f = unit.toMm(1.0);
 
         Matcher xm = COORD_X.matcher(content);

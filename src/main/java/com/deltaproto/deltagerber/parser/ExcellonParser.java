@@ -132,7 +132,7 @@ public class ExcellonParser {
             Matcher holesizeMatcher = HOLESIZE_COMMENT.matcher(comment);
             if (holesizeMatcher.find()) {
                 int toolNum = Integer.parseInt(holesizeMatcher.group(1));
-                double diameter = Double.parseDouble(holesizeMatcher.group(2));
+                double diameter = safeParseDouble(holesizeMatcher.group(2), 0, "Holesize T" + toolNum + " diameter");
                 String unitStr = holesizeMatcher.group(4);
                 if ("INCH".equals(unitStr)) {
                     diameter = Unit.INCH.toMm(diameter);
@@ -189,8 +189,8 @@ public class ExcellonParser {
         Matcher toolDefMatcher = TOOL_DEF.matcher(line);
         if (toolDefMatcher.find()) {
             int toolNum = Integer.parseInt(toolDefMatcher.group(1));
-            double diameter = document.getUnit().toMm(Double.parseDouble(toolDefMatcher.group(2)));
-            Tool tool = new Tool(toolNum, diameter);
+            double rawDia = safeParseDouble(toolDefMatcher.group(2), 0, "tool T" + toolNum + " diameter");
+            Tool tool = new Tool(toolNum, document.getUnit().toMm(rawDia));
             document.addTool(tool);
             return;
         }
@@ -401,6 +401,7 @@ public class ExcellonParser {
 
     private void handleCoordinate(Matcher matcher) {
         if (currentTool == null) {
+            document.addWarning("Drill coordinate seen before any tool was selected — hit(s) skipped");
             return; // No tool selected
         }
 
@@ -435,6 +436,7 @@ public class ExcellonParser {
 
     private void handleSlot(Matcher matcher) {
         if (currentTool == null) {
+            document.addWarning("Slot (G85) seen before any tool was selected — slot skipped");
             return; // No tool selected
         }
 
@@ -468,6 +470,10 @@ public class ExcellonParser {
         }
 
         int count = Integer.parseInt(matcher.group(1));
+        if (count > MAX_REPEAT) {
+            document.addWarning("Repeat count " + count + " exceeds limit " + MAX_REPEAT + " — clamped");
+            count = MAX_REPEAT;
+        }
         String xOffStr = matcher.group(2);
         String yOffStr = matcher.group(3);
 
@@ -482,18 +488,51 @@ public class ExcellonParser {
         }
     }
 
+    // A Cadence Allegro R<count> repeat replays a hit count times; a corrupt huge count
+    // would balloon the operation list. Cap it and warn.
+    private static final int MAX_REPEAT = 1_000_000;
+
+    /**
+     * Parse a double, rejecting non-finite results (NaN/Infinity) and malformed text.
+     * Records a warning and returns {@code fallback} on failure rather than throwing —
+     * a single bad token shouldn't abort parsing of the whole file.
+     */
+    private double safeParseDouble(String s, double fallback, String context) {
+        try {
+            double v = Double.parseDouble(s);
+            if (!Double.isFinite(v)) {
+                document.addWarning("Non-finite value '" + s + "' in " + context + " — using " + fallback);
+                return fallback;
+            }
+            return v;
+        } catch (NumberFormatException e) {
+            document.addWarning("Invalid number '" + s + "' in " + context + " — using " + fallback);
+            return fallback;
+        }
+    }
+
     private double parseCoordinate(String value) {
         if (value == null || value.isEmpty()) {
             return 0;
         }
 
         double parsed;
-        // If the value contains a decimal point, parse directly
-        if (value.contains(".")) {
-            parsed = Double.parseDouble(value);
-        } else {
-            // Otherwise, use the document's format settings
-            parsed = document.parseCoordinate(value);
+        try {
+            // If the value contains a decimal point, parse directly
+            if (value.contains(".")) {
+                parsed = Double.parseDouble(value);
+            } else {
+                // Otherwise, use the document's format settings
+                parsed = document.parseCoordinate(value);
+            }
+        } catch (NumberFormatException e) {
+            document.addWarning("Invalid drill coordinate '" + value + "' — treated as 0");
+            return 0;
+        }
+
+        if (!Double.isFinite(parsed)) {
+            document.addWarning("Non-finite drill coordinate '" + value + "' — treated as 0");
+            return 0;
         }
 
         // Normalize to mm

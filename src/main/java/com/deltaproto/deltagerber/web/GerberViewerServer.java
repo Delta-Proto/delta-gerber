@@ -118,6 +118,7 @@ public class GerberViewerServer {
                 List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
                 List<LayerMeta> layerMetas = new ArrayList<>();
                 List<ComponentPlacement> allComponents = new ArrayList<>();
+                List<FileWarnings> allWarnings = new ArrayList<>();
 
                 // Parse the length-prefixed file protocol
                 int pos = 0;
@@ -150,10 +151,16 @@ public class GerberViewerServer {
                         if ("drill".equals(fileType)) {
                             DrillDocument doc = drillParser.parse(content);
                             layer = new MultiLayerSVGRenderer.Layer(name, doc);
+                            if (!doc.getWarnings().isEmpty()) {
+                                allWarnings.add(new FileWarnings(name, doc.getWarnings()));
+                            }
                         } else if ("gerber".equals(fileType)) {
                             GerberDocument doc = gerberParser.parse(content);
                             allComponents.addAll(doc.getComponents());
                             layer = new MultiLayerSVGRenderer.Layer(name, doc);
+                            if (!doc.getWarnings().isEmpty()) {
+                                allWarnings.add(new FileWarnings(name, doc.getWarnings()));
+                            }
                         }
 
                         if (layer != null) {
@@ -214,6 +221,25 @@ public class GerberViewerServer {
                     json.append(",\"side\":").append(escapeJson(c.getSide()));
                     json.append("}");
                 }
+                json.append("]");
+
+                // Per-file parser warnings (truncated blocks, undefined apertures, bad
+                // coordinates, …). The viewer surfaces these in a dedicated tab.
+                json.append(",\"warnings\":[");
+                boolean firstW = true;
+                for (FileWarnings fw : allWarnings) {
+                    if (!firstW) json.append(",");
+                    firstW = false;
+                    json.append("{\"file\":").append(escapeJson(fw.file));
+                    json.append(",\"messages\":[");
+                    boolean firstM = true;
+                    for (String m : fw.messages) {
+                        if (!firstM) json.append(",");
+                        firstM = false;
+                        json.append(escapeJson(m));
+                    }
+                    json.append("]}");
+                }
                 json.append("]}");
 
 
@@ -232,6 +258,14 @@ public class GerberViewerServer {
             final String name, id, color, type, layerType;
             LayerMeta(String name, String id, String color, String type, String layerType) {
                 this.name = name; this.id = id; this.color = color; this.type = type; this.layerType = layerType;
+            }
+        }
+
+        private static class FileWarnings {
+            final String file;
+            final List<String> messages;
+            FileWarnings(String file, List<String> messages) {
+                this.file = file; this.messages = messages;
             }
         }
     }
@@ -406,8 +440,14 @@ public class GerberViewerServer {
                     sideLayers.add(layer);
                 }
             }
+            // A realistic view needs a board outline. Prefer a real profile (OUTLINE) layer,
+            // but MultiLayerSVGRenderer.renderRealistic can also derive the edge from copper,
+            // so a copper-bearing side qualifies too. Mirror the PNG path's gate
+            // (MultiLayerSVGRenderer.filterForSide) so the tabs/PNG light up in the same cases.
+            LayerType copperType = topSide ? LayerType.COPPER_TOP : LayerType.COPPER_BOTTOM;
             boolean hasOutline = sideLayers.stream().anyMatch(l -> l.getLayerType() == LayerType.OUTLINE);
-            if (!hasOutline || sideLayers.size() < 2) return null;
+            boolean hasCopper = sideLayers.stream().anyMatch(l -> l.getLayerType() == copperType);
+            if ((!hasOutline && !hasCopper) || sideLayers.size() < 2) return null;
             return new MultiLayerSVGRenderer().renderRealistic(sideLayers);
         } catch (Exception e) {
             LoggerFactory.getLogger(GerberViewerServer.class)

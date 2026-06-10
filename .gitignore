@@ -21,3 +21,6 @@ RELEASING.md
 
 # Secrets
 .mvn-gpg-passphrase
+
+# Claude Code local session/settings
+.claude/

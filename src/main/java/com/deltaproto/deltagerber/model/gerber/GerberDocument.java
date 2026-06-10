@@ -144,8 +144,15 @@ public class GerberDocument {
         return "";
     }
 
+    /**
+     * Record a non-fatal parsing anomaly (e.g. coordinates before a format spec, a
+     * reference to an undefined aperture, a clamped step-repeat). Duplicates are collapsed
+     * so a problem that recurs on every coordinate reports once rather than flooding the list.
+     */
     public void addWarning(String warning) {
-        warnings.add(warning);
+        if (warning != null && !warnings.contains(warning)) {
+            warnings.add(warning);
+        }
     }
 
     public void addObject(GraphicsObject object) {
