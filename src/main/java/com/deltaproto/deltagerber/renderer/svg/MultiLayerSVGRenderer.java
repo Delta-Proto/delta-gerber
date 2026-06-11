@@ -288,6 +288,34 @@ public class MultiLayerSVGRenderer {
     private static final double SOLDERMASK_DEFAULT_OPACITY = 0.75;
 
     /**
+     * Hard ceiling on either raster dimension, and on the total pixel count, handed to
+     * Batik. Batik allocates {@code width * height * 4} bytes for the output raster, so an
+     * unbounded dimension blows the heap: a board whose viewBox has a pathological aspect
+     * ratio (e.g. no usable OUTLINE, so the viewBox falls back to the union of all layers'
+     * bounds and a single stray flash or mis-scaled coordinate inflates one axis) makes the
+     * derived dimension explode into millions of pixels — observed as a 3+ GB allocation
+     * from a single thumbnail render. These caps clamp each side and scale the pair down
+     * proportionally so a degenerate board yields a (possibly distorted) small thumbnail
+     * instead of an OutOfMemoryError. {@value #MAX_RASTER_DIMENSION_PX}² ≈ 256 MB worst case;
+     * the area cap keeps the typical worst case far lower.
+     */
+    private static final int MAX_RASTER_DIMENSION_PX = 8192;
+    private static final long MAX_RASTER_PIXELS = 16_000_000L; // ~64 MB raster (×4 bytes)
+
+    /**
+     * Thumbnail-specific raster cap — deliberately far below {@link #MAX_RASTER_DIMENSION_PX}.
+     * The full-render caps bound only the <em>final</em> raster ({@code width*height*4}), but a
+     * realistic render's true Batik footprint is dominated by its offscreen mask/clip buffers
+     * (board-outline clip, sm/cf/mech masks, per-layer polarity masks) — each one a full-canvas
+     * ARGB image, several alive at once, so the working set runs ~6–10× the final raster. A
+     * single masked side at 4096px (well under the full-render caps) already OOMs a ~768 MB
+     * heap. Capping a thumbnail at {@value #MAX_THUMBNAIL_DIMENSION_PX}px keeps that masked
+     * working set comfortably inside a ~512 MB–1 GB heap. {@link #rasterizeSvgToPng} still
+     * applies the higher full-render cap as a final backstop.
+     */
+    private static final int MAX_THUMBNAIL_DIMENSION_PX = 1024;
+
+    /**
      * Render a realistic PCB view where layers are stacked as they appear on a real board.
      * <p>
      * Requires an OUTLINE layer to define the board boundary. The soldermask layer is
@@ -1284,6 +1312,89 @@ public class MultiLayerSVGRenderer {
     }
 
     /**
+     * A rasterised realistic-view PNG together with the geometry needed to map between
+     * its pixels and the board's real-world millimetres.
+     * <p>
+     * The image covers exactly the {@linkplain #minXmm mm rectangle} {@code [minXmm,
+     * minYmm, widthMm, heightMm]} — the board outline plus the thumbnail margin. Because
+     * the PNG is fitted with {@code preserveAspectRatio="xMidYMid meet"}, the board is
+     * scaled uniformly by {@link #pxPerMm} and centred, occupying the pixel rectangle
+     * {@code [contentOffsetXpx, contentOffsetYpx, contentWidthPx, contentHeightPx]}. For
+     * an aspect-matched PNG (the usual single-dimension call) the offsets are 0 and the
+     * content fills the image.
+     * <p>
+     * The {@code mmRect} ({@link #minXmm}, {@link #minYmm}, {@link #widthMm},
+     * {@link #heightMm}) is in <em>gerber/drill coordinate space</em> (millimetres, Y-up,
+     * the native datum of the files). Image pixels are top-left origin, Y-down, and the
+     * bottom side may additionally be mirrored in X — so the gerber/drill datum
+     * {@code (0,0)} is not at a fixed pixel. Its actual location is precomputed for you as
+     * {@link #originXpx}/{@link #originYpx} (handling the Y-flip and any X-mirror), so you
+     * can anchor measurements to the real origin:
+     * <pre>
+     *   // pixel position of gerber point (gxMm, gyMm), aligned to the datum:
+     *   pxX = originXpx + gxMm * pxPerMm * (mirrored ? -1 : +1);
+     *   pxY = originYpx - gyMm * pxPerMm;   // minus: gerber Y-up vs pixel Y-down
+     * </pre>
+     * To draw a 10 mm grid aligned to the datum, step {@code 10 * pxPerMm} pixels out from
+     * {@code (originXpx, originYpx)} in both directions. ({@code originXpx}/{@code originYpx}
+     * may fall outside {@code [0,widthPx]×[0,heightPx]} if the datum is off-image.)
+     */
+    public static final class PngWithScale {
+        /** PNG bytes. */
+        public final byte[] png;
+        /** Actual pixel dimensions of the PNG. */
+        public final int widthPx, heightPx;
+        /** The mm rectangle the image covers, in gerber/drill space (Y-up): outline
+         *  bounds plus the thumbnail margin. */
+        public final double minXmm, minYmm, widthMm, heightMm;
+        /** Uniform scale Batik applied (pixels per millimetre). */
+        public final double pxPerMm;
+        /** Pixel rectangle the board content occupies inside the PNG (letterbox-aware). */
+        public final double contentOffsetXpx, contentOffsetYpx, contentWidthPx, contentHeightPx;
+        /** Pixel location of the gerber/drill datum (0,0), Y-flip- and mirror-aware. */
+        public final double originXpx, originYpx;
+        /** Which board side this image shows. */
+        public final Side side;
+        /** Whether the X axis was mirrored (bottom shown as the real physical underside). */
+        public final boolean mirrored;
+
+        PngWithScale(byte[] png, int widthPx, int heightPx,
+                      double minXmm, double minYmm, double widthMm, double heightMm,
+                      Side side, boolean mirrored, boolean flipY) {
+            this.png = png;
+            this.side = side;
+            this.mirrored = mirrored;
+            this.widthPx = widthPx;
+            this.heightPx = heightPx;
+            this.minXmm = minXmm;
+            this.minYmm = minYmm;
+            this.widthMm = widthMm;
+            this.heightMm = heightMm;
+            // xMidYMid meet: uniform scale is the smaller of the two axis ratios; the
+            // shorter axis is letterboxed (centred) within the PNG.
+            double sx = widthMm  > 0 ? widthPx  / widthMm  : 0;
+            double sy = heightMm > 0 ? heightPx / heightMm : 0;
+            this.pxPerMm = (sx > 0 && sy > 0) ? Math.min(sx, sy) : Math.max(sx, sy);
+            this.contentWidthPx  = widthMm  * pxPerMm;
+            this.contentHeightPx = heightMm * pxPerMm;
+            this.contentOffsetXpx = (widthPx  - contentWidthPx)  / 2.0;
+            this.contentOffsetYpx = (heightPx - contentHeightPx) / 2.0;
+            // Pixel position of the gerber datum (0,0). In gerber space the rect spans
+            // X∈[minXmm, minXmm+widthMm], Y∈[minYmm, minYmm+heightMm]. Without mirroring,
+            // gerber X maps straight to viewBox X; mirroring reflects it about the rect's
+            // centre. With flipY, the image top is gerber maxY, so pixel-Y runs downward
+            // from there.
+            this.originXpx = contentOffsetXpx
+                + (mirrored ? (minXmm + widthMm) : -minXmm) * pxPerMm;
+            this.originYpx = contentOffsetYpx
+                + (flipY ? (minYmm + heightMm) : -minYmm) * pxPerMm;
+        }
+
+        /** Millimetres per pixel — convenience inverse of {@link #pxPerMm}. */
+        public double mmPerPx() { return pxPerMm > 0 ? 1.0 / pxPerMm : 0; }
+    }
+
+    /**
      * Render a realistic-view PNG with explicit control over bottom-side mirroring.
      *
      * @param layers       full layer set (both sides may be present)
@@ -1298,10 +1409,32 @@ public class MultiLayerSVGRenderer {
      */
     public byte[] renderRealisticSidePng(List<Layer> layers, Side side,
                                          int widthPx, int heightPx, boolean mirrorBottom) {
+        PngWithScale r = renderRealisticSidePngWithScale(
+            layers, side, widthPx, heightPx, mirrorBottom);
+        return r == null ? null : r.png;
+    }
+
+    /**
+     * Render a realistic-view PNG and return it together with the px↔mm scale and the
+     * mm rectangle it covers, so a caller can overlay real-world measurements (e.g. a
+     * 10 mm grid behind the board). Same rendering and caps as
+     * {@link #renderRealisticSidePng(List, Side, int, int, boolean)}.
+     *
+     * @return a {@link PngWithScale}, or {@code null} if the side couldn't be rendered
+     * @throws IllegalArgumentException if both dimensions are {@code <= 0}
+     */
+    public PngWithScale renderRealisticSidePngWithScale(List<Layer> layers, Side side,
+            int widthPx, int heightPx, boolean mirrorBottom) {
         if (widthPx <= 0 && heightPx <= 0) {
             throw new IllegalArgumentException(
                 "At least one of widthPx/heightPx must be positive");
         }
+        // Thumbnail raster cap: clamp any explicitly-requested dimension to the thumbnail
+        // ceiling so a caller asking for a large PNG can't drive Batik's masked working set
+        // into OOM territory. The derived dimension below is clamped to the same ceiling.
+        if (widthPx  > MAX_THUMBNAIL_DIMENSION_PX) widthPx  = MAX_THUMBNAIL_DIMENSION_PX;
+        if (heightPx > MAX_THUMBNAIL_DIMENSION_PX) heightPx = MAX_THUMBNAIL_DIMENSION_PX;
+
         // Thumbnails want a more generous, visible margin than the default 0.5 mm
         // used for overlay/DRC work — scale with board size so small and large
         // boards both get visible breathing room around the outline.
@@ -1315,19 +1448,49 @@ public class MultiLayerSVGRenderer {
         }
         if (svg == null) return null;
 
+        // The viewBox is the image's mm extent (board bounds + thumbnail margin) and is
+        // the source of truth for the px↔mm scale below.
+        double[] vb = parseViewBox(svg);
+
         // Derive the missing dimension from the SVG's viewBox so the PNG's
         // aspect ratio exactly matches the board's X/Y extent (plus margin).
         // Passing both dimensions explicitly avoids any ambiguity in how
         // Batik resolves a single KEY_WIDTH/KEY_HEIGHT hint.
         if (widthPx <= 0 || heightPx <= 0) {
-            double[] vb = parseViewBox(svg);
             if (vb != null && vb[2] > 0 && vb[3] > 0) {
                 double aspect = vb[2] / vb[3];
-                if (widthPx <= 0)  widthPx  = Math.max(1, (int) Math.round(heightPx * aspect));
-                if (heightPx <= 0) heightPx = Math.max(1, (int) Math.round(widthPx / aspect));
+                // Compute in long and clamp: a pathological aspect ratio (e.g. a stray
+                // element inflating the viewBox of an outline-less board) can otherwise
+                // overflow the int cast and/or demand a multi-gigabyte raster from Batik.
+                if (widthPx <= 0) {
+                    long w = Math.round((double) heightPx * aspect);
+                    widthPx = (int) Math.max(1, Math.min(w, MAX_THUMBNAIL_DIMENSION_PX));
+                }
+                if (heightPx <= 0) {
+                    long h = Math.round((double) widthPx / aspect);
+                    heightPx = (int) Math.max(1, Math.min(h, MAX_THUMBNAIL_DIMENSION_PX));
+                }
             }
         }
-        return rasterizeSvgToPng(svg, widthPx, heightPx);
+        byte[] png = rasterizeSvgToPng(svg, widthPx, heightPx);
+        // rasterizeSvgToPng only ever clamps *down* (8192/16 M-px backstop); for a
+        // thumbnail (≤1024² ≈ 1 M px) it never fires, so widthPx/heightPx here are the
+        // PNG's true dimensions and the scale below is exact.
+        double minXmm = vb != null ? vb[0] : 0;
+        double minYmm = vb != null ? vb[1] : 0;
+        double widthMm  = vb != null ? vb[2] : 0;
+        double heightMm = vb != null ? vb[3] : 0;
+        boolean mirrored = mirrorBottom && side == Side.BOTTOM;
+        PngWithScale result = new PngWithScale(
+            png, widthPx, heightPx, minXmm, minYmm, widthMm, heightMm, side, mirrored, flipY);
+        // Make the PNG self-describing: embed the scale (pHYs) and full mm geometry +
+        // datum-origin + side (tEXt).
+        byte[] withMeta = embedScaleMetadata(png, result.pxPerMm, minXmm, minYmm,
+            widthMm, heightMm, result.contentOffsetXpx, result.contentOffsetYpx,
+            result.originXpx, result.originYpx, side, mirrored);
+        if (withMeta == png) return result; // not a PNG (shouldn't happen) — return as-is
+        return new PngWithScale(withMeta, widthPx, heightPx,
+            minXmm, minYmm, widthMm, heightMm, side, mirrored, flipY);
     }
 
     /** 3% of the max outline dimension, floored at 1.5 mm. */
@@ -1377,6 +1540,121 @@ public class MultiLayerSVGRenderer {
         return svg.substring(0, vpStart) + newVpTag + svg.substring(vpEnd);
     }
 
+    /** 8-byte PNG file signature. */
+    private static final byte[] PNG_SIGNATURE =
+        {(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+
+    /**
+     * Embed the px↔mm scale into a freshly-encoded PNG so the image is self-describing:
+     * <ul>
+     *   <li>a standard {@code pHYs} chunk recording pixels-per-metre (uniform on both
+     *       axes) — image viewers and libraries read this as the image's resolution/DPI;</li>
+     *   <li>{@code tEXt} chunks: {@code side} (\"top\"/\"bottom\"), {@code pxPerMm} (the
+     *       exact scale as text), and {@code boardGeometryMm} (a JSON object with the side,
+     *       mirror flag, the gerber-space mm rectangle the image covers, the letterbox
+     *       content offset, and the pixel location of the gerber/drill datum origin), for
+     *       callers that want to label the side and overlay real-world measurements such as
+     *       a 10 mm grid anchored to the origin.</li>
+     * </ul>
+     * The new chunks replace any existing {@code pHYs} and are spliced in before the first
+     * {@code IDAT} (as the spec requires). Returns the input unchanged if it isn't a PNG.
+     */
+    private static byte[] embedScaleMetadata(byte[] png, double pxPerMm,
+            double minXmm, double minYmm, double widthMm, double heightMm,
+            double contentOffsetXpx, double contentOffsetYpx,
+            double originXpx, double originYpx, Side side, boolean mirrored) {
+        if (png == null || png.length < 8 + 25) return png;
+        for (int i = 0; i < PNG_SIGNATURE.length; i++) {
+            if (png[i] != PNG_SIGNATURE[i]) return png; // not a PNG — leave it alone
+        }
+
+        // pHYs: pixels-per-unit X/Y (big-endian, uint32) + unit specifier (1 = metre).
+        long ppm = Math.round(pxPerMm * 1000.0); // px per mm -> px per metre
+        if (ppm < 0) ppm = 0;
+        byte[] phys = new byte[9];
+        writeUInt32(phys, 0, ppm);
+        writeUInt32(phys, 4, ppm);
+        phys[8] = 1;
+
+        String sideStr = side == Side.BOTTOM ? "bottom" : "top";
+        String geometry = String.format(Locale.US,
+            "{\"side\":\"%s\",\"mirrored\":%b,\"pxPerMm\":%.6f,"
+            + "\"mmRect\":[%.6f,%.6f,%.6f,%.6f],"
+            + "\"contentOffsetPx\":[%.3f,%.3f],\"originPx\":[%.3f,%.3f]}",
+            sideStr, mirrored, pxPerMm, minXmm, minYmm, widthMm, heightMm,
+            contentOffsetXpx, contentOffsetYpx, originXpx, originYpx);
+
+        // Walk the chunk stream so we can (a) drop any pHYs Batik already wrote — leaving
+        // two would make readers pick the wrong one — and (b) splice our chunks in just
+        // before the first IDAT, satisfying the spec's "pHYs before IDAT" ordering.
+        ByteArrayOutputStream out = new ByteArrayOutputStream(png.length + 128);
+        out.write(png, 0, 8); // signature
+        int pos = 8;
+        boolean inserted = false;
+        while (pos + 8 <= png.length) {
+            long len = readUInt32(png, pos);
+            int dataStart = pos + 8;
+            int chunkEnd = (int) (dataStart + len + 4); // +4 CRC
+            if (len < 0 || chunkEnd > png.length) break; // malformed — bail, keep original
+            String type = new String(png, pos + 4, 4,
+                java.nio.charset.StandardCharsets.US_ASCII);
+            if ("pHYs".equals(type)) { pos = chunkEnd; continue; } // drop existing pHYs
+            if (("IDAT".equals(type) || "IEND".equals(type)) && !inserted) {
+                writeChunk(out, "pHYs", phys);
+                writeChunk(out, "tEXt", textChunkData("side", sideStr));
+                writeChunk(out, "tEXt", textChunkData("pxPerMm",
+                    String.format(Locale.US, "%.6f", pxPerMm)));
+                writeChunk(out, "tEXt", textChunkData("boardGeometryMm", geometry));
+                inserted = true;
+            }
+            out.write(png, pos, chunkEnd - pos);
+            pos = chunkEnd;
+        }
+        if (!inserted) return png; // never found IDAT/IEND — leave original untouched
+        return out.toByteArray();
+    }
+
+    private static void writeUInt32(byte[] buf, int off, long v) {
+        buf[off]     = (byte) ((v >>> 24) & 0xFF);
+        buf[off + 1] = (byte) ((v >>> 16) & 0xFF);
+        buf[off + 2] = (byte) ((v >>> 8) & 0xFF);
+        buf[off + 3] = (byte) (v & 0xFF);
+    }
+
+    private static long readUInt32(byte[] buf, int off) {
+        return ((long) (buf[off] & 0xFF) << 24)
+             | ((buf[off + 1] & 0xFF) << 16)
+             | ((buf[off + 2] & 0xFF) << 8)
+             | (buf[off + 3] & 0xFF);
+    }
+
+    /** Latin-1 keyword + NUL separator + Latin-1 text, per the PNG {@code tEXt} format. */
+    private static byte[] textChunkData(String keyword, String text) {
+        byte[] k = keyword.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        byte[] t = text.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        byte[] data = new byte[k.length + 1 + t.length];
+        System.arraycopy(k, 0, data, 0, k.length);
+        data[k.length] = 0;
+        System.arraycopy(t, 0, data, k.length + 1, t.length);
+        return data;
+    }
+
+    /** Write a full PNG chunk: length(4) + type(4) + data + CRC32(type+data). */
+    private static void writeChunk(ByteArrayOutputStream out, String type, byte[] data) {
+        byte[] typeBytes = type.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] len = new byte[4];
+        writeUInt32(len, 0, data.length);
+        out.write(len, 0, 4);
+        out.write(typeBytes, 0, 4);
+        out.write(data, 0, data.length);
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(typeBytes);
+        crc.update(data);
+        byte[] crcBytes = new byte[4];
+        writeUInt32(crcBytes, 0, crc.getValue());
+        out.write(crcBytes, 0, 4);
+    }
+
     private static double[] parseViewBox(String svg) {
         int i = svg.indexOf("viewBox=\"");
         if (i < 0) return null;
@@ -1405,13 +1683,34 @@ public class MultiLayerSVGRenderer {
             throw new IllegalArgumentException(
                 "At least one of widthPx/heightPx must be positive");
         }
+
+        // Clamp before handing to Batik — it allocates width*height*4 bytes for the raster,
+        // so an unbounded dimension (from a pathological viewBox aspect ratio) OOMs the JVM.
+        // Clamp each provided side, then, when both are known, scale the pair down
+        // proportionally so the total stays under MAX_RASTER_PIXELS while preserving aspect.
+        if (widthPx  > MAX_RASTER_DIMENSION_PX) widthPx  = MAX_RASTER_DIMENSION_PX;
+        if (heightPx > MAX_RASTER_DIMENSION_PX) heightPx = MAX_RASTER_DIMENSION_PX;
+        if (widthPx > 0 && heightPx > 0
+                && (long) widthPx * heightPx > MAX_RASTER_PIXELS) {
+            double scale = Math.sqrt((double) MAX_RASTER_PIXELS / ((double) widthPx * heightPx));
+            widthPx  = Math.max(1, (int) Math.floor(widthPx  * scale));
+            heightPx = Math.max(1, (int) Math.floor(heightPx * scale));
+        }
+
         PNGTranscoder transcoder = new PNGTranscoder();
         if (widthPx > 0)  transcoder.addTranscodingHint(PNGTranscoder.KEY_WIDTH,  (float) widthPx);
         if (heightPx > 0) transcoder.addTranscodingHint(PNGTranscoder.KEY_HEIGHT, (float) heightPx);
+        // Backstop for the single-dimension callers: when only width (or height) is set,
+        // Batik derives the other from the SVG's own aspect ratio, which can itself explode.
+        // KEY_MAX_* bounds whatever Batik computes internally.
+        transcoder.addTranscodingHint(PNGTranscoder.KEY_MAX_WIDTH,  (float) MAX_RASTER_DIMENSION_PX);
+        transcoder.addTranscodingHint(PNGTranscoder.KEY_MAX_HEIGHT, (float) MAX_RASTER_DIMENSION_PX);
+
         String batikSvg = makeBatikCompatible(svg);
         TranscoderInput input = new TranscoderInput(new StringReader(batikSvg));
-        int buf = Math.max(widthPx, heightPx) * 32;
-        ByteArrayOutputStream out = new ByteArrayOutputStream(buf > 0 ? buf : 16384);
+        long buf = (long) Math.max(widthPx, heightPx) * 32;
+        int initialBuf = (int) Math.min(Math.max(buf, 16384), 1 << 20);
+        ByteArrayOutputStream out = new ByteArrayOutputStream(initialBuf);
         TranscoderOutput output = new TranscoderOutput(out);
         try {
             transcoder.transcode(input, output);
