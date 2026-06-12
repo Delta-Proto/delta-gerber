@@ -95,6 +95,57 @@ public class SVGRenderer {
         return this;
     }
 
+    /**
+     * Render the document and rasterize it to a PNG in one step.
+     * <p>
+     * All renderer settings (colors, margin, flipY, viewBox) apply. The background is
+     * transparent unless {@link #setBackgroundColor(String)} or
+     * {@link #setIncludeBackground(boolean)} is used — set a background when the PNG is
+     * meant for human or vision-model reading (fab drawings, drill legends). Dimensions
+     * are clamped by the same caps as
+     * {@link MultiLayerSVGRenderer#rasterizeSvgToPng(String, int, int)}.
+     *
+     * @param doc     the parsed Gerber layer
+     * @param widthPx target PNG width in pixels; height follows the layer's aspect ratio
+     * @return PNG bytes
+     */
+    public byte[] renderPng(GerberDocument doc, int widthPx) {
+        return renderPng(doc, widthPx, 0);
+    }
+
+    /**
+     * Render the document and rasterize it to a PNG at explicit dimensions.
+     * Pass {@code 0} for one dimension to derive it from the layer's aspect ratio.
+     */
+    public byte[] renderPng(GerberDocument doc, int widthPx, int heightPx) {
+        // The SVG output carries a viewBox but no width/height attributes, so Batik
+        // cannot derive a missing pixel dimension from it (it falls back to a 400px
+        // default viewport). Derive it here from the document's own aspect ratio.
+        if (widthPx <= 0 || heightPx <= 0) {
+            double aspect = viewBoxAspect(doc);
+            if (widthPx > 0) {
+                heightPx = Math.max(1, (int) Math.round(widthPx / aspect));
+            } else if (heightPx > 0) {
+                widthPx = Math.max(1, (int) Math.round(heightPx * aspect));
+            }
+        }
+        return MultiLayerSVGRenderer.rasterizeSvgToPng(render(doc), widthPx, heightPx);
+    }
+
+    /** Width/height ratio of the viewBox that {@link #render(GerberDocument)} will emit. */
+    private double viewBoxAspect(GerberDocument doc) {
+        if (fixedViewBoxSize != null) {
+            return 1.0;
+        }
+        BoundingBox bounds = doc.getBoundingBox();
+        if (!bounds.isValid()) {
+            return 1.0; // createEmptySvg() uses a 1x1 viewBox
+        }
+        double width = bounds.getWidth() + 2 * margin;
+        double height = bounds.getHeight() + 2 * margin;
+        return height > 0 ? width / height : 1.0;
+    }
+
     public String render(GerberDocument doc) {
         BoundingBox bounds = doc.getBoundingBox();
         if (!bounds.isValid()) {

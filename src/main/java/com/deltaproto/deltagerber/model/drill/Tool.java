@@ -1,5 +1,7 @@
 package com.deltaproto.deltagerber.model.drill;
 
+import java.util.Locale;
+
 /**
  * Represents a drill tool definition.
  */
@@ -52,7 +54,7 @@ public class Tool {
      * Generate SVG definition for this tool (a circle).
      */
     public String toSvgDef(String id) {
-        return String.format("<circle id=\"%s\" r=\"%.6f\"/>", id, diameter / 2);
+        return String.format(Locale.US, "<circle id=\"%s\" r=\"%.6f\"/>", id, diameter / 2);
     }
 
     @Override

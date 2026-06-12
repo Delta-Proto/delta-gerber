@@ -5,6 +5,8 @@ import com.deltaproto.deltagerber.model.drill.DrillOperation;
 import com.deltaproto.deltagerber.model.drill.Tool;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 
+import java.util.Locale;
+
 /**
  * Renders Excellon drill documents to SVG format.
  */
@@ -44,6 +46,29 @@ public class DrillSVGRenderer {
         return this;
     }
 
+    /**
+     * Render the drill document and rasterize it to a PNG in one step.
+     * <p>
+     * All renderer settings (colors, margin, flipY) apply. The background is transparent
+     * unless {@link #setBackgroundColor(String)} is used. Dimensions are clamped by the
+     * same caps as {@link MultiLayerSVGRenderer#rasterizeSvgToPng(String, int, int)}.
+     *
+     * @param doc     the parsed Excellon drill file
+     * @param widthPx target PNG width in pixels; height follows the file's aspect ratio
+     * @return PNG bytes
+     */
+    public byte[] renderPng(DrillDocument doc, int widthPx) {
+        return MultiLayerSVGRenderer.rasterizeSvgToPng(render(doc), widthPx);
+    }
+
+    /**
+     * Render the drill document and rasterize it to a PNG at explicit dimensions.
+     * Pass {@code 0} for one dimension to derive it from the file's aspect ratio.
+     */
+    public byte[] renderPng(DrillDocument doc, int widthPx, int heightPx) {
+        return MultiLayerSVGRenderer.rasterizeSvgToPng(render(doc), widthPx, heightPx);
+    }
+
     public String render(DrillDocument doc) {
         BoundingBox bounds = doc.getBoundingBox();
         if (!bounds.isValid()) {
@@ -58,7 +83,7 @@ public class DrillSVGRenderer {
         StringBuilder svg = new StringBuilder();
 
         // SVG header
-        svg.append(String.format(
+        svg.append(String.format(Locale.US,
             "<svg xmlns=\"http://www.w3.org/2000/svg\" " +
             "viewBox=\"%.6f %.6f %.6f %.6f\" " +
             "width=\"%.6fmm\" height=\"%.6fmm\">\n",
@@ -80,14 +105,14 @@ public class DrillSVGRenderer {
 
         // Apply Y flip if needed
         if (flipY) {
-            svg.append(String.format(
+            svg.append(String.format(Locale.US,
                 "<g transform=\"translate(0, %.6f) scale(1,-1)\">\n",
                 minY + height + minY));
         }
 
         // Background rectangle
         if (backgroundColor != null) {
-            svg.append(String.format(
+            svg.append(String.format(Locale.US,
                 "<rect x=\"%.6f\" y=\"%.6f\" width=\"%.6f\" height=\"%.6f\" fill=\"%s\"/>\n",
                 minX, minY, width, height, backgroundColor));
         }
