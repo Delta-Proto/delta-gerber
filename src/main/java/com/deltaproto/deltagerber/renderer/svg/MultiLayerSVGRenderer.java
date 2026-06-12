@@ -353,6 +353,7 @@ public class MultiLayerSVGRenderer {
         // Categorize layers by type
         Layer outlineLayer = null;
         List<Layer> copperLayers = new ArrayList<>();
+        List<Layer> innerCopperLayers = new ArrayList<>();
         List<Layer> soldermaskLayers = new ArrayList<>();
         List<Layer> silkscreenLayers = new ArrayList<>();
         List<Layer> drillLayers = new ArrayList<>();
@@ -365,6 +366,10 @@ public class MultiLayerSVGRenderer {
                 case COPPER_TOP:
                 case COPPER_BOTTOM:
                     copperLayers.add(layer);
+                    break;
+                case COPPER_INNER:
+                    // not drawn — inner pours only contribute to outline derivation
+                    innerCopperLayers.add(layer);
                     break;
                 case SOLDERMASK_TOP:
                 case SOLDERMASK_BOTTOM:
@@ -435,6 +440,9 @@ public class MultiLayerSVGRenderer {
         } else {
             List<GerberDocument> silhouetteDocs = new ArrayList<>();
             for (Layer l : copperLayers) {
+                if (l.isGerber() && l.getGerberDoc() != null) silhouetteDocs.add(l.getGerberDoc());
+            }
+            for (Layer l : innerCopperLayers) {
                 if (l.isGerber() && l.getGerberDoc() != null) silhouetteDocs.add(l.getGerberDoc());
             }
             for (Layer l : soldermaskLayers) {
@@ -1554,38 +1562,62 @@ public class MultiLayerSVGRenderer {
         double pxPerMm = canvasW / uW;
 
         try {
-            // 1. Annotation underlay: every layer, dark, fully opaque, on its own
-            //    renderer so this instance's svgOptions state is left untouched.
-            List<Layer> underlayLayers = new ArrayList<>();
-            for (Layer l : layers) {
-                Layer copy = l.isGerber()
-                        ? new Layer(l.getName(), l.getGerberDoc())
-                        : new Layer(l.getName(), l.getDrillDoc());
-                copy.setLayerType(l.getLayerType());
-                copy.setColor(OVERVIEW_ANNOTATION_COLOR);
-                copy.setOpacity(1.0);
-                copy.setVisible(true);
-                underlayLayers.add(copy);
+            // 1. Annotation underlay, rasterized PER LAYER and composited as bitmaps.
+            //    One combined SVG of a dense multi-layer set builds a Batik GVT tree of
+            //    the whole board (hundreds of MB); per-layer jobs bound peak memory by
+            //    the largest single layer. Each layer is rendered in its own mm frame
+            //    and placed on the canvas by the same px<->mm mapping as the board.
+            BufferedImage underlay = new BufferedImage(canvasW, canvasH, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D ug = underlay.createGraphics();
+            try {
+                ug.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                        RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                for (Layer l : layers) {
+                    BoundingBox lb = l.getBoundingBox();
+                    if (!lb.isValid()) continue;
+                    Layer copy = l.isGerber()
+                            ? new Layer(l.getName(), l.getGerberDoc())
+                            : new Layer(l.getName(), l.getDrillDoc());
+                    copy.setLayerType(l.getLayerType());
+                    copy.setColor(OVERVIEW_ANNOTATION_COLOR);
+                    copy.setOpacity(1.0);
+                    copy.setVisible(true);
+
+                    double layerMargin = 0.2; // keep edge strokes inside the frame
+                    double lW = lb.getWidth() + 2 * layerMargin;
+                    double lH = lb.getHeight() + 2 * layerMargin;
+                    int lPxW = Math.max(1, (int) Math.round(lW * pxPerMm));
+                    int lPxH = Math.max(1, (int) Math.round(lH * pxPerMm));
+
+                    MultiLayerSVGRenderer layerRenderer = new MultiLayerSVGRenderer()
+                            .setMargin(layerMargin)
+                            .setFlipY(flipY);
+                    byte[] layerPng;
+                    try {
+                        layerPng = rasterizeSvgToPng(
+                                layerRenderer.render(List.of(copy)), lPxW, lPxH);
+                    } catch (Exception | OutOfMemoryError e) {
+                        continue; // skip a layer Batik can't handle; keep the rest
+                    }
+                    BufferedImage layerImg = ImageIO.read(new ByteArrayInputStream(layerPng));
+                    if (layerImg == null) continue;
+                    int dx = (int) Math.round((lb.getMinX() - layerMargin - uMinX) * pxPerMm);
+                    int dy = (int) Math.round((uMaxY - (lb.getMaxY() + layerMargin)) * pxPerMm);
+                    ug.drawImage(layerImg, dx, dy, lPxW, lPxH, null);
+                }
+            } finally {
+                ug.dispose();
             }
-            MultiLayerSVGRenderer underlayRenderer = new MultiLayerSVGRenderer()
-                    .setMargin(unionMargin)
-                    .setFlipY(flipY);
-            byte[] underlayPng = rasterizeSvgToPng(
-                    underlayRenderer.render(underlayLayers), canvasW, canvasH);
-            BufferedImage underlay = ImageIO.read(new ByteArrayInputStream(underlayPng));
 
             // 2. Realistic board for the requested side (never mirrored — annotation
             //    text must stay readable, so geometry orientation is preserved).
             PngWithScale board = null;
-            if (realisticIsAffordable(layers)) {
-                try {
-                    board = renderRealisticSidePngWithScale(layers, side,
-                            Math.min(canvasW, MAX_THUMBNAIL_DIMENSION_PX), 0, false);
-                } catch (Exception | OutOfMemoryError e) {
-                    // No outline / not derivable — or outline derivation from copper blew
-                    // the heap (Area boolean ops on dense boards). The overview degrades
-                    // to the underlay only; the annotation content is the point here.
-                }
+            try {
+                board = renderRealisticSidePngWithScale(layers, side,
+                        Math.min(canvasW, MAX_THUMBNAIL_DIMENSION_PX), 0, false);
+            } catch (Exception | OutOfMemoryError e) {
+                // No outline and none derivable — the overview degrades to the
+                // underlay only; the annotation content is the point here.
             }
 
             // 3. Composite on white.
@@ -1625,33 +1657,6 @@ public class MultiLayerSVGRenderer {
         } catch (java.io.IOException e) {
             throw new RuntimeException("board overview rendering failed", e);
         }
-    }
-
-    /**
-     * Outline-derivation cost ceiling for {@link #renderBoardOverviewPng}: without a
-     * real OUTLINE layer the board edge is derived from copper via java.awt.geom.Area
-     * boolean ops, whose cost explodes with object count (a dense board OOMs a 3 GB
-     * heap after a minute of GC thrash). Above this copper-object count the overview
-     * skips the realistic overlay outright instead of trying and failing slowly.
-     */
-    private static final int MAX_DERIVED_OUTLINE_COPPER_OBJECTS = 8_000;
-
-    private static boolean realisticIsAffordable(List<Layer> layers) {
-        boolean hasOutline = layers.stream()
-                .anyMatch(l -> l.getLayerType() == LayerType.OUTLINE && l.isGerber());
-        if (hasOutline) {
-            return true;
-        }
-        long copperObjects = 0;
-        for (Layer l : layers) {
-            LayerType t = l.getLayerType();
-            if ((t == LayerType.COPPER_TOP || t == LayerType.COPPER_BOTTOM
-                    || t == LayerType.SOLDERMASK_TOP || t == LayerType.SOLDERMASK_BOTTOM)
-                    && l.isGerber() && l.getGerberDoc() != null) {
-                copperObjects += l.getGerberDoc().getObjects().size();
-            }
-        }
-        return copperObjects <= MAX_DERIVED_OUTLINE_COPPER_OBJECTS;
     }
 
     /** 3% of the max outline dimension, floored at 1.5 mm. */
@@ -1930,6 +1935,10 @@ public class MultiLayerSVGRenderer {
                     || lt == LayerType.SOLDERMASK_BOTTOM || lt == LayerType.SILKSCREEN_BOTTOM)) {
                 out.add(layer);
                 if (lt == LayerType.COPPER_BOTTOM) hasCopper = true;
+            } else if (lt == LayerType.COPPER_INNER) {
+                // side-agnostic; participates in outline derivation only
+                out.add(layer);
+                hasCopper = true;
             } else if (lt == LayerType.DRILL || lt == LayerType.DRILL_PLATED
                     || lt == LayerType.DRILL_NON_PLATED) {
                 out.add(layer);
