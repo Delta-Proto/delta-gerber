@@ -16,6 +16,12 @@ import org.apache.batik.transcoder.TranscoderInput;
 import org.apache.batik.transcoder.TranscoderOutput;
 import org.apache.batik.transcoder.image.PNGTranscoder;
 
+import javax.imageio.ImageIO;
+import java.awt.Graphics2D;
+import java.awt.Color;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.StringReader;
 import java.util.*;
@@ -1491,6 +1497,161 @@ public class MultiLayerSVGRenderer {
         if (withMeta == png) return result; // not a PNG (shouldn't happen) — return as-is
         return new PngWithScale(withMeta, widthPx, heightPx,
             minXmm, minYmm, widthMm, heightMm, side, mirrored, flipY);
+    }
+
+    /** Color used for the annotation underlay in {@link #renderBoardOverviewPng}. */
+    private static final String OVERVIEW_ANNOTATION_COLOR = "#303030";
+
+    /**
+     * Render a single "board overview" image: the realistic view of one side,
+     * composited over an all-layers rendering of the <em>entire</em> Gerber set on a
+     * white canvas sized to the union of every layer's bounds.
+     * <p>
+     * Rationale: drill charts, stackup tables and fab notes are usually drawn
+     * <em>outside</em> the board outline (on legend/mechanical/assembly layers, or in
+     * the unused area of any layer). The realistic view clips to the board outline and
+     * drops those layers entirely, so that information is invisible. This composite
+     * keeps the realistic board where the board is, and shows everything else around
+     * it in dark gray — one image that a vision model can read end to end.
+     * <p>
+     * The realistic board is drawn opaquely on top of the underlay, so per-layer
+     * clutter inside the board area is hidden; only annotation content outside the
+     * outline remains visible. When no realistic view can be produced (no outline and
+     * no copper to derive one from), the all-layers underlay alone is returned.
+     *
+     * @param layers  the full layer set with layer types assigned
+     * @param side    which side to show realistically (annotations come from all layers)
+     * @param widthPx target canvas width in pixels; height follows the union aspect ratio
+     * @return PNG bytes
+     */
+    public byte[] renderBoardOverviewPng(List<Layer> layers, Side side, int widthPx) {
+        if (layers == null || layers.isEmpty()) {
+            throw new IllegalArgumentException("layers must not be empty");
+        }
+
+        // Union of every layer's bounds — the canvas extent.
+        BoundingBox union = new BoundingBox();
+        for (Layer l : layers) {
+            BoundingBox bb = l.getBoundingBox();
+            if (bb.isValid()) union.extend(bb);
+        }
+        if (!union.isValid()) {
+            throw new IllegalArgumentException("layers contain no drawable content");
+        }
+        double unionMargin = 1.5;
+        double uMinX = union.getMinX() - unionMargin;
+        double uMaxY = union.getMaxY() + unionMargin;
+        double uW = union.getWidth() + 2 * unionMargin;
+        double uH = union.getHeight() + 2 * unionMargin;
+
+        int canvasW = Math.max(200, Math.min(widthPx, MAX_RASTER_DIMENSION_PX));
+        int canvasH = (int) Math.max(1, Math.round(canvasW * uH / uW));
+        if ((long) canvasW * canvasH > MAX_RASTER_PIXELS) {
+            double scale = Math.sqrt((double) MAX_RASTER_PIXELS / ((double) canvasW * canvasH));
+            canvasW = Math.max(1, (int) Math.floor(canvasW * scale));
+            canvasH = Math.max(1, (int) Math.floor(canvasH * scale));
+        }
+        double pxPerMm = canvasW / uW;
+
+        try {
+            // 1. Annotation underlay: every layer, dark, fully opaque, on its own
+            //    renderer so this instance's svgOptions state is left untouched.
+            List<Layer> underlayLayers = new ArrayList<>();
+            for (Layer l : layers) {
+                Layer copy = l.isGerber()
+                        ? new Layer(l.getName(), l.getGerberDoc())
+                        : new Layer(l.getName(), l.getDrillDoc());
+                copy.setLayerType(l.getLayerType());
+                copy.setColor(OVERVIEW_ANNOTATION_COLOR);
+                copy.setOpacity(1.0);
+                copy.setVisible(true);
+                underlayLayers.add(copy);
+            }
+            MultiLayerSVGRenderer underlayRenderer = new MultiLayerSVGRenderer()
+                    .setMargin(unionMargin)
+                    .setFlipY(flipY);
+            byte[] underlayPng = rasterizeSvgToPng(
+                    underlayRenderer.render(underlayLayers), canvasW, canvasH);
+            BufferedImage underlay = ImageIO.read(new ByteArrayInputStream(underlayPng));
+
+            // 2. Realistic board for the requested side (never mirrored — annotation
+            //    text must stay readable, so geometry orientation is preserved).
+            PngWithScale board = null;
+            if (realisticIsAffordable(layers)) {
+                try {
+                    board = renderRealisticSidePngWithScale(layers, side,
+                            Math.min(canvasW, MAX_THUMBNAIL_DIMENSION_PX), 0, false);
+                } catch (Exception | OutOfMemoryError e) {
+                    // No outline / not derivable — or outline derivation from copper blew
+                    // the heap (Area boolean ops on dense boards). The overview degrades
+                    // to the underlay only; the annotation content is the point here.
+                }
+            }
+
+            // 3. Composite on white.
+            BufferedImage canvas = new BufferedImage(canvasW, canvasH, BufferedImage.TYPE_INT_RGB);
+            Graphics2D g = canvas.createGraphics();
+            try {
+                g.setColor(Color.WHITE);
+                g.fillRect(0, 0, canvasW, canvasH);
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                        RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                if (underlay != null) {
+                    g.drawImage(underlay, 0, 0, canvasW, canvasH, null);
+                }
+                if (board != null && board.png != null) {
+                    BufferedImage boardImg = ImageIO.read(new ByteArrayInputStream(board.png));
+                    if (boardImg != null) {
+                        // The board PNG covers the mm rect [minXmm..minXmm+widthMm] x
+                        // [minYmm..minYmm+heightMm] (Y-up); content rect is letterbox-aware.
+                        int dx1 = (int) Math.round((board.minXmm - uMinX) * pxPerMm);
+                        int dy1 = (int) Math.round((uMaxY - (board.minYmm + board.heightMm)) * pxPerMm);
+                        int dx2 = dx1 + (int) Math.round(board.widthMm * pxPerMm);
+                        int dy2 = dy1 + (int) Math.round(board.heightMm * pxPerMm);
+                        int sx1 = (int) Math.round(board.contentOffsetXpx);
+                        int sy1 = (int) Math.round(board.contentOffsetYpx);
+                        int sx2 = sx1 + (int) Math.round(board.contentWidthPx);
+                        int sy2 = sy1 + (int) Math.round(board.contentHeightPx);
+                        g.drawImage(boardImg, dx1, dy1, dx2, dy2, sx1, sy1, sx2, sy2, null);
+                    }
+                }
+            } finally {
+                g.dispose();
+            }
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ImageIO.write(canvas, "png", out);
+            return out.toByteArray();
+        } catch (java.io.IOException e) {
+            throw new RuntimeException("board overview rendering failed", e);
+        }
+    }
+
+    /**
+     * Outline-derivation cost ceiling for {@link #renderBoardOverviewPng}: without a
+     * real OUTLINE layer the board edge is derived from copper via java.awt.geom.Area
+     * boolean ops, whose cost explodes with object count (a dense board OOMs a 3 GB
+     * heap after a minute of GC thrash). Above this copper-object count the overview
+     * skips the realistic overlay outright instead of trying and failing slowly.
+     */
+    private static final int MAX_DERIVED_OUTLINE_COPPER_OBJECTS = 8_000;
+
+    private static boolean realisticIsAffordable(List<Layer> layers) {
+        boolean hasOutline = layers.stream()
+                .anyMatch(l -> l.getLayerType() == LayerType.OUTLINE && l.isGerber());
+        if (hasOutline) {
+            return true;
+        }
+        long copperObjects = 0;
+        for (Layer l : layers) {
+            LayerType t = l.getLayerType();
+            if ((t == LayerType.COPPER_TOP || t == LayerType.COPPER_BOTTOM
+                    || t == LayerType.SOLDERMASK_TOP || t == LayerType.SOLDERMASK_BOTTOM)
+                    && l.isGerber() && l.getGerberDoc() != null) {
+                copperObjects += l.getGerberDoc().getObjects().size();
+            }
+        }
+        return copperObjects <= MAX_DERIVED_OUTLINE_COPPER_OBJECTS;
     }
 
     /** 3% of the max outline dimension, floored at 1.5 mm. */
