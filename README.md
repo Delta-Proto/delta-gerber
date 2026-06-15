@@ -1,6 +1,6 @@
 # Delta Gerber
 
-A Java library for parsing Gerber RS-274X and Excellon NC drill files with SVG rendering, realistic PCB visualization, and an interactive web viewer.
+A Java library for parsing Gerber RS-274X and Excellon NC drill files with SVG and PNG rendering, realistic PCB visualization, and an interactive web viewer.
 
 **[Try the online viewer at deltaproto.com](https://deltaproto.com/opensource-gerber-viewer)** — no install needed, runs in your browser.
 
@@ -24,7 +24,7 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
 <dependency>
     <groupId>com.deltaproto</groupId>
     <artifactId>delta-gerber</artifactId>
-    <version>1.1.0</version>
+    <version>1.1.6</version>
 </dependency>
 ```
 
@@ -66,10 +66,30 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
   - Semi-transparent soldermask with inverted mask for pad openings
   - Silkscreen nested inside soldermask (only visible where mask is present)
   - Drill holes punching through all layers as true SVG transparency
+- Derived board outline when no GKO/outline layer is present — the board edge is
+  reconstructed from the copper-union silhouette so the realistic view still works
+
+### PNG / Raster Output
+- Per-layer PNG export for single Gerber or drill layers (`SVGRenderer.renderPng`,
+  `DrillSVGRenderer.renderPng`) — ideal for feeding individual layers to vision models
+- Realistic top/bottom PNGs (`renderRealisticSidePng`), dimension-clamped to keep
+  memory bounded on large boards
+- Scale-aware export (`renderRealisticSidePngWithScale` → `PngWithScale`) carrying
+  px↔mm geometry, embedded directly in the PNG via `pHYs` + `tEXt` chunks
+- Board overview PNG (`renderBoardOverviewPng`) — composites the realistic board over
+  an all-layers underlay so off-board annotations (drill charts, stackup tables, fab
+  notes) stay visible; scales to dense multi-layer boards via a raster silhouette path
+
+### Parse Diagnostics
+- Both Gerber and drill documents expose a de-duplicated list of parse warnings
+- Malformed, truncated, or hostile files degrade gracefully with a recorded warning
+  instead of crashing or producing a blank render
 
 ### Web Viewer
 - Interactive pan/zoom with mouse wheel and drag
 - Three visualization modes: All Layers, Board Top, Board Bottom
+- PNG Top/Bottom export of the realistic view
+- Warnings tab listing per-file parse warnings (disabled when there are none)
 - Layer type auto-detection from filename and content analysis
 - Layer type dropdowns for manual override
 - Select all/none checkbox with tri-state indicator
@@ -85,7 +105,7 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
 Download the standalone JAR from the [latest release](https://github.com/Delta-Proto/delta-gerber/releases/latest) and run:
 
 ```bash
-java -jar delta-gerber-1.1.0-jar-with-dependencies.jar
+java -jar delta-gerber-1.1.6-jar-with-dependencies.jar
 ```
 
 Open http://localhost:938 and drop a Gerber ZIP file onto the viewer, or click **"Try Example"** to load the bundled Arduino Uno board.
@@ -96,7 +116,7 @@ Open http://localhost:938 and drop a Gerber ZIP file onto the viewer, or click *
 
 ```bash
 mvn clean package
-java -jar target/delta-gerber-1.1.0-jar-with-dependencies.jar
+java -jar target/delta-gerber-1.1.6-jar-with-dependencies.jar
 ```
 
 ## Usage as Library
@@ -194,6 +214,37 @@ layers.add(new MultiLayerSVGRenderer.Layer("drill", drillDoc)
     .setLayerType(LayerType.DRILL));
 
 String realisticSvg = renderer.renderRealistic(layers);
+```
+
+### PNG Export
+
+All renderers can rasterize straight to PNG through the shared Batik pipeline.
+
+```java
+// A single layer to PNG (e.g. a fab drawing or drill legend for a vision model)
+byte[] layerPng = new SVGRenderer().renderPng(copperDoc, 1024);
+byte[] drillPng = new DrillSVGRenderer().renderPng(drillDoc, 1024);
+
+// Realistic top/bottom views to PNG (dimension-clamped for bounded memory)
+MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer();
+byte[] topPng = renderer.renderRealisticSidePng(layers, MultiLayerSVGRenderer.Side.TOP, 1024);
+
+// One image with the realistic board plus all off-board annotations
+// (drill charts, stackup tables, fab notes) composited around it
+byte[] overviewPng = renderer.renderBoardOverviewPng(layers, MultiLayerSVGRenderer.Side.TOP, 1024);
+
+Files.write(Path.of("board-top.png"), topPng);
+```
+
+When you need to map pixels back to real-world coordinates, `renderRealisticSidePngWithScale`
+returns a `PngWithScale` carrying the px↔mm scale, the mm rectangle the image covers, and the
+datum origin — the same geometry is also embedded in the PNG via `pHYs` + `tEXt` chunks.
+
+```java
+MultiLayerSVGRenderer.PngWithScale r =
+    renderer.renderRealisticSidePngWithScale(layers, MultiLayerSVGRenderer.Side.TOP, 1024, 0, false);
+double pxPerMm = r.pxPerMm;   // e.g. overlay a 10 mm grid behind the board
+Files.write(Path.of("board-top.png"), r.png);
 ```
 
 ## Aperture Visual Test
