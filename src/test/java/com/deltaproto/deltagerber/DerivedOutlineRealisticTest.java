@@ -21,7 +21,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * clearance seams between separate pours bridged so the board comes out as one piece.
  * <p>
  * Geometry is synthetic filled regions standing in for copper pours; the assertions
- * evaluate the derived clip path as an even-odd {@link Path2D}.
+ * evaluate the derived clip path as a non-zero {@link Path2D} — a derived outline carries
+ * no real cut-outs, so its same-wound silhouette pieces must union (nonzero), never cancel
+ * (even-odd). See {@link OutlineDeriver} / the realistic renderer's {@code outlineFillRule}.
  */
 public class DerivedOutlineRealisticTest {
 
@@ -72,7 +74,7 @@ public class DerivedOutlineRealisticTest {
         assertEquals(1, subpaths, "the two pours should merge into one board silhouette: " + d);
 
         Path2D fill = parseLinePath(d);
-        fill.setWindingRule(Path2D.WIND_EVEN_ODD);
+        fill.setWindingRule(Path2D.WIND_NON_ZERO);
         assertTrue(fill.contains(10.0, 15.0), "left pour should be filled");
         assertTrue(fill.contains(30.0, 15.0), "right pour should be filled");
         assertTrue(fill.contains(20.0, 15.0), "the bridged gap between pours should be filled");
@@ -81,7 +83,7 @@ public class DerivedOutlineRealisticTest {
 
     private static Path2D derivedClipFill(GerberDocument copper) throws Exception {
         Path2D fill = parseLinePath(derivedClipPath(copper));
-        fill.setWindingRule(Path2D.WIND_EVEN_ODD);
+        fill.setWindingRule(Path2D.WIND_NON_ZERO);
         return fill;
     }
 
@@ -94,8 +96,9 @@ public class DerivedOutlineRealisticTest {
         Matcher m = Pattern.compile(
             "<clipPath id=\"board-outline\">\\s*<path d=\"([^\"]*)\"([^/]*)/>").matcher(svg);
         assertTrue(m.find(), "realistic SVG should define a derived board-outline clipPath");
-        assertTrue(m.group(2).contains("clip-rule=\"evenodd\""),
-            "derived clip path must use clip-rule=evenodd, was: " + m.group(2));
+        assertTrue(m.group(2).contains("clip-rule=\"nonzero\""),
+            "derived clip path must use clip-rule=nonzero so its same-wound silhouette "
+            + "pieces union instead of cancelling into holes, was: " + m.group(2));
         return m.group(1);
     }
 

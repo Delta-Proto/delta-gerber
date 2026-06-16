@@ -453,9 +453,22 @@ public class MultiLayerSVGRenderer {
         }
         boolean hasOutlinePath = outlinePath != null && !outlinePath.isBlank();
 
+        // Fill/clip rule for the board-outline path. A real profile layer can carry
+        // genuine internal cut-outs — extractOutlinePath emits the board edge plus
+        // region holes and relies on EVEN-ODD to subtract them. A DERIVED outline has
+        // no real cut-outs: OutlineDeriver fills interior pockets and emits only the
+        // same-wound "outer" silhouette contours (holes already dropped), which must be
+        // UNIONED — the NONZERO rule. Under even-odd those same-wound pieces cancel
+        // wherever one nests inside another (the morphological close/outset step can emit
+        // concentric boundary loops over copper-dense zones), punching holes into the
+        // clip that erase the copper there — traces vanish from the realistic view while
+        // the board still looks like a full rectangle. See OutlineDeriver.toOuterSilhouettePath.
+        String outlineFillRule = haveOutlineLayer ? "evenodd" : "nonzero";
+
         if (hasOutlinePath) {
             svg.append("  <clipPath id=\"board-outline\">\n");
-            svg.append(String.format("    <path d=\"%s\" clip-rule=\"evenodd\"/>\n", outlinePath));
+            svg.append(String.format("    <path d=\"%s\" clip-rule=\"%s\"/>\n",
+                outlinePath, outlineFillRule));
             svg.append("  </clipPath>\n");
         }
 
@@ -532,7 +545,8 @@ public class MultiLayerSVGRenderer {
             // sm-mask: board outline white, soldermask objects black = where mask IS present
             svg.append(String.format("  <mask id=\"%s\">\n", smMaskId));
             if (hasOutlinePath) {
-                svg.append(String.format("    <path d=\"%s\" fill=\"white\" fill-rule=\"evenodd\"/>\n", outlinePath));
+                svg.append(String.format("    <path d=\"%s\" fill=\"white\" fill-rule=\"%s\"/>\n",
+                    outlinePath, outlineFillRule));
             } else {
                 // No outline path — use full viewbox rect as mask base
                 svg.append(String.format("    <rect %s fill=\"white\"/>\n", fullRectAttrs));
