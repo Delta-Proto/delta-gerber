@@ -133,4 +133,31 @@ public class PasteOverlayBoundsTest {
         Files.createDirectories(out.getParent());
         Files.writeString(out, inverse);
     }
+
+    @Test
+    void rasterFramesToOutlineWhileSvgFramesToUnion() {
+        // Outline 10..90 mm wide; a silkscreen flash at x=300 mm — far off-board. It's
+        // clipped out of the realistic view, but would dominate a union-framed viewBox.
+        List<MultiLayerSVGRenderer.Layer> all = new ArrayList<>();
+        all.add(new MultiLayerSVGRenderer.Layer("outline", parser.parse(rectOutline()))
+                .setLayerType(LayerType.OUTLINE));
+        all.add(new MultiLayerSVGRenderer.Layer("copper", parser.parse(pad(500000, 350000)))
+                .setLayerType(LayerType.COPPER_TOP));
+        all.add(new MultiLayerSVGRenderer.Layer("silk", parser.parse(pad(3000000, 350000)))
+                .setLayerType(LayerType.SILKSCREEN_TOP));
+
+        // Interactive SVG path: union bounds → viewBox spans out to the 300 mm flash, so a
+        // separate paste overlay over the same set still shares this frame.
+        String svg = new MultiLayerSVGRenderer().renderRealisticSide(all, MultiLayerSVGRenderer.Side.TOP);
+        double svgWidth = Double.parseDouble(viewBox(svg).split(" ")[2]);
+        assertTrue(svgWidth > 250, "SVG should frame to the union (incl. the 300 mm flash), got " + svgWidth);
+
+        // Raster thumbnail path: outline bounds → the ~80 mm board fills the image and the
+        // off-board flash is ignored.
+        MultiLayerSVGRenderer.PngWithScale png = new MultiLayerSVGRenderer()
+                .renderRealisticSidePngWithScale(all, MultiLayerSVGRenderer.Side.TOP, 200, 0, false);
+        assertNotNull(png);
+        assertTrue(png.widthMm < 120,
+                "PNG should frame to the ~80 mm outline (plus thumb margin), not the union; got " + png.widthMm);
+    }
 }

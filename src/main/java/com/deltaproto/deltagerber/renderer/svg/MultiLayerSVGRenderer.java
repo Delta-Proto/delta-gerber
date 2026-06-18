@@ -53,6 +53,11 @@ public class MultiLayerSVGRenderer {
     private double margin = 0.5;
     private boolean flipY = true;
     private SvgOptions svgOptions = SvgOptions.exact();
+    // When true, renderRealistic frames its viewBox to the board OUTLINE instead of the
+    // union of all layers. Set by the raster thumbnail path (renderRealisticSidePngWithScale)
+    // so off-board silkscreen/marks don't shrink the board into a corner of the image; the
+    // interactive SVG path keeps union bounds so a separate paste overlay shares its frame.
+    private boolean preferOutlineBoundsForViewBox = false;
 
     /**
      * A layer to be rendered, containing either a Gerber or Drill document.
@@ -479,8 +484,16 @@ public class MultiLayerSVGRenderer {
                 + "the board edge from");
         }
 
-        // Calculate global bounding box across ALL layers
-        BoundingBox globalBounds = computeGlobalBounds(layers);
+        // viewBox bounds. The interactive SVG path uses the UNION of all layers so a
+        // separately-rendered paste overlay (render()/renderInverse over the same set)
+        // shares this exact frame and aligns. Raster thumbnails instead frame to the board
+        // OUTLINE — content is clipped to the outline anyway, and off-board silkscreen/marks
+        // would otherwise shrink the board into a corner of a much larger image. Falls back
+        // to the union when there is no usable outline.
+        BoundingBox globalBounds = (preferOutlineBoundsForViewBox && haveOutlineLayer
+                && outlineLayer.getBoundingBox().isValid())
+            ? outlineLayer.getBoundingBox()
+            : computeGlobalBounds(layers);
         if (!globalBounds.isValid()) {
             return createEmptySvg();
         }
@@ -1539,12 +1552,16 @@ public class MultiLayerSVGRenderer {
         // used for overlay/DRC work — scale with board size so small and large
         // boards both get visible breathing room around the outline.
         double prevMargin = this.margin;
+        boolean prevPreferOutline = this.preferOutlineBoundsForViewBox;
         this.margin = computeThumbnailMargin(layers);
+        // Frame the raster to the board outline, not the union of all layers.
+        this.preferOutlineBoundsForViewBox = true;
         String svg;
         try {
             svg = renderRealisticSide(layers, side, mirrorBottom);
         } finally {
             this.margin = prevMargin;
+            this.preferOutlineBoundsForViewBox = prevPreferOutline;
         }
         if (svg == null) return null;
 
