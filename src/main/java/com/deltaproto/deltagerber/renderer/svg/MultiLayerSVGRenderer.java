@@ -138,14 +138,13 @@ public class MultiLayerSVGRenderer {
     }
 
     /**
-     * Render multiple layers into a single SVG document.
+     * Union bounding box across all layers (skipping any with invalid bounds). Both
+     * {@link #render} and {@link #renderRealistic} size their viewBox to this same box,
+     * so a layer rendered on its own over the same set shares their coordinate frame and
+     * overlays pixel-perfectly. The returned box may be {@link BoundingBox#isValid()
+     * invalid} when no layer has valid bounds — callers treat that as an empty render.
      */
-    public String render(List<Layer> layers) {
-        if (layers == null || layers.isEmpty()) {
-            return createEmptySvg();
-        }
-
-        // Calculate global bounding box across all layers
+    private static BoundingBox computeGlobalBounds(List<Layer> layers) {
         BoundingBox globalBounds = new BoundingBox();
         for (Layer layer : layers) {
             BoundingBox layerBounds = layer.getBoundingBox();
@@ -153,20 +152,94 @@ public class MultiLayerSVGRenderer {
                 globalBounds.extend(layerBounds);
             }
         }
+        return globalBounds;
+    }
 
+    /**
+     * Render multiple layers into a single SVG document.
+     */
+    public String render(List<Layer> layers) {
+        if (layers == null || layers.isEmpty()) {
+            return createEmptySvg();
+        }
+
+        BoundingBox globalBounds = computeGlobalBounds(layers);
         if (!globalBounds.isValid()) {
             return createEmptySvg();
         }
 
-        // Add margin
         double minX = globalBounds.getMinX() - margin;
         double minY = globalBounds.getMinY() - margin;
         double width = globalBounds.getWidth() + 2 * margin;
         double height = globalBounds.getHeight() + 2 * margin;
 
         StringBuilder svg = new StringBuilder();
+        appendSvgHeader(svg, minX, minY, width, height);
 
-        // SVG header with shared viewBox
+        svg.append("<defs>\n");
+        List<List<PolarityMaskHelper.PolarityGroup>> allLayerGroups = new ArrayList<>();
+        emitLayerDefs(svg, layers, allLayerGroups, minX, minY, width, height);
+        svg.append("</defs>\n");
+
+        emitViewportGroup(svg, layers, allLayerGroups, minX, minY, width, height, null);
+
+        svg.append("</svg>");
+        return svg.toString();
+    }
+
+    /**
+     * Render the visible layers as holes knocked out of a solid sheet spanning the global
+     * bounds, rather than as filled shapes. Shares {@link #render}'s viewBox / Y-flipped
+     * coordinate frame (via {@link #computeGlobalBounds}), so an inverse paste overlay still
+     * aligns pixel-for-pixel with the realistic view.
+     *
+     * <p>A {@code <mask>} is built from a white full-bounds rect (sheet shows) minus the
+     * layer shapes painted black (sheet hidden → holes); a {@code sheetColor} rect is then
+     * painted through it. Reducing the rendered element's opacity fades the sheet while the
+     * holes — having no pixels — stay fully transparent.
+     */
+    public String renderInverse(List<Layer> layers, String sheetColor) {
+        if (layers == null || layers.isEmpty()) {
+            return createEmptySvg();
+        }
+
+        BoundingBox globalBounds = computeGlobalBounds(layers);
+        if (!globalBounds.isValid()) {
+            return createEmptySvg();
+        }
+
+        double minX = globalBounds.getMinX() - margin;
+        double minY = globalBounds.getMinY() - margin;
+        double width = globalBounds.getWidth() + 2 * margin;
+        double height = globalBounds.getHeight() + 2 * margin;
+
+        StringBuilder svg = new StringBuilder();
+        appendSvgHeader(svg, minX, minY, width, height);
+
+        svg.append("<defs>\n");
+        List<List<PolarityMaskHelper.PolarityGroup>> allLayerGroups = new ArrayList<>();
+        emitLayerDefs(svg, layers, allLayerGroups, minX, minY, width, height);
+        svg.append(String.format(Locale.US,
+            "  <mask id=\"layer-knockout\" maskUnits=\"userSpaceOnUse\" "
+            + "x=\"%.6f\" y=\"%.6f\" width=\"%.6f\" height=\"%.6f\">\n",
+            minX, minY, width, height));
+        svg.append(String.format(Locale.US,
+            "    <rect x=\"%.6f\" y=\"%.6f\" width=\"%.6f\" height=\"%.6f\" fill=\"white\"/>\n",
+            minX, minY, width, height));
+        // Layers forced to black so they fully punch through the white sheet.
+        emitViewportGroup(svg, layers, allLayerGroups, minX, minY, width, height, "black");
+        svg.append("  </mask>\n");
+        svg.append("</defs>\n");
+
+        svg.append(String.format(Locale.US,
+            "<rect x=\"%.6f\" y=\"%.6f\" width=\"%.6f\" height=\"%.6f\" fill=\"%s\" "
+            + "mask=\"url(#layer-knockout)\"/>\n",
+            minX, minY, width, height, sanitizeColor(sheetColor)));
+        svg.append("</svg>");
+        return svg.toString();
+    }
+
+    private void appendSvgHeader(StringBuilder svg, double minX, double minY, double width, double height) {
         svg.append(String.format(Locale.US,
             "<svg xmlns=\"http://www.w3.org/2000/svg\" " +
             "viewBox=\"%.6f %.6f %.6f %.6f\" " +
@@ -174,18 +247,21 @@ public class MultiLayerSVGRenderer {
             "stroke-linecap=\"round\" stroke-linejoin=\"round\" " +
             "fill-rule=\"nonzero\">\n",
             minX, minY, width, height));
+    }
 
-        // Collect all apertures from all Gerber layers with unique prefixes
-        // Use "currentColor" so apertures pick up the layer group's color property
-        svg.append("<defs>\n");
-
+    /**
+     * Emit the aperture defs and clear-polarity mask defs for every gerber layer (into an
+     * open {@code <defs>}), populating {@code allLayerGroups} with the per-layer polarity
+     * groups that {@link #emitViewportGroup} consumes. Shared by {@link #render} and
+     * {@link #renderInverse}.
+     */
+    private void emitLayerDefs(StringBuilder svg, List<Layer> layers,
+                               List<List<PolarityMaskHelper.PolarityGroup>> allLayerGroups,
+                               double minX, double minY, double width, double height) {
         // Mask base rect for clear polarity masks
         String maskRect = PolarityMaskHelper.createMaskRect(minX, minY, width, height, 1);
 
         int layerIndex = 0;
-        // Pre-compute polarity groups per layer (needed for both mask defs and rendering)
-        List<List<PolarityMaskHelper.PolarityGroup>> allLayerGroups = new ArrayList<>();
-
         for (Layer layer : layers) {
             if (layer.isGerber() && layer.getGerberDoc() != null) {
                 String aperturePrefix = "L" + layerIndex + "_ap";
@@ -212,8 +288,18 @@ public class MultiLayerSVGRenderer {
             }
             layerIndex++;
         }
-        svg.append("</defs>\n");
+    }
 
+    /**
+     * Emit the Y-flipped {@code <g id="viewport">} with one {@code <g class="layer">} per
+     * layer. When {@code colorOverride} is non-null every layer is drawn in that colour at
+     * full opacity (used to paint the shapes black inside the knockout mask); otherwise each
+     * layer keeps its own colour and opacity. Shared by {@link #render}/{@link #renderInverse}.
+     */
+    private void emitViewportGroup(StringBuilder svg, List<Layer> layers,
+                                   List<List<PolarityMaskHelper.PolarityGroup>> allLayerGroups,
+                                   double minX, double minY, double width, double height,
+                                   String colorOverride) {
         // Viewport group with Y-flip transform and stroke-width="0" to prevent inherited strokes
         if (flipY) {
             svg.append(String.format(Locale.US,
@@ -223,17 +309,17 @@ public class MultiLayerSVGRenderer {
             svg.append("<g id=\"viewport\" stroke-width=\"0\">\n");
         }
 
-        // Render each layer as a group
-        layerIndex = 0;
+        int layerIndex = 0;
         for (Layer layer : layers) {
             String layerId = sanitizeId(layer.getName());
             String display = layer.isVisible() ? "inline" : "none";
-            String fillColor = sanitizeColor(layer.getColor());
+            String fillColor = colorOverride != null ? colorOverride : sanitizeColor(layer.getColor());
+            double opacity = colorOverride != null ? 1.0 : layer.getOpacity();
 
             svg.append(String.format(Locale.US,
                 "  <g class=\"layer\" id=\"%s\" display=\"%s\" " +
                 "color=\"%s\" fill=\"currentColor\" stroke=\"none\" stroke-width=\"0\" opacity=\"%.2f\">\n",
-                layerId, display, fillColor, layer.getOpacity()));
+                layerId, display, fillColor, opacity));
 
             // Render layer content
             if (layer.isGerber()) {
@@ -255,9 +341,6 @@ public class MultiLayerSVGRenderer {
         }
 
         svg.append("</g>\n");
-        svg.append("</svg>");
-
-        return svg.toString();
     }
 
     // Outline-chain tolerance (mm). Altium/other EDA tools sometimes emit
@@ -396,19 +479,8 @@ public class MultiLayerSVGRenderer {
                 + "the board edge from");
         }
 
-        // Use outline bounding box for viewBox (content is clipped to outline anyway);
-        // with no outline layer, fall back to the union of all layers' bounds.
-        BoundingBox globalBounds = haveOutlineLayer
-            ? outlineLayer.getBoundingBox() : new BoundingBox();
-        if (!globalBounds.isValid()) {
-            globalBounds = new BoundingBox();
-            for (Layer layer : layers) {
-                BoundingBox layerBounds = layer.getBoundingBox();
-                if (layerBounds.isValid()) {
-                    globalBounds.extend(layerBounds);
-                }
-            }
-        }
+        // Calculate global bounding box across ALL layers
+        BoundingBox globalBounds = computeGlobalBounds(layers);
         if (!globalBounds.isValid()) {
             return createEmptySvg();
         }
