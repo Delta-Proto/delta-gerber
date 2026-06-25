@@ -164,6 +164,18 @@
         .view-tab.has-warnings { color: #b45309; }
         .view-tab.has-warnings.active { color: #b45309; }
         .view-tab.has-warnings::before { content: '⚠ '; }
+        /* Soldermask color swatches — pick the realistic view's mask color. */
+        .soldermask-swatches {
+            display: inline-flex; align-items: center; gap: 5px;
+            margin-left: 6px; padding-left: 12px; border-left: 1px solid var(--border);
+        }
+        .sm-swatch {
+            width: 16px; height: 16px; padding: 0; border-radius: 4px; cursor: pointer;
+            border: 1px solid rgba(0,0,0,0.25); box-sizing: border-box;
+            transition: transform 0.08s ease, box-shadow 0.08s ease;
+        }
+        .sm-swatch:hover { transform: scale(1.15); }
+        .sm-swatch.active { box-shadow: 0 0 0 2px var(--bg-card), 0 0 0 4px var(--ring); }
         .btn-spinner {
             width: 14px; height: 14px; border: 2px solid var(--spinner-track);
             border-top-color: var(--primary); border-radius: 50%;
@@ -384,6 +396,15 @@
                 <button class="view-tab" data-view="bottom" onclick="switchView('bottom')">Board Bottom</button>
                 <button class="view-tab" id="centroid-tab" data-view="centroid" onclick="switchView('centroid')" disabled style="opacity:0.4">Centroid</button>
                 <button class="view-tab" id="warnings-tab" data-view="warnings" onclick="switchView('warnings')" disabled style="opacity:0.4">Warnings</button>
+                <span class="soldermask-swatches" id="soldermask-swatches" title="Soldermask color (realistic view)">
+                    <button class="sm-swatch active" data-color="green"  style="background:#008635" onclick="setSoldermask('green')"  title="Green"></button>
+                    <button class="sm-swatch"        data-color="purple" style="background:#ac13a6" onclick="setSoldermask('purple')" title="Purple"></button>
+                    <button class="sm-swatch"        data-color="red"    style="background:#bf0100" onclick="setSoldermask('red')"    title="Red"></button>
+                    <button class="sm-swatch"        data-color="yellow" style="background:#ffaa16" onclick="setSoldermask('yellow')" title="Yellow"></button>
+                    <button class="sm-swatch"        data-color="blue"   style="background:#002d8c" onclick="setSoldermask('blue')"   title="Blue"></button>
+                    <button class="sm-swatch"        data-color="white"  style="background:#f7f9fe" onclick="setSoldermask('white')"  title="White"></button>
+                    <button class="sm-swatch"        data-color="black"  style="background:#0f1010" onclick="setSoldermask('black')"  title="Black"></button>
+                </span>
                 <span style="flex:1"></span>
                 <button class="view-tab" id="png-top-btn" onclick="downloadThumbnail('top')"
                     title="Download PNG thumbnail of the realistic top view">
@@ -475,6 +496,21 @@
         let scale = 1, panX = 0, panY = 0, isPanning = false, startX, startY;
         let components = [];  // [{refdes, value, footprint, mountType, x, y, rotation, side}]
         let warnings = [];    // [{file, messages:[...]}]
+
+        // Soldermask color options for the realistic view. `mask`/`silk` are the
+        // colors actually rendered (mirrors SoldermaskColor.java); the tab swatch
+        // shows the fab's brighter advertised color. GREEN keeps our darker, more
+        // realistic mask shade rather than the bright swatch green.
+        const SOLDERMASK_COLORS = {
+            green:  { mask: '#004200', silk: '#ffffff' },
+            purple: { mask: '#ac13a6', silk: '#ffffff' },
+            red:    { mask: '#bf0100', silk: '#ffffff' },
+            yellow: { mask: '#ffaa16', silk: '#ffffff' },
+            blue:   { mask: '#002d8c', silk: '#ffffff' },
+            white:  { mask: '#f7f9fe', silk: '#000000' },
+            black:  { mask: '#0f1010', silk: '#ffffff' },
+        };
+        let selectedSoldermask = 'green';
 
         // DOM refs
         const fileInput = document.getElementById('file-input');
@@ -778,7 +814,7 @@
                 // closer inspection. Project-list consumers can call the endpoint
                 // directly with a smaller width.
                 const width = 800;
-                const resp = await fetch(`/api/gerber/thumbnail?side=${side}&width=${width}`,
+                const resp = await fetch(`/api/gerber/thumbnail?side=${side}&width=${width}&soldermask=${selectedSoldermask}`,
                     {method: 'POST', body: buildLayerBody(projectFiles)});
                 if (!resp.ok) throw new Error('Server error: ' + resp.status);
                 const blob = await resp.blob();
@@ -1097,10 +1133,43 @@
                         viewport.setAttribute('transform', `translate(${vx + vw + vx}, 0) scale(-1, 1) ${t}`);
                     }
                 }
+                applySoldermaskColor(svg);
                 svgContent.innerHTML = '';
                 svgContent.appendChild(svg);
             }
             updateTransform();
+        }
+
+        // ===== Soldermask color =====
+        function setSoldermask(name) {
+            if (!SOLDERMASK_COLORS[name]) return;
+            selectedSoldermask = name;
+            document.querySelectorAll('.sm-swatch').forEach(s =>
+                s.classList.toggle('active', s.dataset.color === name));
+            // Recolor the realistic view in place (no server round-trip).
+            const svg = svgContent.querySelector('svg');
+            if (svg) applySoldermaskColor(svg);
+        }
+
+        // Recolor the soldermask + silkscreen of a realistic SVG to the selected color.
+        // The renderer tags the mask rect (.pcb-soldermask) and silkscreen group
+        // (.pcb-silkscreen); silkscreen child shapes carry explicit fill/stroke, so we
+        // rewrite each non-"none" value to match what the renderer would emit. No-op on
+        // the all-layers view, which has neither marker.
+        function applySoldermaskColor(svgEl) {
+            const c = SOLDERMASK_COLORS[selectedSoldermask];
+            if (!svgEl || !c) return;
+            svgEl.querySelectorAll('.pcb-soldermask').forEach(el => el.setAttribute('fill', c.mask));
+            svgEl.querySelectorAll('.pcb-silkscreen').forEach(g => {
+                g.setAttribute('fill', c.silk);
+                g.setAttribute('color', c.silk);
+                g.querySelectorAll('*').forEach(el => {
+                    const f = el.getAttribute('fill');
+                    if (f && f !== 'none') el.setAttribute('fill', c.silk);
+                    const s = el.getAttribute('stroke');
+                    if (s && s !== 'none') el.setAttribute('stroke', c.silk);
+                });
+            });
         }
 
         function switchView(view) {

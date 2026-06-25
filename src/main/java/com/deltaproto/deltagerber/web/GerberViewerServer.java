@@ -10,6 +10,7 @@ import com.deltaproto.deltagerber.parser.ExcellonParser;
 import com.deltaproto.deltagerber.parser.GerberParser;
 import com.deltaproto.deltagerber.renderer.svg.LayerType;
 import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
+import com.deltaproto.deltagerber.renderer.svg.SoldermaskColor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -296,11 +297,15 @@ public class GerberViewerServer {
                 width  = clampDim(width,  0, 4000); // 0 = auto
                 height = clampDim(height, 0, 4000);
                 if (width == 0 && height == 0) width = 400;
+                // Soldermask color (green|purple|red|yellow|blue|white|black); unknown → green.
+                SoldermaskColor soldermask = SoldermaskColor.fromString(q.get("soldermask"));
 
                 byte[] body = exchange.getRequestBody().readAllBytes();
                 List<MultiLayerSVGRenderer.Layer> layers = parseLayerBody(body);
 
-                byte[] png = new MultiLayerSVGRenderer().renderRealisticSidePng(layers, side, width, height);
+                byte[] png = new MultiLayerSVGRenderer()
+                    .setSoldermaskColor(soldermask)
+                    .renderRealisticSidePng(layers, side, width, height);
                 if (png == null) {
                     sendResponse(exchange, 422, "application/json",
                         "{\"error\":\"no outline layer or side has no content\"}");

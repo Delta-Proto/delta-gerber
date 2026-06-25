@@ -59,6 +59,12 @@ public class MultiLayerSVGRenderer {
     // interactive SVG path keeps union bounds so a separate paste overlay shares its frame.
     private boolean preferOutlineBoundsForViewBox = false;
 
+    // Soldermask + silkscreen colors for renderRealistic. Default to the realistic
+    // dark green; override via setSoldermaskColor(...). The silkscreen color is paired
+    // with the mask (white on every color except white mask, which uses black).
+    private String soldermaskColor = SOLDERMASK_GREEN;
+    private String silkscreenColor = SILKSCREEN_WHITE;
+
     /**
      * A layer to be rendered, containing either a Gerber or Drill document.
      */
@@ -139,6 +145,27 @@ public class MultiLayerSVGRenderer {
 
     public MultiLayerSVGRenderer setSvgOptions(SvgOptions options) {
         this.svgOptions = options;
+        return this;
+    }
+
+    /**
+     * Set the soldermask color for {@link #renderRealistic} and the PNG paths built
+     * on it. Also selects the paired silkscreen color (black on white soldermask,
+     * white on every other). Defaults to {@link SoldermaskColor#GREEN}.
+     */
+    public MultiLayerSVGRenderer setSoldermaskColor(SoldermaskColor color) {
+        this.soldermaskColor = color.getMaskColor();
+        this.silkscreenColor = color.getSilkscreenColor();
+        return this;
+    }
+
+    /**
+     * Set explicit soldermask and silkscreen hex fills (e.g. {@code "#004200"}),
+     * for colors outside the {@link SoldermaskColor} palette.
+     */
+    public MultiLayerSVGRenderer setSoldermaskColor(String maskColor, String silkscreenColor) {
+        this.soldermaskColor = maskColor;
+        this.silkscreenColor = silkscreenColor;
         return this;
     }
 
@@ -770,16 +797,17 @@ public class MultiLayerSVGRenderer {
         for (Layer smLayer : soldermaskLayers) {
             boolean isTop = smLayer.getLayerType() == LayerType.SOLDERMASK_TOP;
             String smMaskId = isTop ? "sm-top-mask" : "sm-bottom-mask";
-            String smColor = SOLDERMASK_GREEN;
+            String smColor = soldermaskColor;
             // Always use the realistic default opacity for soldermask — the layer's
             // opacity is for the "all layers" overlay view, not the realistic view
             double smOpacity = SOLDERMASK_DEFAULT_OPACITY;
 
             svg.append(String.format("    <g mask=\"url(#%s)\">\n", smMaskId));
 
-            // Soldermask fill
+            // Soldermask fill. The pcb-soldermask class lets the viewer recolor the
+            // mask client-side (the color-swatch tabs) without a server round-trip.
             svg.append(String.format(Locale.US,
-                "      <rect %s fill=\"%s\" opacity=\"%.2f\"/>\n",
+                "      <rect class=\"pcb-soldermask\" %s fill=\"%s\" opacity=\"%.2f\"/>\n",
                 fullRectAttrs, smColor, smOpacity));
 
             // Silkscreen inside soldermask (only renders where mask is present)
@@ -787,13 +815,15 @@ public class MultiLayerSVGRenderer {
                 boolean ssIsTop = ssLayer.getLayerType() == LayerType.SILKSCREEN_TOP;
                 if (ssIsTop != isTop) continue; // Match top/bottom sides
 
-                String ssColor = SILKSCREEN_WHITE;
+                String ssColor = silkscreenColor;
                 String apPrefix = aperturePrefixes.get(ssLayer);
                 String maskPrefix = "L" + layerIndexMap.get(ssLayer) + "_cm";
                 List<PolarityMaskHelper.PolarityGroup> groups = polarityGroups.get(ssLayer);
 
+                // pcb-silkscreen marks the group so the viewer can recolor it (and its
+                // descendant fills/strokes) when the soldermask color changes.
                 svg.append(String.format(
-                    "      <g fill=\"%s\" color=\"%s\" stroke=\"none\" stroke-width=\"0\">\n",
+                    "      <g class=\"pcb-silkscreen\" fill=\"%s\" color=\"%s\" stroke=\"none\" stroke-width=\"0\">\n",
                     ssColor, ssColor));
 
                 SvgOptions layerOptions = svgOptions.copy()

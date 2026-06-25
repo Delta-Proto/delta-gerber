@@ -216,6 +216,30 @@ layers.add(new MultiLayerSVGRenderer.Layer("drill", drillDoc)
 String realisticSvg = renderer.renderRealistic(layers);
 ```
 
+#### Soldermask Color
+
+The realistic view (and the PNG paths built on it) defaults to a realistic dark
+green soldermask. Pick one of the standard fab colors with `setSoldermaskColor`.
+Each color carries its paired silkscreen color — white on every color except
+**white** soldermask, which uses black silkscreen:
+
+```java
+MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer()
+    .setSoldermaskColor(SoldermaskColor.RED);   // green (default), purple, red, yellow, blue, white, black
+
+String realisticSvg = renderer.renderRealistic(layers);
+```
+
+The `SoldermaskColor` palette matches the colors common fabricators (e.g. JLCPCB)
+offer. `SoldermaskColor.GREEN` keeps a deliberately darker mask shade (`#004200`)
+rather than the brighter advertised swatch green — at the soldermask's
+semi-transparent opacity over copper/FR4 it blends to a realistic board green.
+For a color outside the palette, pass explicit mask + silkscreen hex fills:
+
+```java
+renderer.setSoldermaskColor("#102a4c", "#ffffff");   // custom navy mask, white silk
+```
+
 ### PNG Export
 
 All renderers can rasterize straight to PNG through the shared Batik pipeline.

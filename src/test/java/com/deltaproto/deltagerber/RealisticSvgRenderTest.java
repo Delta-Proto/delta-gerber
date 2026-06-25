@@ -6,6 +6,7 @@ import com.deltaproto.deltagerber.parser.ExcellonParser;
 import com.deltaproto.deltagerber.parser.GerberParser;
 import com.deltaproto.deltagerber.renderer.svg.LayerType;
 import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
+import com.deltaproto.deltagerber.renderer.svg.SoldermaskColor;
 import org.junit.jupiter.api.*;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -179,6 +180,64 @@ public class RealisticSvgRenderTest {
 
         Files.writeString(OUTPUT_DIR.resolve("realistic-custom-colors.svg"), svg);
         System.out.println("Custom color rendering validated!");
+    }
+
+    @Test
+    @Order(15)
+    @DisplayName("Realistic render - setSoldermaskColor bakes mask + silkscreen colors")
+    void testSoldermaskColorOverride() throws Exception {
+        if (!Files.exists(DEPR_TEST_DIR)) {
+            System.out.println("DEPR test directory not found, skipping");
+            return;
+        }
+
+        Map<String, GerberDocument> docs = loadGerberFiles(
+            "uP-H Main PCBA Assy V04.GKO",
+            "uP-H Main PCBA Assy V04.GTL",
+            "uP-H Main PCBA Assy V04.GTS",
+            "uP-H Main PCBA Assy V04.GTO"
+        );
+
+        List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
+        layers.add(new MultiLayerSVGRenderer.Layer("outline", docs.get("GKO"))
+            .setLayerType(LayerType.OUTLINE));
+        layers.add(new MultiLayerSVGRenderer.Layer("copper-top", docs.get("GTL"))
+            .setLayerType(LayerType.COPPER_TOP));
+        layers.add(new MultiLayerSVGRenderer.Layer("soldermask-top", docs.get("GTS"))
+            .setLayerType(LayerType.SOLDERMASK_TOP));
+        layers.add(new MultiLayerSVGRenderer.Layer("silkscreen-top", docs.get("GTO"))
+            .setLayerType(LayerType.SILKSCREEN_TOP));
+
+        // Red mask, white silkscreen.
+        String red = new MultiLayerSVGRenderer()
+            .setSoldermaskColor(SoldermaskColor.RED)
+            .renderRealistic(layers);
+        assertTrue(red.contains("class=\"pcb-soldermask\""), "Soldermask rect should carry the recolor marker class");
+        assertTrue(red.contains("class=\"pcb-silkscreen\""), "Silkscreen group should carry the recolor marker class");
+        assertTrue(red.contains("#bf0100"), "Should bake the red soldermask color");
+        assertFalse(red.contains("#004200"), "Default green should no longer appear once overridden");
+
+        // White mask must switch the silkscreen to black.
+        String white = new MultiLayerSVGRenderer()
+            .setSoldermaskColor(SoldermaskColor.WHITE)
+            .renderRealistic(layers);
+        assertTrue(white.contains("#f7f9fe"), "Should bake the white soldermask color");
+        assertTrue(white.contains("class=\"pcb-silkscreen\" fill=\"#000000\""),
+            "White soldermask must print black silkscreen");
+
+        // Default (no override) stays the realistic dark green.
+        String green = new MultiLayerSVGRenderer().renderRealistic(layers);
+        assertTrue(green.contains("#004200"), "Default render should keep the realistic dark green");
+
+        // The PNG download rasterizes renderRealisticSide(...) — confirm the override
+        // flows down that path too (so "PNG Top"/"PNG Bottom" honour the selected color).
+        String redTopSide = new MultiLayerSVGRenderer()
+            .setSoldermaskColor(SoldermaskColor.RED)
+            .renderRealisticSide(layers, MultiLayerSVGRenderer.Side.TOP);
+        assertTrue(redTopSide.contains("#bf0100"),
+            "PNG path (renderRealisticSide) must also bake the selected soldermask color");
+
+        System.out.println("Soldermask color override validated!");
     }
 
     @Test
