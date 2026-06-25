@@ -33,10 +33,22 @@ git push origin vX.Y.Z
 
 ### 5. Create GitHub Release
 
+Attach the standalone fat jar (`jar-with-dependencies`) so it can be downloaded
+directly from the release page, as done up to 1.1.3 but missing since 1.1.4. The
+`maven-assembly-plugin` produces it during the build at
+`target/delta-gerber-X.Y.Z-jar-with-dependencies.jar`:
+
 ```bash
 gh release create vX.Y.Z --title "Release X.Y.Z" --notes "# Changes
 
-- Description of changes"
+- Description of changes" \
+  target/delta-gerber-X.Y.Z-jar-with-dependencies.jar
+```
+
+If the release already exists, attach the jar to it instead:
+
+```bash
+gh release upload vX.Y.Z target/delta-gerber-X.Y.Z-jar-with-dependencies.jar
 ```
 
 ### 6. Prepare Next Development Version
