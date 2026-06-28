@@ -76,6 +76,11 @@ public class MultiLayerSVGRenderer {
         private double opacity = 0.75;
         private boolean visible = true;
         private LayerType layerType = LayerType.OTHER;
+        // Render-time translation applied to this layer's geometry (mm), used by
+        // alignDrillLayersToGerber to pull an off-origin drill layer onto the board.
+        // Zero for every normally-placed layer, so most renders are unaffected.
+        private double offsetX = 0;
+        private double offsetY = 0;
 
         public Layer(String name, GerberDocument doc) {
             this.name = name;
@@ -120,7 +125,25 @@ public class MultiLayerSVGRenderer {
         public boolean isVisible() { return visible; }
         public LayerType getLayerType() { return layerType; }
 
-        public BoundingBox getBoundingBox() {
+        /**
+         * Translate this layer's rendered geometry by {@code (dx, dy)} mm. Used by
+         * {@link MultiLayerSVGRenderer#alignDrillLayersToGerber(List)} to re-home a drill
+         * layer that was exported on a different origin than the Gerbers. The offset is
+         * reflected both in {@link #getBoundingBox()} (so the viewBox grows to include the
+         * moved geometry) and in the emitted SVG (via a {@code translate(...)} group).
+         */
+        public Layer setRenderOffset(double dx, double dy) {
+            this.offsetX = dx;
+            this.offsetY = dy;
+            return this;
+        }
+
+        public double getOffsetX() { return offsetX; }
+        public double getOffsetY() { return offsetY; }
+        public boolean hasRenderOffset() { return offsetX != 0 || offsetY != 0; }
+
+        /** This layer's geometry bounds before any render offset is applied. */
+        public BoundingBox getRawBoundingBox() {
             if (gerberDoc != null) {
                 return gerberDoc.getBoundingBox();
             } else if (drillDoc != null) {
@@ -128,6 +151,84 @@ public class MultiLayerSVGRenderer {
             }
             return new BoundingBox();
         }
+
+        public BoundingBox getBoundingBox() {
+            BoundingBox raw = getRawBoundingBox();
+            if (!hasRenderOffset() || raw == null || !raw.isValid()) {
+                return raw;
+            }
+            return new BoundingBox(
+                raw.getMinX() + offsetX, raw.getMinY() + offsetY,
+                raw.getMaxX() + offsetX, raw.getMaxY() + offsetY);
+        }
+    }
+
+    /**
+     * Re-home drill layers that were exported on a different origin than the Gerbers so the
+     * "all layers" view overlays correctly.
+     * <p>
+     * Some EDA tools (notably Altium Designer) let the Gerber and NC-drill outputs reference
+     * different origins — e.g. the Gerbers are written relative to the board/relative origin
+     * (board near 0,0) while the drill file is written relative to the absolute sheet origin
+     * (board offset far from 0,0). The drill file carries no marker recording that offset, so
+     * the holes render translated away from the copper they belong to.
+     * <p>
+     * For each drill layer whose bounding box is <em>entirely disjoint</em> from the union of
+     * the Gerber layers, this shifts the drill geometry so its centre coincides with the Gerber
+     * union's centre and records a warning on the drill document. A drill layer that already
+     * overlaps the Gerbers is assumed correctly placed and is left untouched — so correctly
+     * exported file sets render exactly as before. The recovered offset is an estimate: the
+     * true origin difference is not stored anywhere in the files, so the drill pattern is simply
+     * centred within the board outline.
+     * <p>
+     * Idempotent: the offset is always computed from the raw (un-shifted) drill bounds, so
+     * calling it more than once over the same layers yields the same result.
+     */
+    static void alignDrillLayersToGerber(List<Layer> layers) {
+        if (layers == null || layers.isEmpty()) {
+            return;
+        }
+
+        BoundingBox gerberUnion = new BoundingBox();
+        for (Layer layer : layers) {
+            if (layer.isGerber()) {
+                BoundingBox b = layer.getRawBoundingBox();
+                if (b != null && b.isValid()) {
+                    gerberUnion.include(b);
+                }
+            }
+        }
+        if (!gerberUnion.isValid()) {
+            return; // no Gerber reference to align against
+        }
+
+        for (Layer layer : layers) {
+            if (!layer.isDrill()) {
+                continue;
+            }
+            BoundingBox drill = layer.getRawBoundingBox();
+            if (drill == null || !drill.isValid()) {
+                layer.setRenderOffset(0, 0);
+                continue;
+            }
+            if (boxesOverlap(drill, gerberUnion)) {
+                layer.setRenderOffset(0, 0); // already aligned — never move it
+                continue;
+            }
+            double dx = gerberUnion.getCenterX() - drill.getCenterX();
+            double dy = gerberUnion.getCenterY() - drill.getCenterY();
+            layer.setRenderOffset(dx, dy);
+            layer.getDrillDoc().addWarning(String.format(Locale.US,
+                "Drill coordinates use a different origin than the Gerber layers "
+                + "(shifted %.3f, %.3f mm) — drill pattern re-centred on the board for display",
+                dx, dy));
+        }
+    }
+
+    /** True when two valid bounding boxes share any area (touching edges count as overlap). */
+    private static boolean boxesOverlap(BoundingBox a, BoundingBox b) {
+        return a.getMinX() <= b.getMaxX() && a.getMaxX() >= b.getMinX()
+            && a.getMinY() <= b.getMaxY() && a.getMaxY() >= b.getMinY();
     }
 
     public MultiLayerSVGRenderer() {
@@ -195,6 +296,8 @@ public class MultiLayerSVGRenderer {
             return createEmptySvg();
         }
 
+        alignDrillLayersToGerber(layers);
+
         BoundingBox globalBounds = computeGlobalBounds(layers);
         if (!globalBounds.isValid()) {
             return createEmptySvg();
@@ -234,6 +337,8 @@ public class MultiLayerSVGRenderer {
         if (layers == null || layers.isEmpty()) {
             return createEmptySvg();
         }
+
+        alignDrillLayersToGerber(layers);
 
         BoundingBox globalBounds = computeGlobalBounds(layers);
         if (!globalBounds.isValid()) {
@@ -365,7 +470,7 @@ public class MultiLayerSVGRenderer {
 
                 PolarityMaskHelper.renderWithMasks(svg, groups, maskPrefix, layerOptions);
             } else if (layer.isDrill()) {
-                renderDrillContent(svg, layer.getDrillDoc());
+                renderDrillContent(svg, layer.getDrillDoc(), layer.getOffsetX(), layer.getOffsetY());
             }
 
             svg.append("  </g>\n");
@@ -464,6 +569,8 @@ public class MultiLayerSVGRenderer {
         if (layers == null || layers.isEmpty()) {
             return createEmptySvg();
         }
+
+        alignDrillLayersToGerber(layers);
 
         // Categorize layers by type
         Layer outlineLayer = null;
@@ -695,7 +802,7 @@ public class MultiLayerSVGRenderer {
             for (Layer layer : drillLayers) {
                 if (layer.isDrill()) {
                     svg.append("    <g fill=\"black\" color=\"black\" stroke=\"none\" stroke-width=\"0\">\n");
-                    renderDrillContent(svg, layer.getDrillDoc());
+                    renderDrillContent(svg, layer.getDrillDoc(), layer.getOffsetX(), layer.getOffsetY());
                     svg.append("    </g>\n");
                 } else if (layer.isGerber()) {
                     // Gerber X2 drill layer — render its flashes as solid black into the mask.
@@ -1351,13 +1458,31 @@ public class MultiLayerSVGRenderer {
     }
 
     private void renderDrillContent(StringBuilder svg, DrillDocument doc) {
+        renderDrillContent(svg, doc, 0, 0);
+    }
+
+    /**
+     * Emit a drill document's operations, optionally wrapped in a {@code translate(dx, dy)}
+     * group when the layer carries a render offset (see {@link #alignDrillLayersToGerber}).
+     * The translate is applied in the same Y-flipped user space as the geometry, so it stays
+     * consistent with the bounds reported by {@link Layer#getBoundingBox()}.
+     */
+    private void renderDrillContent(StringBuilder svg, DrillDocument doc, double offsetX, double offsetY) {
         if (doc == null) return;
 
+        boolean translated = offsetX != 0 || offsetY != 0;
+        if (translated) {
+            svg.append(String.format(Locale.US, "    <g transform=\"translate(%.6f,%.6f)\">\n",
+                offsetX, offsetY));
+        }
         for (DrillOperation op : doc.getOperations()) {
             String opSvg = op.toSvg();
             if (opSvg != null && !opSvg.isEmpty()) {
                 svg.append("    ").append(opSvg).append("\n");
             }
+        }
+        if (translated) {
+            svg.append("    </g>\n");
         }
     }
 
