@@ -12,9 +12,6 @@ import com.deltaproto.deltagerber.model.gerber.operation.GraphicsObject;
 import com.deltaproto.deltagerber.model.gerber.operation.Region;
 
 import java.awt.BasicStroke;
-import java.awt.Color;
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
 import java.awt.Shape;
 import java.awt.geom.Area;
 import java.awt.geom.Ellipse2D;
@@ -22,10 +19,7 @@ import java.awt.geom.Line2D;
 import java.awt.geom.PathIterator;
 import java.awt.geom.Path2D;
 import java.awt.geom.Rectangle2D;
-import java.awt.image.BufferedImage;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
@@ -44,7 +38,10 @@ import java.util.Locale;
  * <p>
  * This is an approximation: it follows the true board shape (rounded corners, tabs) but is
  * polygonal, slightly inset, and cannot recover genuine internal cut-outs (no copper marks
- * them). It is a fallback for sets with no outline file, not a replacement for one.
+ * them). It is a fallback for sets with no outline file, not a replacement for one. When the
+ * copper is too dense to form a clean board-shaped silhouette (see {@link #MAX_TOTAL_VERTICES})
+ * the derivation would just trace a tangle of traces rather than the board edge, so it
+ * degrades to the board bounding box instead.
  */
 final class OutlineDeriver {
 
@@ -55,14 +52,22 @@ final class OutlineDeriver {
     private static final double MIN_PIECE_AREA_MM2 = 1.0;
 
     /**
-     * Above this total object count, the exact {@link Area}-based union (roughly
-     * quadratic in edge count; OOMs a multi-GB heap on dense boards) is replaced by
-     * the raster silhouette in {@link #deriveOutlineSvgPathRaster}.
+     * Above this many flattened input vertices the union is treated as "not a board
+     * silhouette": that many vertices means the copper is a tangle of individual traces
+     * and pads with no clean board-shaped boundary, so tracing its outline would follow
+     * the tangle, not the board edge. The outline degrades to the board bounding box
+     * ({@link #boundingBoxOutlineSvgPath}) — the honest answer when the real edge can't be
+     * recovered. It doubles as a cost guard: the exact {@link Area} union plus the
+     * morphological close is roughly quadratic in edge count and OOMs a multi-GB heap past
+     * this scale.
      */
-    private static final int MAX_EXACT_OBJECTS = 5_000;
+    private static final int MAX_TOTAL_VERTICES = 50_000;
 
-    /** Target raster size (longest side, px) for the raster silhouette. */
-    private static final int RASTER_TARGET_PX = 1200;
+    /**
+     * Margin added on every side of the bounding-box fallback, as a fraction of each board
+     * dimension — generous enough that no copper is clipped from the realistic view.
+     */
+    private static final double BBOX_MARGIN_FRACTION = 0.10;
 
     private OutlineDeriver() {}
 
@@ -73,19 +78,13 @@ final class OutlineDeriver {
      *                as one piece, without growing the outer edge (0 to disable)
      * @param outsetMm grow the silhouette outward by this much to compensate for the
      *                copper-to-edge clearance (0 to disable)
-     * @return an SVG path string (raw coordinates) of the board silhouette, or "" if the
-     *         documents carry no usable geometry
+     * @return an SVG path string (raw coordinates) of the board silhouette, the board
+     *         bounding box (grown by {@link #BBOX_MARGIN_FRACTION}) when the geometry is too
+     *         dense to derive a meaningful one, or "" if the documents carry no usable geometry
      */
     static String deriveOutlineSvgPath(List<GerberDocument> docs, double closeMm, double outsetMm) {
-        int totalObjects = 0;
-        for (GerberDocument doc : docs) {
-            if (doc != null) totalObjects += doc.getObjects().size();
-        }
-        if (totalObjects > MAX_EXACT_OBJECTS) {
-            return deriveOutlineSvgPathRaster(docs, closeMm, outsetMm);
-        }
-
         Path2D.Double filled = new Path2D.Double(Path2D.WIND_NON_ZERO);
+        long vertexCount = 0;
         boolean any = false;
         for (GerberDocument doc : docs) {
             if (doc == null) continue;
@@ -94,8 +93,15 @@ final class OutlineDeriver {
                 if (s == null) continue;
                 // Append each contour wound positively so the single nonzero Area below is
                 // the union of everything, with all interior holes filled.
-                appendAsPositiveContours(filled, s);
+                vertexCount += appendAsPositiveContours(filled, s);
                 any = true;
+                // Too many vertices ⇒ the copper isn't a clean board silhouette but a trace
+                // tangle; deriving an edge from it would trace the tangle, not the board. Fall
+                // back to the bounding box (this also dodges the O(edges²) Area blow-up that the
+                // close/outset step below would hit at this scale).
+                if (vertexCount > MAX_TOTAL_VERTICES) {
+                    return boundingBoxOutlineSvgPath(docs);
+                }
             }
         }
         if (!any) return "";
@@ -116,6 +122,29 @@ final class OutlineDeriver {
         }
 
         return toOuterSilhouettePath(area);
+    }
+
+    /**
+     * The board bounding box — the union of every silhouette doc's bounds — grown by
+     * {@link #BBOX_MARGIN_FRACTION} of each dimension on all sides, as a rectangular SVG path
+     * in raw Gerber coordinates. The fallback outline when the geometry is too dense to derive
+     * a meaningful silhouette.
+     */
+    private static String boundingBoxOutlineSvgPath(List<GerberDocument> docs) {
+        BoundingBox bb = new BoundingBox();
+        for (GerberDocument doc : docs) {
+            if (doc == null) continue;
+            BoundingBox d = doc.getBoundingBox();
+            if (d.isValid()) bb.extend(d);
+        }
+        if (!bb.isValid()) return "";
+        double mx = bb.getWidth() * BBOX_MARGIN_FRACTION;
+        double my = bb.getHeight() * BBOX_MARGIN_FRACTION;
+        double x0 = bb.getMinX() - mx, y0 = bb.getMinY() - my;
+        double x1 = bb.getMaxX() + mx, y1 = bb.getMaxY() + my;
+        return String.format(Locale.US,
+            "M %.6f %.6f L %.6f %.6f L %.6f %.6f L %.6f %.6f Z",
+            x0, y0, x1, y0, x1, y1, x0, y1);
     }
 
     private static void dilate(Area area, double r) {
@@ -223,11 +252,16 @@ final class OutlineDeriver {
 
     // --- union assembly & silhouette extraction --------------------------------------
 
-    /** Flatten {@code s} into closed contours, each wound counter-clockwise, into {@code out}. */
-    private static void appendAsPositiveContours(Path2D out, Shape s) {
+    /**
+     * Flatten {@code s} into closed contours, each wound counter-clockwise, into {@code out}.
+     * Returns the number of vertices appended — used by the caller to gauge how dense the
+     * accumulated geometry is getting.
+     */
+    private static int appendAsPositiveContours(Path2D out, Shape s) {
         PathIterator it = s.getPathIterator(null, FLATNESS_MM);
         double[] c = new double[6];
         List<double[]> pts = new ArrayList<>();
+        int count = 0;
         while (!it.isDone()) {
             int type = it.currentSegment(c);
             switch (type) {
@@ -235,9 +269,11 @@ final class OutlineDeriver {
                     flushContour(out, pts);
                     pts.clear();
                     pts.add(new double[]{c[0], c[1]});
+                    count++;
                     break;
                 case PathIterator.SEG_LINETO:
                     pts.add(new double[]{c[0], c[1]});
+                    count++;
                     break;
                 case PathIterator.SEG_CLOSE:
                     flushContour(out, pts);
@@ -249,6 +285,7 @@ final class OutlineDeriver {
             it.next();
         }
         flushContour(out, pts);
+        return count;
     }
 
     private static void flushContour(Path2D out, List<double[]> pts) {
@@ -320,334 +357,5 @@ final class OutlineDeriver {
             sum += p[0] * q[1] - q[0] * p[1];
         }
         return sum / 2.0;
-    }
-
-    // --- raster silhouette (dense-board fallback) --------------------------------------
-
-    /**
-     * Same contract as {@link #deriveOutlineSvgPath}, computed on a bitmap instead of
-     * with exact geometry: rasterize every object (Java2D scanline fill — O(objects)),
-     * morphologically close/outset via an exact Euclidean distance transform
-     * (O(pixels)), fill interior holes, trace each remaining component's boundary and
-     * simplify it. Cost and memory are bounded by the raster size regardless of how
-     * many pads the board has; the outline is accurate to ~1 raster pixel
-     * (board dimension / {@value #RASTER_TARGET_PX}).
-     */
-    static String deriveOutlineSvgPathRaster(List<GerberDocument> docs, double closeMm, double outsetMm) {
-        // Extent: union of doc bounds, padded so close/outset never touch the border.
-        BoundingBox bb = new BoundingBox();
-        for (GerberDocument doc : docs) {
-            if (doc == null) continue;
-            BoundingBox d = doc.getBoundingBox();
-            if (d.isValid()) bb.extend(d);
-        }
-        if (!bb.isValid()) return "";
-        double pad = closeMm + outsetMm + 1.0;
-        double minX = bb.getMinX() - pad;
-        double minY = bb.getMinY() - pad;
-        double wMm = bb.getWidth() + 2 * pad;
-        double hMm = bb.getHeight() + 2 * pad;
-
-        double pxPerMm = RASTER_TARGET_PX / Math.max(wMm, hMm);
-        // Keep the close radius resolvable: at least ~2 px, but never balloon the raster.
-        if (closeMm > 0) pxPerMm = Math.max(pxPerMm, 2.0 / closeMm);
-        int w = (int) Math.ceil(wMm * pxPerMm);
-        int h = (int) Math.ceil(hMm * pxPerMm);
-        long maxPixels = 4_000_000L;
-        if ((long) w * h > maxPixels) {
-            double s = Math.sqrt((double) maxPixels / ((double) w * h));
-            pxPerMm *= s;
-            w = Math.max(8, (int) Math.ceil(wMm * pxPerMm));
-            h = Math.max(8, (int) Math.ceil(hMm * pxPerMm));
-        }
-
-        // 1. Rasterize all objects, filled, into a binary mask.
-        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
-        Graphics2D g = img.createGraphics();
-        try {
-            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
-            g.setColor(Color.WHITE);
-            g.scale(pxPerMm, pxPerMm);
-            g.translate(-minX, -minY);
-            for (GerberDocument doc : docs) {
-                if (doc == null) continue;
-                for (GraphicsObject obj : doc.getObjects()) {
-                    Shape s = toShape(obj);
-                    if (s != null) g.fill(s);
-                }
-            }
-        } finally {
-            g.dispose();
-        }
-        boolean[] mask = new boolean[w * h];
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                mask[y * w + x] = (img.getRaster().getSample(x, y, 0) != 0);
-            }
-        }
-
-        // 2. Morphology via distance transform: close (dilate+erode), then outset.
-        double closePx = closeMm * pxPerMm;
-        double outsetPx = outsetMm * pxPerMm;
-        if (closePx > 0.5) {
-            mask = dilatePx(mask, w, h, closePx);
-            mask = erodePx(mask, w, h, closePx);
-        }
-        if (outsetPx > 0.5) {
-            mask = dilatePx(mask, w, h, outsetPx);
-        }
-
-        // 3. Fill interior holes: anything not reachable from the border background.
-        fillHoles(mask, w, h);
-
-        // 4. Trace boundary per connected component, drop specks, simplify, emit mm path.
-        double minPiecePx = MIN_PIECE_AREA_MM2 * pxPerMm * pxPerMm;
-        double epsPx = 1.5; // Douglas-Peucker tolerance in raster px (~1 px accuracy anyway)
-        int[] componentOf = labelComponents(mask, w, h);
-        int componentCount = 0;
-        for (int v : componentOf) componentCount = Math.max(componentCount, v);
-        long[] componentSize = new long[componentCount + 1];
-        for (int v : componentOf) if (v > 0) componentSize[v]++;
-
-        StringBuilder sb = new StringBuilder();
-        boolean[] traced = new boolean[componentCount + 1];
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                int comp = componentOf[y * w + x];
-                if (comp == 0 || traced[comp]) continue;
-                traced[comp] = true;
-                if (componentSize[comp] < minPiecePx) continue;
-                List<int[]> ring = traceBoundary(componentOf, comp, w, h, x, y);
-                List<int[]> simplified = simplify(ring, epsPx);
-                if (simplified.size() < 3) continue;
-                if (sb.length() > 0) sb.append(' ');
-                appendRingAsMm(sb, simplified, minX, minY, pxPerMm);
-            }
-        }
-        return sb.toString();
-    }
-
-    /** Exact squared Euclidean distance to the nearest {@code true} cell (Felzenszwalb, separable). */
-    private static double[] distanceSq(boolean[] set, int w, int h) {
-        final double INF = 1e18;
-        double[] d = new double[w * h];
-        for (int i = 0; i < d.length; i++) d[i] = set[i] ? 0 : INF;
-        // columns
-        double[] f = new double[Math.max(w, h)];
-        for (int x = 0; x < w; x++) {
-            for (int y = 0; y < h; y++) f[y] = d[y * w + x];
-            double[] r = dt1d(f, h);
-            for (int y = 0; y < h; y++) d[y * w + x] = r[y];
-        }
-        // rows
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) f[x] = d[y * w + x];
-            double[] r = dt1d(f, w);
-            for (int x = 0; x < w; x++) d[y * w + x] = r[x];
-        }
-        return d;
-    }
-
-    /** 1-D squared distance transform (lower envelope of parabolas). */
-    private static double[] dt1d(double[] f, int n) {
-        double[] d = new double[n];
-        int[] v = new int[n];
-        double[] z = new double[n + 1];
-        int k = 0;
-        v[0] = 0;
-        z[0] = -1e18;
-        z[1] = 1e18;
-        for (int q = 1; q < n; q++) {
-            double s = ((f[q] + (double) q * q) - (f[v[k]] + (double) v[k] * v[k])) / (2.0 * q - 2.0 * v[k]);
-            while (s <= z[k]) {
-                k--;
-                s = ((f[q] + (double) q * q) - (f[v[k]] + (double) v[k] * v[k])) / (2.0 * q - 2.0 * v[k]);
-            }
-            k++;
-            v[k] = q;
-            z[k] = s;
-            z[k + 1] = 1e18;
-        }
-        k = 0;
-        for (int q = 0; q < n; q++) {
-            while (z[k + 1] < q) k++;
-            double dq = q - v[k];
-            d[q] = dq * dq + f[v[k]];
-        }
-        return d;
-    }
-
-    private static boolean[] dilatePx(boolean[] mask, int w, int h, double r) {
-        double[] d = distanceSq(mask, w, h);
-        boolean[] out = new boolean[w * h];
-        double r2 = r * r;
-        for (int i = 0; i < out.length; i++) out[i] = d[i] <= r2;
-        return out;
-    }
-
-    private static boolean[] erodePx(boolean[] mask, int w, int h, double r) {
-        boolean[] inverse = new boolean[w * h];
-        for (int i = 0; i < mask.length; i++) inverse[i] = !mask[i];
-        double[] d = distanceSq(inverse, w, h);
-        boolean[] out = new boolean[w * h];
-        double r2 = r * r;
-        for (int i = 0; i < out.length; i++) out[i] = d[i] > r2;
-        return out;
-    }
-
-    /** Flood-fill background from the border; unreached background cells are holes — fill them. */
-    private static void fillHoles(boolean[] mask, int w, int h) {
-        boolean[] reached = new boolean[w * h];
-        ArrayDeque<Integer> queue = new ArrayDeque<>();
-        for (int x = 0; x < w; x++) {
-            for (int y : new int[]{0, h - 1}) {
-                int i = y * w + x;
-                if (!mask[i] && !reached[i]) { reached[i] = true; queue.add(i); }
-            }
-        }
-        for (int y = 0; y < h; y++) {
-            for (int x : new int[]{0, w - 1}) {
-                int i = y * w + x;
-                if (!mask[i] && !reached[i]) { reached[i] = true; queue.add(i); }
-            }
-        }
-        while (!queue.isEmpty()) {
-            int i = queue.poll();
-            int x = i % w, y = i / w;
-            if (x > 0)     visitBg(mask, reached, queue, i - 1);
-            if (x < w - 1) visitBg(mask, reached, queue, i + 1);
-            if (y > 0)     visitBg(mask, reached, queue, i - w);
-            if (y < h - 1) visitBg(mask, reached, queue, i + w);
-        }
-        for (int i = 0; i < mask.length; i++) {
-            if (!mask[i] && !reached[i]) mask[i] = true;
-        }
-    }
-
-    private static void visitBg(boolean[] mask, boolean[] reached, ArrayDeque<Integer> queue, int i) {
-        if (!mask[i] && !reached[i]) { reached[i] = true; queue.add(i); }
-    }
-
-    /** 4-connected component labels, 1-based; 0 = background. */
-    private static int[] labelComponents(boolean[] mask, int w, int h) {
-        int[] label = new int[w * h];
-        int next = 0;
-        ArrayDeque<Integer> queue = new ArrayDeque<>();
-        for (int start = 0; start < mask.length; start++) {
-            if (!mask[start] || label[start] != 0) continue;
-            next++;
-            label[start] = next;
-            queue.add(start);
-            while (!queue.isEmpty()) {
-                int i = queue.poll();
-                int x = i % w, y = i / w;
-                if (x > 0)     visitFg(mask, label, queue, i - 1, next);
-                if (x < w - 1) visitFg(mask, label, queue, i + 1, next);
-                if (y > 0)     visitFg(mask, label, queue, i - w, next);
-                if (y < h - 1) visitFg(mask, label, queue, i + w, next);
-            }
-        }
-        return label;
-    }
-
-    private static void visitFg(boolean[] mask, int[] label, ArrayDeque<Integer> queue, int i, int comp) {
-        if (mask[i] && label[i] == 0) { label[i] = comp; queue.add(i); }
-    }
-
-    /**
-     * Trace the outer boundary of one component as a closed loop of pixel-corner
-     * coordinates, walking pixel edges with the foreground kept on the right
-     * (square tracing). Starts at the top-left corner of the component's
-     * topmost-leftmost pixel (supplied by scan order). Cannot get stuck: every
-     * iteration either advances along a boundary edge or rotates in place, and the
-     * walk terminates when the start (corner, direction) state recurs.
-     */
-    private static List<int[]> traceBoundary(int[] componentOf, int comp, int w, int h,
-                                             int startX, int startY) {
-        // Directions: 0=R(+x), 1=D(+y), 2=L(-x), 3=U(-y). For the edge leaving corner
-        // (cx,cy) in direction d, the flanking pixels (by top-left-corner indexing):
-        //   left-of-travel and right-of-travel, in image coordinates (y down).
-        final int[][] leftPx  = {{0, -1}, {0, 0}, {-1, 0}, {-1, -1}};
-        final int[][] rightPx = {{0, 0}, {-1, 0}, {-1, -1}, {0, -1}};
-        final int[] dx = {1, 0, -1, 0};
-        final int[] dy = {0, 1, 0, -1};
-
-        int cx = startX, cy = startY, dir = 0; // top-left corner of start pixel, heading right
-        List<int[]> ring = new ArrayList<>();
-        ring.add(new int[]{cx, cy});
-        long guard = 8L * (w + 1) * (h + 1);
-        while (guard-- > 0) {
-            boolean la = isComp(componentOf, comp, w, h, cx + leftPx[dir][0], cy + leftPx[dir][1]);
-            boolean ra = isComp(componentOf, comp, w, h, cx + rightPx[dir][0], cy + rightPx[dir][1]);
-            if (!la && ra) {
-                cx += dx[dir];
-                cy += dy[dir];
-                if (cx == startX && cy == startY) break;
-                ring.add(new int[]{cx, cy});
-            } else if (!ra) {
-                dir = (dir + 1) % 4;  // nothing on the right — turn right toward the body
-            } else {
-                dir = (dir + 3) % 4;  // wall on the left — turn left
-            }
-        }
-        return ring;
-    }
-
-    private static boolean isComp(int[] componentOf, int comp, int w, int h, int x, int y) {
-        return x >= 0 && y >= 0 && x < w && y < h && componentOf[y * w + x] == comp;
-    }
-
-    /** Iterative Douglas-Peucker simplification on a closed pixel ring. */
-    private static List<int[]> simplify(List<int[]> ring, double eps) {
-        int n = ring.size();
-        if (n < 5) return ring;
-        boolean[] keep = new boolean[n];
-        keep[0] = true;
-        keep[n / 2] = true; // two anchors for a closed ring
-        ArrayDeque<int[]> stack = new ArrayDeque<>();
-        stack.push(new int[]{0, n / 2});
-        stack.push(new int[]{n / 2, n}); // wraps to 0
-        while (!stack.isEmpty()) {
-            int[] seg = stack.pop();
-            int a = seg[0], b = seg[1];
-            int[] pa = ring.get(a), pb = ring.get(b % n);
-            double maxDist = -1;
-            int maxIdx = -1;
-            for (int i = a + 1; i < b; i++) {
-                double dist = pointSegDist(ring.get(i), pa, pb);
-                if (dist > maxDist) { maxDist = dist; maxIdx = i; }
-            }
-            if (maxDist > eps && maxIdx > 0) {
-                keep[maxIdx] = true;
-                stack.push(new int[]{a, maxIdx});
-                stack.push(new int[]{maxIdx, b});
-            }
-        }
-        List<int[]> out = new ArrayList<>();
-        for (int i = 0; i < n; i++) {
-            if (keep[i]) out.add(ring.get(i));
-        }
-        return out;
-    }
-
-    private static double pointSegDist(int[] p, int[] a, int[] b) {
-        double vx = b[0] - a[0], vy = b[1] - a[1];
-        double wx = p[0] - a[0], wy = p[1] - a[1];
-        double len2 = vx * vx + vy * vy;
-        double t = len2 > 0 ? Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2)) : 0;
-        double ex = wx - t * vx, ey = wy - t * vy;
-        return Math.hypot(ex, ey);
-    }
-
-    private static void appendRingAsMm(StringBuilder sb, List<int[]> ring,
-                                       double minX, double minY, double pxPerMm) {
-        for (int i = 0; i < ring.size(); i++) {
-            int[] p = ring.get(i);
-            // ring vertices are pixel CORNERS: pixel (0,0) spans corners (0,0)..(1,1)
-            double mx = minX + p[0] / pxPerMm;
-            double my = minY + p[1] / pxPerMm;
-            sb.append(String.format(Locale.US, i == 0 ? "M %.4f %.4f" : " L %.4f %.4f", mx, my));
-        }
-        sb.append(" Z");
     }
 }
