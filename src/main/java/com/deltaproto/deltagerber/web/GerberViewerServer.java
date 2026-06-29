@@ -152,16 +152,10 @@ public class GerberViewerServer {
                         if ("drill".equals(fileType)) {
                             DrillDocument doc = drillParser.parse(content);
                             layer = new MultiLayerSVGRenderer.Layer(name, doc);
-                            if (!doc.getWarnings().isEmpty()) {
-                                allWarnings.add(new FileWarnings(name, doc.getWarnings()));
-                            }
                         } else if ("gerber".equals(fileType)) {
                             GerberDocument doc = gerberParser.parse(content);
                             allComponents.addAll(doc.getComponents());
                             layer = new MultiLayerSVGRenderer.Layer(name, doc);
-                            if (!doc.getWarnings().isEmpty()) {
-                                allWarnings.add(new FileWarnings(name, doc.getWarnings()));
-                            }
                         }
 
                         if (layer != null) {
@@ -179,12 +173,29 @@ public class GerberViewerServer {
                     }
                 }
 
+                // Detect and correct a drill/Gerber origin mismatch before rendering (render() itself
+                // stays pure). The correction is baked into a copy of the drill document with a
+                // reversible originOffset stamp, and the explanatory warning is recorded on it. The
+                // server re-detects on every request (cheap, deterministic) so the client never has
+                // to track or echo offsets.
+                layers = MultiLayerSVGRenderer.alignDrillLayers(layers);
+
                 // Render all SVGs
                 log.info("Rendering {} layers...", layers.size());
                 MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer();
                 String svg = renderer.render(layers);
                 String realisticTop = renderRealisticSide(layers, true);
                 String realisticBottom = renderRealisticSide(layers, false);
+
+                // Collect warnings from the final layer documents — parse-time anomalies plus any
+                // drill re-alignment explanation recorded above.
+                for (MultiLayerSVGRenderer.Layer layer : layers) {
+                    List<String> w = layer.isDrill() ? layer.getDrillDoc().getWarnings()
+                        : layer.isGerber() ? layer.getGerberDoc().getWarnings() : null;
+                    if (w != null && !w.isEmpty()) {
+                        allWarnings.add(new FileWarnings(layer.getName(), new ArrayList<>(w)));
+                    }
+                }
 
                 // Build JSON response
                 StringBuilder json = new StringBuilder();
@@ -302,6 +313,9 @@ public class GerberViewerServer {
 
                 byte[] body = exchange.getRequestBody().readAllBytes();
                 List<MultiLayerSVGRenderer.Layer> layers = parseLayerBody(body);
+                // The server is stateless: this request re-parsed the raw drill bytes, so the origin
+                // correction must be re-derived here too (it is not carried over from /render).
+                layers = MultiLayerSVGRenderer.alignDrillLayers(layers);
 
                 byte[] png = new MultiLayerSVGRenderer()
                     .setSoldermaskColor(soldermask)

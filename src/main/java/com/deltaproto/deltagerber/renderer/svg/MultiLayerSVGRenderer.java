@@ -1,5 +1,6 @@
 package com.deltaproto.deltagerber.renderer.svg;
 
+import com.deltaproto.deltagerber.align.DrillGerberAlignment;
 import com.deltaproto.deltagerber.model.drill.DrillDocument;
 import com.deltaproto.deltagerber.model.drill.DrillOperation;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
@@ -185,6 +186,106 @@ public class MultiLayerSVGRenderer {
             }
         }
         return globalBounds;
+    }
+
+    /**
+     * Return a layer list in which every drill layer exported on a different origin than the Gerbers
+     * (its holes fall entirely off the board) is replaced by a copy whose coordinates are baked onto
+     * the board, via {@link DrillGerberAlignment}. Gerber layers and correctly-placed drills are
+     * returned unchanged.
+     * <p>
+     * This is an opt-in step — {@link #render} stays pure and never calls it — so callers (the web
+     * viewer, or any library user assembling a multi-layer view) apply it once before rendering. It
+     * records the explanatory warning (with hole-match counts) on each affected drill document: on a
+     * fresh corrected copy when the offset is resolved, or on the original when the drill is off the
+     * board but the offset could not be recovered exactly (in which case it is left in place — never
+     * moved approximately).
+     * <p>
+     * A healthy set pays almost nothing: if no drill is off the board the pad collection and
+     * correlation are skipped entirely. Both drill and Gerber coordinates are millimetres
+     * (normalised at parse time), so no unit handling is required.
+     */
+    public static List<Layer> alignDrillLayers(List<Layer> layers) {
+        if (layers == null || layers.isEmpty()) {
+            return layers;
+        }
+
+        // Gerber reference bounds + the drill layers present.
+        BoundingBox gerberBounds = new BoundingBox();
+        List<Layer> drills = new ArrayList<>();
+        for (Layer layer : layers) {
+            if (layer.isDrill()) {
+                drills.add(layer);
+            } else if (layer.isGerber() && layer.getGerberDoc() != null) {
+                BoundingBox b = layer.getBoundingBox();
+                if (b != null && b.isValid()) gerberBounds.include(b);
+            }
+        }
+        if (drills.isEmpty() || !gerberBounds.isValid()) {
+            return layers;
+        }
+
+        // Fast path for the common (healthy) case: if every drill already overlaps the board there is
+        // nothing to do, so skip the potentially large pad collection and correlation entirely.
+        boolean anyOffBoard = false;
+        for (Layer d : drills) {
+            BoundingBox b = d.getBoundingBox();
+            if (b != null && b.isValid() && !boxesOverlap(b, gerberBounds)) {
+                anyOffBoard = true;
+                break;
+            }
+        }
+        if (!anyOffBoard) {
+            return layers;
+        }
+
+        // At least one drill is off the board — gather copper pad centres (concentric with plated
+        // holes), falling back to all flashes when layer roles are unclassified.
+        List<double[]> copperPads = new ArrayList<>();
+        List<double[]> anyPads = new ArrayList<>();
+        for (Layer layer : layers) {
+            if (!layer.isGerber() || layer.getGerberDoc() == null) continue;
+            List<double[]> centers = DrillGerberAlignment.flashCenters(layer.getGerberDoc());
+            anyPads.addAll(centers);
+            LayerType t = layer.getLayerType();
+            if (t == LayerType.COPPER_TOP || t == LayerType.COPPER_BOTTOM
+                || t == LayerType.COPPER_INNER) {
+                copperPads.addAll(centers);
+            }
+        }
+        List<double[]> pads = !copperPads.isEmpty() ? copperPads : anyPads;
+
+        List<Layer> out = new ArrayList<>(layers.size());
+        for (Layer layer : layers) {
+            if (!layer.isDrill()) {
+                out.add(layer);
+                continue;
+            }
+            DrillDocument doc = layer.getDrillDoc();
+            DrillGerberAlignment.Result r = DrillGerberAlignment.analyze(doc, gerberBounds, pads);
+            if (r.isResolved()) {
+                // Fix-once: baked corrected coordinates + reversible originOffset stamp. The warning
+                // (with match counts) is recorded on the corrected copy, leaving the caller's doc
+                // untouched.
+                DrillDocument fixed = DrillGerberAlignment.apply(doc, r);
+                fixed.addWarning(r.getWarningText());
+                out.add(new Layer(layer.getName(), fixed)
+                    .setColor(layer.getColor())
+                    .setOpacity(layer.getOpacity())
+                    .setVisible(layer.isVisible())
+                    .setLayerType(layer.getLayerType()));
+            } else {
+                // Off the board but unrecoverable — leave it in place, recording the explanation.
+                if (r.isMisaligned()) doc.addWarning(r.getWarningText());
+                out.add(layer);
+            }
+        }
+        return out;
+    }
+
+    private static boolean boxesOverlap(BoundingBox a, BoundingBox b) {
+        return a.getMinX() <= b.getMaxX() && a.getMaxX() >= b.getMinX()
+            && a.getMinY() <= b.getMaxY() && a.getMaxY() >= b.getMinY();
     }
 
     /**

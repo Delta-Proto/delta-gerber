@@ -20,6 +20,14 @@ public class DrillDocument {
     private int decimalDigits = 4;
     private boolean leadingZeros = true;
 
+    // Translation (mm) already baked into this document's coordinates to bring them into the
+    // Gerber/board frame, set when DrillGerberAlignment corrects an origin mismatch. Zero for a
+    // document straight from the parser. The fix is "done once" — every coordinate here is already
+    // corrected — while this stamp keeps it reversible and explainable: the original exported
+    // position of any point is (current - originOffset).
+    private double originOffsetX = 0;
+    private double originOffsetY = 0;
+
     private final Map<Integer, Tool> tools = new LinkedHashMap<>();
     private final List<DrillOperation> operations = new ArrayList<>();
     private final List<String> comments = new ArrayList<>();
@@ -159,6 +167,26 @@ public class DrillDocument {
 
     public void setLeadingZeros(boolean leadingZeros) {
         this.leadingZeros = leadingZeros;
+    }
+
+    /** Millimetres added to the X coordinates to bring them into the Gerber frame (0 if none). */
+    public double getOriginOffsetX() {
+        return originOffsetX;
+    }
+
+    /** Millimetres added to the Y coordinates to bring them into the Gerber frame (0 if none). */
+    public double getOriginOffsetY() {
+        return originOffsetY;
+    }
+
+    public void setOriginOffset(double originOffsetX, double originOffsetY) {
+        this.originOffsetX = originOffsetX;
+        this.originOffsetY = originOffsetY;
+    }
+
+    /** True when this document's coordinates were shifted from their exported origin. */
+    public boolean isOriginCorrected() {
+        return originOffsetX != 0 || originOffsetY != 0;
     }
 
     public Map<Integer, Tool> getTools() {
