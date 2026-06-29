@@ -21,6 +21,9 @@ mvn clean deploy -Prelease -Dgpg.passphrase=$(cat .mvn-gpg-passphrase)
 
 ## Key Conventions
 
-- All drill file coordinates and tool diameters are normalized to mm at parse time in `ExcellonParser`.
-- Gerber files store coordinates in their native unit (check `GerberDocument.getUnit()`).
-- DRC code uses `doc.getUnit().toMm()` to convert to mm for distance calculations.
+- Coordinates and dimensions are normalized to millimetres at parse time by **both** parsers:
+  `ExcellonParser` (drill hits, slots, tool diameters) and `GerberParser` (operation coordinates,
+  aperture sizes). The file's native unit (inch/mm) is consumed during parsing and not retained.
+- After parsing, `getUnit()` returns `Unit.MM` on both `DrillDocument` and `GerberDocument`, so all
+  parsed geometry can be treated as mm with no conversion — drill holes and Gerber flashes share one
+  coordinate space (this is what lets `DrillGerberAlignment` correlate them directly).
