@@ -21,6 +21,10 @@ public class Draw extends GraphicsObject {
     private final double endY;
     private final Aperture aperture;
 
+    // Extra stroke-width multiplier accumulated from LS scaling when this draw is part of a
+    // transformed (scaled) block-aperture flash. 1.0 for ordinary draws.
+    private double strokeScale = 1.0;
+
     public Draw(double startX, double startY, double endX, double endY, Aperture aperture) {
         this.startX = startX;
         this.startY = startY;
@@ -72,6 +76,7 @@ public class Draw extends GraphicsObject {
             RectangleAperture rect = (RectangleAperture) aperture;
             strokeWidth = Math.max(rect.getWidth(), rect.getHeight());
         }
+        strokeWidth *= strokeScale;
 
         if (options.isPolygonize()) {
             // Polygonized mode: path-based stroked line (rectangle with round caps)
@@ -92,8 +97,20 @@ public class Draw extends GraphicsObject {
             startX + offsetX, startY + offsetY,
             endX + offsetX, endY + offsetY,
             aperture);
-        translated.setPolarity(this.polarity);
+        translated.strokeScale = this.strokeScale;
+        copyMetaTo(translated);
         return translated;
+    }
+
+    @Override
+    public GraphicsObject transform(GraphicsTransform t) {
+        Draw out = new Draw(
+            t.applyX(startX, startY), t.applyY(startX, startY),
+            t.applyX(endX, endY), t.applyY(endX, endY),
+            aperture);
+        out.strokeScale = this.strokeScale * t.scale();
+        copyMetaTo(out);
+        return out;
     }
 
     @Override
