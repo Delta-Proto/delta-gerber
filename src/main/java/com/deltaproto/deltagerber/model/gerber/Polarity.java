@@ -6,5 +6,10 @@ package com.deltaproto.deltagerber.model.gerber;
  */
 public enum Polarity {
     DARK,
-    CLEAR
+    CLEAR;
+
+    /** The opposite polarity. Used when a clear-polarity block flash toggles its contents. */
+    public Polarity inverse() {
+        return this == DARK ? CLEAR : DARK;
+    }
 }

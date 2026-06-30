@@ -153,6 +153,23 @@ public class Contour {
         return translated;
     }
 
+    /** A copy of this contour with an affine placement transform applied to every vertex. */
+    public Contour transform(GraphicsTransform t) {
+        Contour out = new Contour(t.applyX(startX, startY), t.applyY(startX, startY));
+        boolean flip = t.flipsOrientation();
+        for (ContourSegment seg : segments) {
+            if (seg.isArc()) {
+                out.addArcTo(
+                    t.applyX(seg.getX(), seg.getY()), t.applyY(seg.getX(), seg.getY()),
+                    t.applyX(seg.getCenterX(), seg.getCenterY()), t.applyY(seg.getCenterX(), seg.getCenterY()),
+                    flip ? !seg.isClockwise() : seg.isClockwise());
+            } else {
+                out.addLineTo(t.applyX(seg.getX(), seg.getY()), t.applyY(seg.getX(), seg.getY()));
+            }
+        }
+        return out;
+    }
+
     /**
      * A segment within a contour.
      */

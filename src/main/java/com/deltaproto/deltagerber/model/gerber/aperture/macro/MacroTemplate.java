@@ -87,11 +87,13 @@ public class MacroTemplate {
 
         return switch (code) {
             case 1 -> new CirclePrimitive(params);
+            // Code 2 is the deprecated spelling of the vector-line primitive (code 20) with
+            // identical parameters (spec §4.5.1.3). Map it to the same primitive.
+            case 2, 20 -> new VectorLinePrimitive(params);
             case 4 -> new OutlinePrimitive(params);
             case 5 -> new PolygonPrimitive(params);
             case 6 -> new MoirePrimitive(params);
             case 7 -> new ThermalPrimitive(params);
-            case 20 -> new VectorLinePrimitive(params);
             case 21 -> new CenterLinePrimitive(params);
             default -> null;
         };

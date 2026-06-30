@@ -55,11 +55,21 @@ public class Region extends GraphicsObject {
     @Override
     public GraphicsObject translate(double offsetX, double offsetY) {
         Region translated = new Region();
-        translated.setPolarity(this.polarity);
+        copyMetaTo(translated);
         for (Contour contour : contours) {
             translated.addContour(contour.translate(offsetX, offsetY));
         }
         return translated;
+    }
+
+    @Override
+    public GraphicsObject transform(GraphicsTransform t) {
+        Region out = new Region();
+        copyMetaTo(out);
+        for (Contour contour : contours) {
+            out.addContour(contour.transform(t));
+        }
+        return out;
     }
 
     @Override

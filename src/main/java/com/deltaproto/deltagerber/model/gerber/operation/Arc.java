@@ -23,6 +23,9 @@ public class Arc extends GraphicsObject {
     private final boolean clockwise;
     private final Aperture aperture;
 
+    // Extra stroke-width multiplier accumulated from LS scaling in a transformed block flash.
+    private double strokeScale = 1.0;
+
     public Arc(double startX, double startY, double endX, double endY,
                double centerX, double centerY, boolean clockwise, Aperture aperture) {
         this.startX = startX;
@@ -73,6 +76,7 @@ public class Arc extends GraphicsObject {
         if (aperture instanceof CircleAperture) {
             strokeWidth = ((CircleAperture) aperture).getDiameter();
         }
+        strokeWidth *= strokeScale;
 
         if (options.isPolygonize()) {
             // Polygonized mode: path-based stroked arc (filled polygon approximation)
@@ -158,8 +162,24 @@ public class Arc extends GraphicsObject {
             endX + offsetX, endY + offsetY,
             centerX + offsetX, centerY + offsetY,
             clockwise, aperture);
-        translated.setPolarity(this.polarity);
+        translated.strokeScale = this.strokeScale;
+        copyMetaTo(translated);
         return translated;
+    }
+
+    @Override
+    public GraphicsObject transform(GraphicsTransform t) {
+        // Mirroring reverses the sweep direction; rotation and uniform scale preserve it. The
+        // radius follows automatically from the transformed start/center distance.
+        Arc out = new Arc(
+            t.applyX(startX, startY), t.applyY(startX, startY),
+            t.applyX(endX, endY), t.applyY(endX, endY),
+            t.applyX(centerX, centerY), t.applyY(centerX, centerY),
+            t.flipsOrientation() ? !clockwise : clockwise,
+            aperture);
+        out.strokeScale = this.strokeScale * t.scale();
+        copyMetaTo(out);
+        return out;
     }
 
     @Override

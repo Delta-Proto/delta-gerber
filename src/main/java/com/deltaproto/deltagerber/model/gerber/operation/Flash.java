@@ -110,8 +110,24 @@ public class Flash extends GraphicsObject {
     @Override
     public GraphicsObject translate(double offsetX, double offsetY) {
         Flash translated = new Flash(x + offsetX, y + offsetY, aperture, rotation, scale, mirrorX, mirrorY);
-        translated.setPolarity(this.polarity);
+        copyMetaTo(translated);
         return translated;
+    }
+
+    @Override
+    public GraphicsObject transform(GraphicsTransform t) {
+        double nx = t.applyX(x, y);
+        double ny = t.applyY(x, y);
+        // Compose the placement transform with this flash's own aperture transform. For a flash
+        // inside a block with no LM/LR/LS of its own (the common case) this is exact; a nested
+        // already-transformed flash composes naively.
+        Flash out = new Flash(nx, ny, aperture,
+            rotation + t.rotationDeg(),
+            scale * t.scale(),
+            mirrorX ^ t.mirrorX(),
+            mirrorY ^ t.mirrorY());
+        copyMetaTo(out);
+        return out;
     }
 
     @Override

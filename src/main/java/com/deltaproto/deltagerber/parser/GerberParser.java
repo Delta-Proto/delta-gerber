@@ -59,6 +59,16 @@ public class GerberParser {
     // D-code reuses the last active D-code (D01, D02, or D03).
     private TokenType lastDCode = null;
 
+    // X2/X3 attribute dictionaries: the aperture attributes (TA) in scope, snapshotted onto each
+    // AD; and the object attributes (TO) in scope, snapshotted onto each graphics object.
+    private final Map<String, List<String>> apertureAttribs = new LinkedHashMap<>();
+    private final Map<String, List<String>> objectAttribs = new LinkedHashMap<>();
+
+    // Block-aperture definition stack. While non-empty, created graphics objects are captured into
+    // the innermost open block instead of the document; flashing a block expands it (see emit()).
+    private final Deque<BlockAperture> blockStack = new ArrayDeque<>();
+    private static final Pattern AB_OPEN = Pattern.compile("ABD(\\d+)");
+
     private static final Pattern COORD_X = Pattern.compile("X([+-]?\\d+)");
     private static final Pattern COORD_Y = Pattern.compile("Y([+-]?\\d+)");
     private static final Pattern COORD_I = Pattern.compile("I([+-]?\\d+)");
@@ -78,6 +88,7 @@ public class GerberParser {
         lastDCode = null;
         pendingX = Double.NaN; pendingY = Double.NaN; pendingI = Double.NaN; pendingJ = Double.NaN;
         srStartIndex = -1; srRepeatX = 1; srRepeatY = 1; srStepX = 0; srStepY = 0;
+        apertureAttribs.clear(); objectAttribs.clear(); blockStack.clear();
     }
 
     public GerberDocument parse(String content) {
@@ -126,6 +137,7 @@ public class GerberParser {
             case APERTURE_MACRO -> parseApertureMacro(token);
             case APERTURE_SELECT -> parseApertureSelect(token);
             case FILE_ATTRIBUTE -> parseFileAttribute(token);
+            case APERTURE_ATTRIBUTE -> parseApertureAttribute(token);
             case OBJECT_ATTRIBUTE -> parseObjectAttribute(token);
             case DELETE_ATTRIBUTE -> parseDeleteAttribute(token);
             case POLARITY -> parsePolarity(token);
@@ -250,9 +262,7 @@ public class GerberParser {
             String params = standardMatcher.group(3) != null ? standardMatcher.group(3) : "";
 
             Aperture aperture = createAperture(dCode, template, params);
-            if (aperture != null) {
-                document.addAperture(aperture);
-            }
+            registerAperture(aperture);
             return;
         }
 
@@ -267,7 +277,7 @@ public class GerberParser {
             // EAGLE octagons have a flat edge at the top, so rotate by half a vertex angle
             double rotation = 180.0 / numVertices;
             Aperture aperture = new PolygonAperture(dCode, diameter, numVertices, rotation);
-            document.addAperture(aperture);
+            registerAperture(aperture);
             return;
         }
 
@@ -283,9 +293,18 @@ public class GerberParser {
             if (template != null) {
                 List<Double> paramValues = parseApertureParams(params);
                 Aperture aperture = new MacroAperture(dCode, template, paramValues, unit.toMm(1.0));
-                document.addAperture(aperture);
+                registerAperture(aperture);
             }
         }
+    }
+
+    /** Add an aperture to the document, attaching the X2/X3 aperture attributes in scope. */
+    private void registerAperture(Aperture aperture) {
+        if (aperture == null) {
+            return;
+        }
+        aperture.setAttributes(apertureAttribs);
+        document.addAperture(aperture);
     }
 
     /**
@@ -400,6 +419,66 @@ public class GerberParser {
         }
     }
 
+    /**
+     * Parse a {@code %TA%} aperture attribute and add it to the aperture attribute dictionary. The
+     * attributes in scope are snapshotted onto each aperture as it is defined (see
+     * {@link #registerAperture}).
+     */
+    private void parseApertureAttribute(Token token) {
+        String content = token.getContent();
+        if (content.startsWith("TA.")) content = content.substring(3);
+        else if (content.startsWith("TA")) content = content.substring(2);
+        if (content.startsWith(".")) content = content.substring(1);
+        if (content.isEmpty()) {
+            return;
+        }
+        int comma = content.indexOf(',');
+        String name = comma >= 0 ? content.substring(0, comma) : content;
+        String rest = comma >= 0 ? content.substring(comma + 1) : "";
+        List<String> values = rest.isEmpty()
+            ? new ArrayList<>()
+            : new ArrayList<>(Arrays.asList(rest.split(",", -1)));
+        String dotName = "." + name;
+        apertureAttribs.put(dotName, toMmIfDimensional(dotName, values));
+    }
+
+    // Standard attributes whose values are expressed in the file's MO units (inch/mm) and must
+    // therefore be normalized to mm like all other geometry: .DrillTolerance (TA) and .CHgt (TO).
+    private static final Set<String> DIMENSIONAL_ATTRS = Set.of(".DrillTolerance", ".CHgt");
+
+    /**
+     * Convert the numeric values of a dimensional standard attribute from the file's native unit
+     * to mm. Non-numeric trailing fields are left untouched. Returns the values unchanged for
+     * non-dimensional attributes or when the file is already in mm.
+     */
+    private List<String> toMmIfDimensional(String dotName, List<String> values) {
+        double f = unit.toMm(1.0);
+        if (f == 1.0 || values.isEmpty() || !DIMENSIONAL_ATTRS.contains(dotName)) {
+            return values;
+        }
+        List<String> out = new ArrayList<>(values.size());
+        for (String v : values) {
+            try {
+                out.add(formatMm(Double.parseDouble(v.trim()) * f));
+            } catch (NumberFormatException e) {
+                out.add(v); // e.g. an informal label field — keep verbatim
+            }
+        }
+        return out;
+    }
+
+    /** Compact decimal string for a mm value (trailing zeros stripped). */
+    private static String formatMm(double v) {
+        String s = String.format(Locale.US, "%.6f", v);
+        if (s.indexOf('.') >= 0) {
+            s = s.replaceAll("0+$", "");
+            if (s.endsWith(".")) {
+                s = s.substring(0, s.length() - 1);
+            }
+        }
+        return s;
+    }
+
     private void parseObjectAttribute(Token token) {
         String content = token.getContent();
         // Strip leading "TO." or "TO" prefix
@@ -410,6 +489,14 @@ public class GerberParser {
         String key = comma >= 0 ? content.substring(0, comma) : content;
         String value = comma >= 0 ? content.substring(comma + 1) : "";
 
+        // Maintain the general object-attribute dictionary (snapshotted onto each created object).
+        List<String> values = value.isEmpty()
+            ? new ArrayList<>()
+            : new ArrayList<>(Arrays.asList(value.split(",", -1)));
+        String dotKey = "." + key;
+        objectAttribs.put(dotKey, toMmIfDimensional(dotKey, values));
+
+        // Component-placement extraction (existing behaviour, preserved alongside the general model).
         switch (key) {
             case "C" -> {
                 toRefdes = value;
@@ -433,6 +520,19 @@ public class GerberParser {
     }
 
     private void parseDeleteAttribute(Token token) {
+        // %TD% deletes all aperture+object attributes from the dictionaries; %TD.Name% deletes one.
+        // File attributes are never affected (spec §5.5).
+        String content = token.getContent();
+        String name = content.length() > 2 ? content.substring(2) : "";
+        if (name.isEmpty()) {
+            apertureAttribs.clear();
+            objectAttribs.clear();
+        } else {
+            apertureAttribs.remove(name);
+            objectAttribs.remove(name);
+        }
+
+        // Any TD also ends the current component-placement context (existing behaviour).
         inComponentContext = false;
         hasPinAttribute = false;
         centroidRecorded = false;
@@ -489,12 +589,13 @@ public class GerberParser {
 
     private void parseImagePolarity(Token token) {
         String content = token.getContent();
-        // %IPPOS*% or %IPNEG*%
-        // NEG inverts all polarities
+        // %IPPOS*% (default) or %IPNEG*% (deprecated whole-image inversion). Retain it on the
+        // document; the single-layer SVGRenderer inverts the image for the negative case.
         if (content.contains("NEG")) {
-            document.addWarning("Image polarity NEG detected — polarity inversion not fully supported");
+            document.setImagePolarity(ImagePolarity.NEGATIVE);
+        } else {
+            document.setImagePolarity(ImagePolarity.POSITIVE);
         }
-        // POS is the default, no action needed
     }
 
     private void parseOffset(Token token) {
@@ -571,10 +672,22 @@ public class GerberParser {
 
     private void parseBlockAperture(Token token) {
         String content = token.getContent();
-        if (content.length() > 2 && content.contains("D")) {
-            document.addWarning("Block aperture (AB) not fully supported: " + content);
+        Matcher m = AB_OPEN.matcher(content);
+        if (m.find()) {
+            // Open: %ABDnn*% — start capturing graphics objects into a new block aperture.
+            int dCode = Integer.parseInt(m.group(1));
+            BlockAperture block = new BlockAperture(dCode);
+            block.setAttributes(apertureAttribs);
+            blockStack.push(block);
+        } else {
+            // Close: %AB*% — register the completed block in the aperture dictionary. If this block
+            // was nested inside another, its content was already captured into the enclosing block.
+            if (!blockStack.isEmpty()) {
+                document.addAperture(blockStack.pop());
+            } else {
+                document.addWarning("Unmatched block aperture close (AB*) — ignored");
+            }
         }
-        // AB close (just "AB") is silently ignored
     }
 
     private double pendingX = Double.NaN;
@@ -643,7 +756,7 @@ public class GerberParser {
                 obj = new Arc(currentX, currentY, newX, newY, centerX, centerY, clockwise, currentAperture);
             }
             obj.setPolarity(currentPolarity);
-            document.addObject(obj);
+            place(obj);
         }
 
         currentX = newX;
@@ -669,10 +782,13 @@ public class GerberParser {
         double newX = Double.isNaN(pendingX) ? currentX : pendingX;
         double newY = Double.isNaN(pendingY) ? currentY : pendingY;
 
-        if (currentAperture != null && !inRegion) {
+        if (currentAperture instanceof BlockAperture block && !inRegion) {
+            // Flashing a block aperture adds the whole block at the flash point.
+            expandBlock(block, newX, newY);
+        } else if (currentAperture != null && !inRegion) {
             Flash flash = new Flash(newX, newY, currentAperture, loadRotation, loadScaling, loadMirrorX, loadMirrorY);
             flash.setPolarity(currentPolarity);
-            document.addObject(flash);
+            place(flash);
         }
 
         // First D03 per component (before any %TO.P%) is the centroid.
@@ -707,10 +823,48 @@ public class GerberParser {
             currentRegion.addContour(currentContour);
         }
         if (currentRegion != null && !currentRegion.getContours().isEmpty()) {
-            document.addObject(currentRegion);
+            place(currentRegion);
         }
         inRegion = false;
         currentRegion = null;
         currentContour = null;
+    }
+
+    /**
+     * Attach the object attributes in scope, then route the object to the document — or, while a
+     * block aperture is being defined, into that block instead.
+     */
+    private void place(GraphicsObject obj) {
+        obj.setAttributes(objectAttribs);
+        emit(obj);
+    }
+
+    /** Route an already-prepared object to the document or the innermost open block. */
+    private void emit(GraphicsObject obj) {
+        if (blockStack.isEmpty()) {
+            document.addObject(obj);
+        } else {
+            blockStack.peek().add(obj);
+        }
+    }
+
+    /**
+     * Expand a flashed block aperture: copy each of its objects to the flash point, applying the
+     * active LM/LR/LS object transformation and combining the flash-time polarity (LPC toggles the
+     * block's contents). The copies are emitted into the current sink (document, or the enclosing
+     * block when a block is flashed from inside another).
+     */
+    private void expandBlock(BlockAperture block, double atX, double atY) {
+        GraphicsTransform t = (loadRotation == 0 && loadScaling == 1.0 && !loadMirrorX && !loadMirrorY)
+            ? GraphicsTransform.translation(atX, atY)
+            : new GraphicsTransform(atX, atY, loadRotation, loadScaling, loadMirrorX, loadMirrorY);
+        boolean invert = currentPolarity == Polarity.CLEAR;
+        for (GraphicsObject child : block.getObjects()) {
+            GraphicsObject moved = child.transform(t);
+            if (invert) {
+                moved.setPolarity(moved.getPolarity().inverse());
+            }
+            emit(moved);
+        }
     }
 }

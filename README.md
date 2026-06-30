@@ -33,13 +33,15 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
 ### Gerber Parsing
 - Full RS-274X support (.gbr, .ger, .gtl, .gbl, .gts, .gbs, .gto, .gbo, .gtp, .gbp, .gko, .gm, etc.)
 - All standard apertures: circle (C), rectangle (R), obround (O), polygon (P)
-- Aperture macros with primitives (circle, vector line, center line, outline, polygon, thermal)
+- Aperture macros with primitives (circle, vector line incl. legacy code 2, center line, outline, polygon, moiré, thermal) with variable expressions
 - Region fills (G36/G37) with multiple contours
 - Arc interpolation (G02/G03) with single and multi-quadrant modes
 - Layer polarity (LPD/LPC) with true SVG mask-based transparency
 - Step and Repeat (%SR%) for panelized boards
+- Block apertures (%AB%) with full flash expansion, nesting, transforms and LPC polarity toggling
 - Aperture transforms: rotation (LR), scaling (LS), mirroring (LM)
-- Image polarity (%IP%) and offset (%OF%) recognition
+- Gerber X2/X3 attributes (TF/TA/TO/TD) as a queryable model — file function, aperture function (.AperFunction), nets (.N), component refdes/pins (.C/.P)
+- Image polarity (%IP%): negative-image inversion rendering; image offset (%OF%) recognition
 
 ### Excellon Drill Parsing
 - Standard Excellon NC drill format (.drl, .txt, .xln, .drd)

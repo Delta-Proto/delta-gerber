@@ -19,6 +19,7 @@ public class GerberDocument {
     private String fileName;
     private CoordinateFormat coordinateFormat;
     private Unit unit = Unit.MM;
+    private ImagePolarity imagePolarity = ImagePolarity.POSITIVE;
 
     private final Map<String, FileAttribute> fileAttributes = new HashMap<>();
     private final Map<Integer, Aperture> apertures = new HashMap<>();
@@ -90,6 +91,59 @@ public class GerberDocument {
             if ("NonPlated".equalsIgnoreCase(v) || "NPTH".equalsIgnoreCase(v)) return true;
         }
         return false;
+    }
+
+    /**
+     * File polarity from the {@code .FilePolarity} attribute ("Positive" or "Negative"), or
+     * {@code null} if absent. This is distinct from {@link #getImagePolarity()} (the deprecated
+     * {@code %IP%} command): {@code .FilePolarity} is the modern X2 metadata declaration.
+     */
+    public String getFilePolarity() {
+        FileAttribute attr = fileAttributes.get(".FilePolarity");
+        if (attr == null) attr = fileAttributes.get("FilePolarity");
+        return attr != null ? attr.getFirstValue() : null;
+    }
+
+    /**
+     * Image polarity from the deprecated {@code %IP%} command. {@link ImagePolarity#POSITIVE} for
+     * every modern file (and the default when {@code %IP%} is absent).
+     */
+    public ImagePolarity getImagePolarity() {
+        return imagePolarity;
+    }
+
+    public void setImagePolarity(ImagePolarity imagePolarity) {
+        this.imagePolarity = imagePolarity;
+    }
+
+    /** The {@code .Part} attribute (e.g. "Single", "Array", "FabricationPanel"), or null. */
+    public String getPart() {
+        FileAttribute attr = fileAttributes.get(".Part");
+        return attr != null ? attr.getFirstValue() : null;
+    }
+
+    /** The {@code .CreationDate} attribute (ISO 8601 timestamp string), or null. */
+    public String getCreationDate() {
+        FileAttribute attr = fileAttributes.get(".CreationDate");
+        return attr != null ? attr.getFirstValue() : null;
+    }
+
+    /** The {@code .ProjectId} attribute values (project name, GUID, revision), or an empty list. */
+    public List<String> getProjectId() {
+        FileAttribute attr = fileAttributes.get(".ProjectId");
+        return attr != null ? attr.getValues() : Collections.emptyList();
+    }
+
+    /** The {@code .MD5} content-checksum attribute, or null. */
+    public String getMd5() {
+        FileAttribute attr = fileAttributes.get(".MD5");
+        return attr != null ? attr.getFirstValue() : null;
+    }
+
+    /** The {@code .SameCoordinates} attribute identifier, or null. */
+    public String getSameCoordinates() {
+        FileAttribute attr = fileAttributes.get(".SameCoordinates");
+        return attr != null ? attr.getFirstValue() : null;
     }
 
     /**

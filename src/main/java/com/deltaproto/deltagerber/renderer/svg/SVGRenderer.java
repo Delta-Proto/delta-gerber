@@ -2,7 +2,9 @@ package com.deltaproto.deltagerber.renderer.svg;
 
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
+import com.deltaproto.deltagerber.model.gerber.ImagePolarity;
 import com.deltaproto.deltagerber.model.gerber.aperture.Aperture;
+import com.deltaproto.deltagerber.model.gerber.operation.GraphicsObject;
 
 import java.util.List;
 import java.util.Locale;
@@ -183,6 +185,10 @@ public class SVGRenderer {
         // Set colors and flipY in svgOptions for direct fill attributes and arc direction
         svgOptions.setDarkColor(darkColor).setClearColor(clearColor).setFlipY(flipY);
 
+        // Deprecated %IPNEG% inverts the whole image: a dark field that the image clears.
+        boolean negative = doc.getImagePolarity() == ImagePolarity.NEGATIVE;
+        String maskRect = PolarityMaskHelper.createMaskRect(minX, minY, width, height, 1);
+
         // Aperture definitions
         svg.append("<defs>\n");
         for (Aperture aperture : doc.getApertures().values()) {
@@ -190,13 +196,29 @@ public class SVGRenderer {
             svg.append("  ").append(def).append("\n");
         }
 
-        // Group objects by polarity transitions and generate masks for clear groups
-        List<PolarityMaskHelper.PolarityGroup> groups =
-            PolarityMaskHelper.groupByPolarity(doc.getObjects());
-        SvgOptions maskOptions = svgOptions.copy();
-        maskOptions.setDarkColor("black").setClearColor("black");
-        String maskRect = PolarityMaskHelper.createMaskRect(minX, minY, width, height, 1);
-        PolarityMaskHelper.generateMaskDefs(svg, groups, "cm", maskRect, maskOptions);
+        List<PolarityMaskHelper.PolarityGroup> groups = null;
+        if (negative) {
+            // Inversion mask: white (visible) where the positive image is ABSENT. Painting each
+            // object in document order (dark→black, clear→white) reproduces the painter's model
+            // directly inside the mask's luminance, so the dark field below shows through only
+            // outside the image.
+            SvgOptions negOpts = svgOptions.copy().setDarkColor("black").setClearColor("white");
+            svg.append("  <mask id=\"ipneg\">\n");
+            svg.append("    ").append(maskRect).append("\n");
+            for (GraphicsObject obj : doc.getObjects()) {
+                String objSvg = obj.toSvg(negOpts);
+                if (objSvg != null && !objSvg.isEmpty()) {
+                    svg.append("    ").append(objSvg).append("\n");
+                }
+            }
+            svg.append("  </mask>\n");
+        } else {
+            // Group objects by polarity transitions and generate masks for clear groups
+            groups = PolarityMaskHelper.groupByPolarity(doc.getObjects());
+            SvgOptions maskOptions = svgOptions.copy();
+            maskOptions.setDarkColor("black").setClearColor("black");
+            PolarityMaskHelper.generateMaskDefs(svg, groups, "cm", maskRect, maskOptions);
+        }
         svg.append("</defs>\n");
 
         // Apply Y flip if needed
@@ -213,8 +235,15 @@ public class SVGRenderer {
                 minX, minY, width, height, backgroundColor));
         }
 
-        // Render objects with mask wrapping for clear polarity groups
-        PolarityMaskHelper.renderWithMasks(svg, groups, "cm", svgOptions);
+        if (negative) {
+            // The dark field, clipped to the image's negative by the inversion mask.
+            svg.append(String.format(Locale.US,
+                "<rect x=\"%.6f\" y=\"%.6f\" width=\"%.6f\" height=\"%.6f\" fill=\"%s\" mask=\"url(#ipneg)\"/>\n",
+                minX, minY, width, height, darkColor));
+        } else {
+            // Render objects with mask wrapping for clear polarity groups
+            PolarityMaskHelper.renderWithMasks(svg, groups, "cm", svgOptions);
+        }
 
         if (flipY) {
             svg.append("</g>\n");
