@@ -1,38 +1,5 @@
-# <span id="page-195-0"></span>9 **References**
+# 9 References
 
-*American National Standard for Information Systems — Coded Character Sets — 7-Bit American National Standard Code for Information Interchange (7-Bit ASCII), ANSI X3.4-1986*
+*American National Standard for Information Systems - Coded Character Sets - 7-Bit* *American National Standard Code for Information Interchange (7-Bit ASCII), ANSI X3.4-1986* [https://en.wikipedia.org/wiki/MD5](https://en.wikipedia.org/wiki/MD5) [https://en.wikipedia.org/wiki/Unicode](https://en.wikipedia.org/wiki/Unicode) [https://en.wikipedia.org/wiki/UTF-8](https://urldefense.proofpoint.com/v2/url?u=https-3A__en.wikipedia.org_wiki_UTF-2D8&d=DwQFaQ&c=euGZstcaTDllvimEN8b7jXrwqOf-v5A_CdpgnVfiiMM&r=1WaQboHsyvYecjE8_oIh68PRwUzh-Z0tKvI2aorAqEs&m=MUtUnnhJ-qleuH67ddScNDK3T4dwzCEV_1j1l8yMnqc&s=mP5h9ouSsPrdoEb1986Utbr1LZPpTpilNLtkZVz72sM&e=) [http://en.wikipedia.org/wiki/ISO\_8601](http://en.wikipedia.org/wiki/ISO_8601) [https://en.wikipedia.org/wiki/Binary\_image](https://en.wikipedia.org/wiki/Binary_image) https://en.wikipedia.org/wiki/Zip\_(file\_format) [https://tools.ietf.org/html/rfc4122](https://tools.ietf.org/html/rfc4122) [https://msdn.microsoft.com/en-us/library/windows/desktop/aa378623(v=vs.85).aspx](<https://msdn.microsoft.com/en-us/library/windows/desktop/aa378623(v=vs.85).aspx>) https://developer.apple.com/library/mac/documentation/Foundation/Reference/NSUUID\_Class The Inventor's Dilemma: The Remarkable Life of H. Joseph Gerber, by David Gerber. [https://tatsu.readthedocs.io/en/stable/. Documentation for the TatSu PEG parser generator.](https://tatsu.readthedocs.io/en/stable/) [https://en.wikipedia.org/wiki/Parsing\_expression\_grammar](https://en.wikipedia.org/wiki/Parsing_expression_grammar) [https://bford.info/packrat/ Bryan Fords page on parsing expression grammars.](https://bford.info/packrat/) IPC-4761 IPC-TM-50 IPC-7351B
 
-<https://en.wikipedia.org/wiki/MD5>
-
-<https://en.wikipedia.org/wiki/Unicode>
-
-[https://en.wikipedia.org/wiki/UTF-8](https://urldefense.proofpoint.com/v2/url?u=https-3A__en.wikipedia.org_wiki_UTF-2D8&d=DwQFaQ&c=euGZstcaTDllvimEN8b7jXrwqOf-v5A_CdpgnVfiiMM&r=1WaQboHsyvYecjE8_oIh68PRwUzh-Z0tKvI2aorAqEs&m=MUtUnnhJ-qleuH67ddScNDK3T4dwzCEV_1j1l8yMnqc&s=mP5h9ouSsPrdoEb1986Utbr1LZPpTpilNLtkZVz72sM&e=)
-
-[http://en.wikipedia.org/wiki/ISO\\_8601](http://en.wikipedia.org/wiki/ISO_8601)
-
-[https://en.wikipedia.org/wiki/Binary\\_image](https://en.wikipedia.org/wiki/Binary_image)
-
-https://en.wikipedia.org/wiki/Zip\_(file\_format)
-
-<https://tools.ietf.org/html/rfc4122>
-
-[https://msdn.microsoft.com/en-us/library/windows/desktop/aa378623\(v=vs.85\).aspx](https://msdn.microsoft.com/en-us/library/windows/desktop/aa378623(v=vs.85).aspx)
-
-https://developer.apple.com/library/mac/documentation/Foundation/Reference/NSUUID\_Class
-
-The Inventor's Dilemma: The Remarkable Life of H. Joseph Gerber, by David Gerber.
-
-[https://tatsu.readthedocs.io/en/stable/.](https://tatsu.readthedocs.io/en/stable/) Documentation for the TatSu PEG parser generator.
-
-[https://en.wikipedia.org/wiki/Parsing\\_expression\\_grammar](https://en.wikipedia.org/wiki/Parsing_expression_grammar)
-
-<https://bford.info/packrat/> Bryan Fords page on parsing expression grammars.
-
-IPC-4761
-
-IPC-TM-50
-
-IPC-7351B
-
-![](_page_196_Picture_0.jpeg)
-
+-----
