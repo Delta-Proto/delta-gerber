@@ -1,0 +1,6 @@
+C  Synthetic IPC-D-356A fixture (SI) for delta-gerber tests
+P  JOB SYNTH-SI
+P  UNITS SI
+317GND              U1    -1    D0300PA00X+000150Y+000150X0500
+327VCC              R1    -2          A01X+250000Y+300000X0600Y0300R090 S1
+999
