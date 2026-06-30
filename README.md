@@ -40,7 +40,16 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
 - Step and Repeat (%SR%) for panelized boards
 - Block apertures (%AB%) with full flash expansion, nesting, transforms and LPC polarity toggling
 - Aperture transforms: rotation (LR), scaling (LS), mirroring (LM)
-- Gerber X2/X3 attributes (TF/TA/TO/TD) as a queryable model — file function, aperture function (.AperFunction), nets (.N), component refdes/pins (.C/.P)
+- **Full Gerber X3 / X2 attribute compliance** — every standard attribute (TF file, TA aperture,
+  TO object, TD delete) is parsed into a typed, queryable model verified against the Ucamco
+  **2024.05** specification:
+  - **File**: `.FileFunction`, `.FilePolarity`, `.Part`, `.GenerationSoftware`, `.CreationDate`,
+    `.ProjectId`, `.MD5`, `.SameCoordinates`
+  - **Aperture**: the complete `.AperFunction` set (32 values, typed enum), `.DrillTolerance`
+    (mm-normalized), `.FlashText`
+  - **Object / X3 assembly**: nets (`.N`), pins (`.P`), component refdes (`.C`) and the full
+    `.Cxxx` component characteristics — value, mfr, MPN, mount, rotation, package, library, and
+    height (`.CHgt`, mm-normalized) — plus pick-and-place centroid extraction
 - Image polarity (%IP%): negative-image inversion rendering; image offset (%OF%) recognition
 
 ### Excellon Drill Parsing
@@ -50,6 +59,21 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
 - Plated (PTH) and non-plated (NPTH) hole distinction
 - Absolute and incremental coordinate modes (G90/G91)
 - Metric and inch units with automatic format detection
+
+### IPC-D-356A Netlist Parsing
+- Bare-board electrical-test netlist reader (`.ipc`, `.ipc356`) for connectivity / test-point data
+- Test points: `317` through-hole, `327` SMD, `367` non-plated tooling, `307` blind/buried via —
+  with net, ref-des/pin (incl. `VIA` and mid-net `M`), hole + plating, access side, location,
+  feature size and rotation, soldermask
+- Conductor segments (`378`/`078`) with modal coordinates and space/asterisk-delimited chains,
+  net adjacency (`379`/`079`), and board/panel outlines (`389`/`089`)
+- Continuation records: `017`/`027` hole, `099` test-point location, `088` soldermask clearance
+- Long-net-name aliases (`P NNAME`), resolved into full net names — tolerates the non-standard
+  Allegro alias-as-comment quirk
+- Coordinates and sizes normalized to **mm** at parse time (from `CUST` 0.0001 inch or `SI`
+  0.001 mm), sharing one coordinate space with Gerber/drill geometry
+- Non-fatal parse warnings (missing `P UNITS`, unknown op codes, truncated records) instead of
+  exceptions
 
 ### CAD Tool Compatibility
 - **Altium Designer** — Gerber X2 attributes, mechanical layer outlines (.GM, .GM1), format detection
