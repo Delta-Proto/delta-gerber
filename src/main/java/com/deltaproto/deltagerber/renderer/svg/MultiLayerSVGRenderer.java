@@ -669,13 +669,11 @@ public class MultiLayerSVGRenderer {
         // Fill/clip rule for the board-outline path. A real profile layer can carry
         // genuine internal cut-outs — extractOutlinePath emits the board edge plus
         // region holes and relies on EVEN-ODD to subtract them. A DERIVED outline has
-        // no real cut-outs: OutlineDeriver fills interior pockets and emits only the
-        // same-wound "outer" silhouette contours (holes already dropped), which must be
-        // UNIONED — the NONZERO rule. Under even-odd those same-wound pieces cancel
-        // wherever one nests inside another (the morphological close/outset step can emit
-        // concentric boundary loops over copper-dense zones), punching holes into the
-        // clip that erase the copper there — traces vanish from the realistic view while
-        // the board still looks like a full rectangle. See OutlineDeriver.toOuterSilhouettePath.
+        // no real cut-outs: OutlineDeriver fills interior pockets and emits one same-wound
+        // loop per disjoint board piece, which must be UNIONED — the NONZERO rule.
+        // (Its loops never nest, so the two rules agree today; they did not when the
+        // deriver dropped holes rather than filling them, and even-odd then punched the
+        // copper-dense zones out of the clip. See OutlineDeriver.traceSilhouette.)
         String outlineFillRule = haveOutlineLayer ? "evenodd" : "nonzero";
 
         if (hasOutlinePath) {

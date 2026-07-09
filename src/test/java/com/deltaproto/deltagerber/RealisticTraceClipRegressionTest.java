@@ -24,10 +24,16 @@ import static org.junit.jupiter.api.Assertions.*;
  * interior pockets filled and its holes dropped — {@link com.deltaproto.deltagerber}'s
  * {@code OutlineDeriver} emits only same-wound "outer" contours, a path meant to be filled
  * under the <b>non-zero</b> rule. The realistic renderer used to clip/mask it under
- * <b>even-odd</b>. On a copper-dense board the morphological close/outset emits concentric
- * same-wound boundary loops; under even-odd a loop nested inside another cancels to a hole,
- * so the clip punched holes exactly over the copper-dense zones and erased the traces there —
- * while the board still looked like a full rectangle, hiding the breakage.
+ * <b>even-odd</b>. On a copper-dense board the exact-geometry morphological close/outset emitted
+ * concentric same-wound boundary loops; under even-odd a loop nested inside another cancels to a
+ * hole, so the clip punched holes exactly over the copper-dense zones and erased the traces there
+ * — while the board still looked like a full rectangle, hiding the breakage.
+ * <p>
+ * The deriver now works on a raster and flood-fills the exterior, so every emitted loop is the
+ * outer boundary of a disjoint piece and none can nest inside another. That is the stronger
+ * guarantee, and it is what this test pins: no nesting, hence no rule under which the clip can
+ * cancel itself into holes. The renderer still declares {@code nonzero}, which is what a union of
+ * same-wound pieces requires.
  * <p>
  * The geometry below is modelled on the failing real-world set — an outline-less board of
  * dense edge-card connector combs that fan out through thin traces to pad columns — but
@@ -72,17 +78,52 @@ public class RealisticTraceClipRegressionTest {
                     "trace midpoint (%.3f, %.3f) must be inside the derived board clip", mid[0], mid[1]));
         }
 
-        // 3. Self-validation: the same path under the OLD even-odd rule would clip interior
-        //    traces — i.e. this geometry genuinely exercises the bug, so a future revert to
-        //    even-odd would be caught here rather than passing vacuously.
+        // 3. The structural reason the bug cannot come back: no silhouette loop nests inside
+        //    another, because the exterior flood-fill leaves the mask free of holes. A revert to
+        //    dropping holes instead of filling them would reintroduce nesting and fail here.
+        List<String> subpaths = splitSubpaths(pathData);
+        assertFalse(subpaths.isEmpty(), "derived outline should contain at least one loop");
+        for (int i = 0; i < subpaths.size(); i++) {
+            Path2D loop = parsePath(subpaths.get(i));
+            loop.setWindingRule(Path2D.WIND_NON_ZERO);
+            for (int j = 0; j < subpaths.size(); j++) {
+                if (i == j) continue;
+                double[] vertex = firstVertex(subpaths.get(j));
+                assertFalse(loop.contains(vertex[0], vertex[1]),
+                    () -> String.format(Locale.US,
+                        "derived silhouette loop starting (%.3f, %.3f) nests inside another — "
+                        + "a nested same-wound loop cancels to a hole under even-odd and clips "
+                        + "the copper beneath it", vertex[0], vertex[1]));
+            }
+        }
+
+        // 4. Consequently the clip encloses the same pixels under either rule, so the traces
+        //    survive even if a caller ignores the declared clip-rule.
         Path2D asEvenOdd = parsePath(pathData);
         asEvenOdd.setWindingRule(Path2D.WIND_EVEN_ODD);
-        long clippedUnderEvenOdd = traceMidpoints.stream()
-            .filter(mid -> !asEvenOdd.contains(mid[0], mid[1]))
-            .count();
-        assertTrue(clippedUnderEvenOdd > 0,
-            "sanity: the dense synthetic board should expose the even-odd clipping bug "
-            + "(no traces were clipped under even-odd — geometry no longer reproduces it)");
+        for (double[] mid : traceMidpoints) {
+            assertTrue(asEvenOdd.contains(mid[0], mid[1]),
+                () -> String.format(Locale.US,
+                    "trace midpoint (%.3f, %.3f) must survive even under even-odd", mid[0], mid[1]));
+        }
+    }
+
+    /** The path's "M ... Z" runs, one per closed loop. */
+    private static List<String> splitSubpaths(String d) {
+        List<String> pieces = new ArrayList<>();
+        for (String piece : d.trim().split("(?=M)")) {
+            if (!piece.isBlank()) pieces.add(piece);
+        }
+        return pieces;
+    }
+
+    /** The "M x y" point that opens a subpath. */
+    private static double[] firstVertex(String subpath) {
+        Matcher m = Pattern.compile("-?\\d+(?:\\.\\d+)?").matcher(subpath);
+        assertTrue(m.find(), "subpath should open with a coordinate: " + subpath);
+        double x = Double.parseDouble(m.group());
+        assertTrue(m.find(), "subpath should open with a coordinate pair: " + subpath);
+        return new double[]{x, Double.parseDouble(m.group())};
     }
 
     /**

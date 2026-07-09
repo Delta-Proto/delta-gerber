@@ -12,21 +12,29 @@ import java.util.regex.Pattern;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * When the copper is too dense to form a clean board-shaped silhouette, {@link OutlineDeriver}
- * must not try to trace it: a high vertex count signals the geometry is a tangle of traces/pads,
- * not a board edge, and the exact {@link java.awt.geom.Area} union + morphological close is
- * roughly quadratic in edge count and OOMs a multi-GB heap (the MFIH_V1 board did exactly this,
- * dying in {@code erode() -> new Area(stroked band)}). The deriver instead degrades to the board
- * bounding box grown by a fixed margin — a cheap, bounded answer that always completes.
+ * {@link OutlineDeriver} costs what the board's <em>area</em> costs, not what its geometry costs.
+ * <p>
+ * It used to derive the silhouette with exact {@link java.awt.geom.Area} booleans, whose
+ * morphological close is roughly quadratic in edge count: 5,000 flattened vertices took over two
+ * minutes and a real 32 mm board's copper (~49,000 vertices) never finished, while the MFIH_V1
+ * board exhausted a multi-GB heap inside {@code erode() -> new Area(stroked band)}. A vertex cap
+ * papered over that by degrading to the board bounding box — which fired only on the boards too
+ * dense to survive the exact path, and left every board below the cap to hang.
+ * <p>
+ * The deriver now works on a raster, so vertex count buys nothing. Dense copper must therefore
+ * produce a <em>real</em> silhouette that hugs the copper, quickly — never a padded bounding box.
  */
 public class OutlineDeriverDenseTest {
 
     private static int u(double mm) { return (int) Math.round(mm * 10000); } // FSLAX44 MM
 
+    /** Margin the retired bounding-box fallback added on each side, as a fraction of each dimension. */
+    private static final double RETIRED_BBOX_MARGIN_FRACTION = 0.10;
+
     /**
-     * A grid of {@code cols x rows} tiny filled pads spanning the unit-ish board area, standing
-     * in for a trace/pad-dense copper layer. Each pad is a 5-vertex region, so the flattened
-     * vertex count is ~5 * cols * rows — pick a grid that clears MAX_TOTAL_VERTICES (50k).
+     * A grid of {@code cols x rows} tiny filled pads spanning the board area, standing in for a
+     * trace/pad-dense copper layer. Each pad is a 5-vertex region, so the flattened vertex count
+     * is ~5 * cols * rows. Pads sit close enough that the morphological close bridges them.
      */
     private static GerberDocument densePadGrid(int cols, int rows, double boardW, double boardH) {
         double pad = 0.1;
@@ -51,8 +59,8 @@ public class OutlineDeriverDenseTest {
     }
 
     @Test
-    void denseCopperFallsBackToBoundingBoxWithMarginAndDoesNotHang() {
-        // 110 x 100 = 11,000 pads -> ~55,000 flattened vertices, well past the 50k guard.
+    void denseCopperDerivesARealSilhouetteAndDoesNotHang() {
+        // 110 x 100 = 11,000 pads -> ~55,000 flattened vertices, past the retired 50k vertex cap.
         GerberDocument copper = densePadGrid(110, 100, 40.0, 30.0);
         BoundingBox bb = copper.getBoundingBox();
         assertTrue(bb.isValid(), "dense copper should have valid bounds");
@@ -62,33 +70,33 @@ public class OutlineDeriverDenseTest {
         long ms = (System.nanoTime() - t0) / 1_000_000;
 
         assertNotNull(d);
-        assertFalse(d.isBlank(), "should still emit an outline (the bounding box)");
-        // Bounding-box fallback is a single axis-aligned rectangle: one M, three L, one Z.
-        assertEquals(1, count(d, 'M'), "bbox fallback is one subpath: " + d);
-        assertEquals(3, count(d, 'L'), "bbox fallback is a 4-corner rectangle: " + d);
+        assertFalse(d.isBlank(), "dense copper must still yield an outline");
 
-        double[] xs = new double[4], ys = new double[4];
-        parseCorners(d, xs, ys);
-        double gotMinX = min(xs), gotMaxX = max(xs), gotMinY = min(ys), gotMaxY = max(ys);
+        // The pads are ~0.27 mm apart, so a 0.6 mm close bridges them into one board.
+        assertEquals(1, count(d, 'M'), "the pad grid should close into a single silhouette: " + d);
 
-        // Expected: board bounds grown by 10% of each dimension on every side.
-        double mx = bb.getWidth() * 0.10, my = bb.getHeight() * 0.10;
-        assertEquals(bb.getMinX() - mx, gotMinX, 1e-3, "left edge = bbox - 10%");
-        assertEquals(bb.getMaxX() + mx, gotMaxX, 1e-3, "right edge = bbox + 10%");
-        assertEquals(bb.getMinY() - my, gotMinY, 1e-3, "bottom edge = bbox - 10%");
-        assertEquals(bb.getMaxY() + my, gotMaxY, 1e-3, "top edge = bbox + 10%");
+        // The silhouette hugs the copper: it is grown by the 0.2 mm outset, not by a
+        // 10 %-of-dimension bounding-box margin (which on this board would be 4 mm / 3 mm).
+        double[] extent = extent(d);
+        double marginX = bb.getWidth() * RETIRED_BBOX_MARGIN_FRACTION;
+        double marginY = bb.getHeight() * RETIRED_BBOX_MARGIN_FRACTION;
+        assertTrue(extent[1] < bb.getMaxX() + marginX / 2,
+            "right edge must hug the copper (~" + bb.getMaxX() + "), not a 10% bbox margin: " + extent[1]);
+        assertTrue(extent[0] > bb.getMinX() - marginX / 2,
+            "left edge must hug the copper: " + extent[0]);
+        assertTrue(extent[3] < bb.getMaxY() + marginY / 2,
+            "top edge must hug the copper: " + extent[3]);
+        assertTrue(extent[2] > bb.getMinY() - marginY / 2,
+            "bottom edge must hug the copper: " + extent[2]);
 
-        // The whole point of the guard: it bails *before* the expensive Area ops, so it is fast.
-        assertTrue(ms < 5000, "dense fallback must not hang/OOM; took " + ms + " ms");
+        // Bounded by the raster's pixel count, so a vertex tangle can no longer blow it up.
+        assertTrue(ms < 5000, "dense derivation must not hang; took " + ms + " ms");
     }
 
     @Test
-    void sparseCopperStillDerivesARealSilhouetteNotTheBoundingBox() {
-        // A single 40 x 30 pour is well under the vertex guard: the exact path runs and the
-        // outline tracks the copper edge (only a fraction of a mm of outset), NOT a 10% bbox.
-        GerberDocument copper = densePadGrid(1, 1, 40.0, 30.0); // one pad at origin, 0.1 mm
-        // Replace with a genuine large pour so the silhouette is meaningful.
-        copper = new GerberParser().parse(
+    void sparseCopperDerivesASilhouetteThatHugsTheCopperEdge() {
+        // A single 40 x 30 pour: the outline tracks the copper edge, only a fraction of a mm out.
+        GerberDocument copper = new GerberParser().parse(
             "G04 single pour*\n%FSLAX44Y44*%\n%MOMM*%\nG01*\n%ADD10C,0.1000*%\n"
             + "G36*\n"
             + "X" + u(0) + "Y" + u(0) + "D02*\n"
@@ -100,16 +108,21 @@ public class OutlineDeriverDenseTest {
 
         String d = OutlineDeriver.deriveOutlineSvgPath(List.of(copper), 0.6, 0.2);
         assertFalse(d.isBlank());
-        double[] xs = new double[4], ys = new double[4];
-        // Outset is DERIVED_OUTLINE_OUTSET_MM-scale (0.2) + close; far below a 10% (4 mm / 3 mm)
-        // bbox margin. If the exact path ran, the right edge sits near 40, not near 44.
-        boolean isRect = count(d, 'M') == 1 && count(d, 'L') == 3;
-        if (isRect) {
-            parseCorners(d, xs, ys);
-            assertTrue(max(xs) < 41.0,
-                "exact path should hug the copper edge (~40mm), not apply a 10% bbox margin (~44mm): " + d);
-        }
-        // (A rectangular pour can legitimately come back as a rectangle; the margin is the tell.)
+        assertEquals(1, count(d, 'M'), "one pour is one silhouette: " + d);
+
+        // Outset is 0.2 mm; a 10% bbox margin would put the right edge near 44.
+        double[] extent = extent(d);
+        assertEquals(-0.2, extent[0], 0.15, "left edge = copper - outset");
+        assertEquals(40.2, extent[1], 0.15, "right edge = copper + outset");
+        assertEquals(-0.2, extent[2], 0.15, "bottom edge = copper - outset");
+        assertEquals(30.2, extent[3], 0.15, "top edge = copper + outset");
+    }
+
+    @Test
+    void noGeometryYieldsNoOutline() {
+        GerberDocument empty = new GerberParser().parse(
+            "G04 nothing*\n%FSLAX44Y44*%\n%MOMM*%\nG01*\nM02*\n");
+        assertEquals("", OutlineDeriver.deriveOutlineSvgPath(List.of(empty), 0.6, 0.2));
     }
 
     private static int count(String s, char ch) {
@@ -118,17 +131,18 @@ public class OutlineDeriverDenseTest {
         return n;
     }
 
-    /** Parse the 8 numbers of an "M x y L x y L x y L x y Z" rectangle into corner arrays. */
-    private static void parseCorners(String d, double[] xs, double[] ys) {
+    /** {minX, maxX, minY, maxY} over every coordinate pair in the path. */
+    private static double[] extent(String d) {
         Matcher m = Pattern.compile("-?\\d+(?:\\.\\d+)?").matcher(d);
-        for (int i = 0; i < 4; i++) {
-            assertTrue(m.find(), "expected x[" + i + "] in " + d);
-            xs[i] = Double.parseDouble(m.group());
-            assertTrue(m.find(), "expected y[" + i + "] in " + d);
-            ys[i] = Double.parseDouble(m.group());
+        double minX = Double.MAX_VALUE, maxX = -Double.MAX_VALUE;
+        double minY = Double.MAX_VALUE, maxY = -Double.MAX_VALUE;
+        while (m.find()) {
+            double x = Double.parseDouble(m.group());
+            assertTrue(m.find(), "coordinates come in pairs: " + d);
+            double y = Double.parseDouble(m.group());
+            minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y); maxY = Math.max(maxY, y);
         }
+        return new double[]{minX, maxX, minY, maxY};
     }
-
-    private static double min(double[] a) { double m = a[0]; for (double v : a) m = Math.min(m, v); return m; }
-    private static double max(double[] a) { double m = a[0]; for (double v : a) m = Math.max(m, v); return m; }
 }
