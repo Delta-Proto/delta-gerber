@@ -3,6 +3,7 @@ package com.deltaproto.deltagerber.model.gerber.operation;
 import com.deltaproto.deltagerber.model.gerber.ArcBounds;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
+import com.deltaproto.deltagerber.renderer.svg.SvgPathUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -148,8 +149,13 @@ public class Contour {
                     } else {
                         sweepFlag = seg.isClockwise() ? 1 : 0;
                     }
-                    path.append(String.format(Locale.US, " A %.6f %.6f 0 %d %d %.6f %.6f",
-                        r, r, largeArcFlag, sweepFlag, seg.getX(), seg.getY()));
+                    if (SvgPathUtils.isFullCircleArc(currentX, currentY, seg.getX(), seg.getY(), r)) {
+                        SvgPathUtils.appendFullCircleArcs(path, seg.getCenterX(), seg.getCenterY(),
+                            r, currentX, currentY, sweepFlag);
+                    } else {
+                        path.append(String.format(Locale.US, " A %.6f %.6f 0 %d %d %.6f %.6f",
+                            r, r, largeArcFlag, sweepFlag, seg.getX(), seg.getY()));
+                    }
                 }
             } else {
                 path.append(String.format(Locale.US, " L %.6f %.6f", seg.getX(), seg.getY()));

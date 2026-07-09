@@ -12,8 +12,39 @@ public class SvgPathUtils {
 
     private static final int CIRCLE_SEGMENTS = 32;  // Number of segments for circle approximation
 
+    /**
+     * Largest gap between an arc's endpoints that still counts as a full circle, in mm.
+     * A Gerber full circle is a G75 arc that returns to its own start point, so the two
+     * are equal by construction; this only absorbs the rounding of {@code %.6f} output.
+     */
+    public static final double FULL_CIRCLE_EPS_MM = 1e-6;
+
     private SvgPathUtils() {
         // Utility class
+    }
+
+    /** True if an arc from {@code (sx,sy)} to {@code (ex,ey)} sweeps a whole circle. */
+    public static boolean isFullCircleArc(double sx, double sy, double ex, double ey, double radius) {
+        double dx = sx - ex, dy = sy - ey;
+        return radius > 0 && dx * dx + dy * dy <= FULL_CIRCLE_EPS_MM * FULL_CIRCLE_EPS_MM;
+    }
+
+    /**
+     * Append a full circle to {@code path} as two half-arc commands, leaving {@code (sx,sy)}
+     * and returning to it.
+     *
+     * <p>SVG omits an elliptical-arc command whose endpoints are identical (SVG 1.1 §F.6.2),
+     * so a Gerber full circle emitted as a single {@code A} draws nothing at all. Two 180°
+     * arcs by way of the antipodal point describe the same circle and always draw.
+     */
+    public static void appendFullCircleArcs(StringBuilder path, double centerX, double centerY,
+                                            double radius, double sx, double sy, int sweepFlag) {
+        double antipodeX = 2 * centerX - sx;
+        double antipodeY = 2 * centerY - sy;
+        path.append(String.format(Locale.US, " A %.6f %.6f 0 0 %d %.6f %.6f",
+            radius, radius, sweepFlag, antipodeX, antipodeY));
+        path.append(String.format(Locale.US, " A %.6f %.6f 0 0 %d %.6f %.6f",
+            radius, radius, sweepFlag, sx, sy));
     }
 
     /**

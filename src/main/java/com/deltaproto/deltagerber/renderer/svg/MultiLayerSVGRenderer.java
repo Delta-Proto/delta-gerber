@@ -1165,6 +1165,7 @@ public class MultiLayerSVGRenderer {
      * evenodd clip rule and the board renders empty.
      */
     private static List<Segment> dedupeSegments(List<Segment> segments, double toleranceSq) {
+        double tolerance = Math.sqrt(toleranceSq);
         List<Segment> out = new ArrayList<>();
         for (Segment s : segments) {
             boolean dup = false;
@@ -1174,6 +1175,18 @@ public class MultiLayerSVGRenderer {
                                && distSq(s.endX, s.endY, k.endX, k.endY) <= toleranceSq;
                 boolean revDir = distSq(s.startX, s.startY, k.endX, k.endY) <= toleranceSq
                               && distSq(s.endX, s.endY, k.startX, k.startY) <= toleranceSq;
+                if (s.isArc) {
+                    // Endpoints alone do not identify an arc. Two arcs can share a pair of
+                    // endpoints and still be the complementary minor and major pieces of one
+                    // circle — which is how Altium draws a round internal cut-out. They are the
+                    // same arc only if they also share a centre and radius AND run the same way
+                    // round it; a reversed copy of an arc runs the opposite way.
+                    boolean sameCircle =
+                        distSq(s.centerX, s.centerY, k.centerX, k.centerY) <= toleranceSq
+                        && Math.abs(s.radius - k.radius) <= tolerance;
+                    sameDir &= sameCircle && s.clockwise == k.clockwise;
+                    revDir &= sameCircle && s.clockwise != k.clockwise;
+                }
                 if (sameDir || revDir) { dup = true; break; }
             }
             if (!dup) out.add(s);
@@ -1401,6 +1414,18 @@ public class MultiLayerSVGRenderer {
         double sx = reverse ? s.endX : s.startX;
         double sy = reverse ? s.endY : s.startY;
         boolean cw = reverse ? !s.clockwise : s.clockwise;
+        int sweepFlag;
+        if (options.isFlipY()) {
+            sweepFlag = cw ? 0 : 1;
+        } else {
+            sweepFlag = cw ? 1 : 0;
+        }
+
+        if (SvgPathUtils.isFullCircleArc(s.startX, s.startY, s.endX, s.endY, s.radius)) {
+            SvgPathUtils.appendFullCircleArcs(path, s.centerX, s.centerY, s.radius, sx, sy, sweepFlag);
+            return;
+        }
+
         double sa = Math.atan2(sy - s.centerY, sx - s.centerX);
         double ea = Math.atan2(ey - s.centerY, ex - s.centerX);
         double sweep;
@@ -1412,12 +1437,6 @@ public class MultiLayerSVGRenderer {
             if (sweep <= 0) sweep += 2 * Math.PI;
         }
         int largeArcFlag = sweep > Math.PI ? 1 : 0;
-        int sweepFlag;
-        if (options.isFlipY()) {
-            sweepFlag = cw ? 0 : 1;
-        } else {
-            sweepFlag = cw ? 1 : 0;
-        }
         path.append(String.format(Locale.US, " A %.6f %.6f 0 %d %d %.6f %.6f",
             s.radius, s.radius, largeArcFlag, sweepFlag, ex, ey));
     }
