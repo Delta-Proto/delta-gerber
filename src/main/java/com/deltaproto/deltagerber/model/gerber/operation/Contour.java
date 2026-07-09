@@ -1,5 +1,6 @@
 package com.deltaproto.deltagerber.model.gerber.operation;
 
+import com.deltaproto.deltagerber.model.gerber.ArcBounds;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
 
@@ -55,6 +56,29 @@ public class Contour {
                 bounds.includePoint(seg.getCenterX() - r, seg.getCenterY() - r);
                 bounds.includePoint(seg.getCenterX() + r, seg.getCenterY() + r);
             }
+        }
+        return bounds;
+    }
+
+    /**
+     * Bounds of the contour polygon, using exact arc extents rather than the
+     * {@code center ± radius} over-approximation of {@link #getBoundingBox()}. A region has no
+     * stroke, so this is the contour's true extent.
+     */
+    public BoundingBox getPathBoundingBox() {
+        BoundingBox bounds = new BoundingBox();
+        bounds.includePoint(startX, startY);
+        double currentX = startX;
+        double currentY = startY;
+        for (ContourSegment seg : segments) {
+            if (seg.isArc()) {
+                bounds.include(ArcBounds.of(currentX, currentY, seg.getX(), seg.getY(),
+                        seg.getCenterX(), seg.getCenterY(), seg.isClockwise()));
+            } else {
+                bounds.includePoint(seg.getX(), seg.getY());
+            }
+            currentX = seg.getX();
+            currentY = seg.getY();
         }
         return bounds;
     }

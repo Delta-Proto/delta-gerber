@@ -148,9 +148,24 @@ public abstract class GraphicsObject {
     }
 
     /**
-     * Get the bounding box of this graphics object.
+     * Get the bounding box of this graphics object, i.e. the extent of the ink it puts on the
+     * board: the path grown by half the aperture on every side.
      */
     public abstract BoundingBox getBoundingBox();
+
+    /**
+     * Bounds of the underlying path alone, with no aperture width — the stroke centreline for a
+     * draw or arc, the flash point for a flash, the polygon for a region.
+     *
+     * <p>This is the measurement a board outline calls for: fabricators route along the
+     * centreline of the profile trace, so a 32 mm board drawn with a 0.05 mm aperture inks
+     * 32.05 mm but <em>is</em> 32 mm. Use {@link #getBoundingBox()} whenever the question is
+     * "what area does this cover" (rendering, artwork extents) rather than "how big is the
+     * feature this describes".
+     */
+    public BoundingBox getPathBoundingBox() {
+        return getBoundingBox();
+    }
 
     /**
      * Generate SVG representation with default (exact) options.

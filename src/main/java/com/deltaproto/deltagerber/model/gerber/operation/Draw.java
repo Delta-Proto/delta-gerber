@@ -66,6 +66,14 @@ public class Draw extends GraphicsObject {
     }
 
     @Override
+    public BoundingBox getPathBoundingBox() {
+        BoundingBox bounds = new BoundingBox();
+        bounds.includePoint(startX, startY);
+        bounds.includePoint(endX, endY);
+        return bounds;
+    }
+
+    @Override
     public String toSvg(SvgOptions options) {
         String color = polarity == Polarity.DARK ? options.getDarkColor() : options.getClearColor();
         double strokeWidth = 0;

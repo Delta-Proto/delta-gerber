@@ -1,5 +1,6 @@
 package com.deltaproto.deltagerber.model.gerber.operation;
 
+import com.deltaproto.deltagerber.model.gerber.ArcBounds;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.Polarity;
 import com.deltaproto.deltagerber.model.gerber.aperture.Aperture;
@@ -67,6 +68,11 @@ public class Arc extends GraphicsObject {
             bounds.expand(margin);
         }
         return bounds;
+    }
+
+    @Override
+    public BoundingBox getPathBoundingBox() {
+        return ArcBounds.of(startX, startY, endX, endY, centerX, centerY, clockwise);
     }
 
     @Override

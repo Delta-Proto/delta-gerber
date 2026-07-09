@@ -35,6 +35,15 @@ public class Region extends GraphicsObject {
     }
 
     @Override
+    public BoundingBox getPathBoundingBox() {
+        BoundingBox bounds = new BoundingBox();
+        for (Contour contour : contours) {
+            bounds.include(contour.getPathBoundingBox());
+        }
+        return bounds;
+    }
+
+    @Override
     public String toSvg(SvgOptions options) {
         if (contours.isEmpty()) {
             return "";

@@ -62,6 +62,11 @@ public class Flash extends GraphicsObject {
     }
 
     @Override
+    public BoundingBox getPathBoundingBox() {
+        return new BoundingBox(x, y, x, y);
+    }
+
+    @Override
     public String toSvg(SvgOptions options) {
         // Flash uses <use> elements referencing aperture definitions.
         // Fill color is set on the <use> element based on polarity, so it

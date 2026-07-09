@@ -306,6 +306,39 @@
         .centroid-refdes-pill.side-bottom { background: rgba(232,150,84,0.18);  color: #e89654; }
         .centroid-num { color: var(--fg-faint); font-size: 0.75rem; }
 
+        /* ===== PCB Information Panel ===== */
+        #pcbinfo-panel { flex: 1; display: flex; flex-direction: column; overflow: auto; background: var(--bg); padding: 16px 20px; }
+        .pcbinfo-intro { font-size: 0.8125rem; color: var(--fg-muted); margin-bottom: 16px; max-width: 62ch; }
+        .pcbinfo-section { margin-bottom: 24px; }
+        .pcbinfo-section h3 {
+            font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+            color: var(--fg-muted); margin: 0 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+        }
+        /* Auto-fitting columns: the summary reads as one list on a narrow pane, several on a wide one. */
+        .pcbinfo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 2px 24px; }
+        /* Free-text values (tool names, timestamps) need room the numeric ones do not. */
+        .pcbinfo-section.wide .pcbinfo-grid { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+        .pcbinfo-section.wide .pcbinfo-val { text-align: left; font-weight: 500; }
+        .pcbinfo-item {
+            display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+            padding: 7px 0; border-bottom: 1px solid var(--border-subtle);
+        }
+        .pcbinfo-key { font-size: 0.8125rem; color: var(--fg-muted); }
+        .pcbinfo-val { font-size: 0.8125rem; color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+        .pcbinfo-val.absent { color: var(--fg-faint); font-weight: 400; }
+        .pcbinfo-unit { font-weight: 400; color: var(--fg-muted); margin-left: 3px; }
+
+        .pcbinfo-table-wrap { overflow-x: auto; }
+        .pcbinfo-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; white-space: nowrap; }
+        .pcbinfo-table thead th {
+            background: var(--bg-card); border-bottom: 1px solid var(--border);
+            padding: 8px 12px; text-align: left; font-weight: 600; color: var(--fg-muted);
+        }
+        .pcbinfo-table tbody tr { border-bottom: 1px solid var(--border-subtle); }
+        .pcbinfo-table tbody tr:hover { background: var(--item-hover); }
+        .pcbinfo-table td { padding: 7px 12px; }
+        .pcbinfo-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .pcbinfo-table td.absent { color: var(--fg-faint); }
         /* ===== Warnings Panel ===== */
         #warnings-panel { flex: 1; display: flex; flex-direction: column; overflow: auto; background: var(--bg); padding: 16px 20px; }
         .warnings-intro { font-size: 0.8125rem; color: var(--fg-muted); margin-bottom: 14px; }
@@ -396,6 +429,7 @@
                 <button class="view-tab" data-view="bottom" onclick="switchView('bottom')">Board Bottom</button>
                 <button class="view-tab" id="centroid-tab" data-view="centroid" onclick="switchView('centroid')" disabled style="opacity:0.4">Centroid</button>
                 <button class="view-tab" id="warnings-tab" data-view="warnings" onclick="switchView('warnings')" disabled style="opacity:0.4">Warnings</button>
+                <button class="view-tab" id="pcbinfo-tab" data-view="pcbinfo" onclick="switchView('pcbinfo')" disabled style="opacity:0.4">PCB Information</button>
                 <span class="soldermask-swatches" id="soldermask-swatches" title="Soldermask color (realistic view)">
                     <button class="sm-swatch active" data-color="green"  style="background:#008635" onclick="setSoldermask('green')"  title="Green"></button>
                     <button class="sm-swatch"        data-color="purple" style="background:#ac13a6" onclick="setSoldermask('purple')" title="Purple"></button>
@@ -482,6 +516,14 @@
                 </div>
                 <div id="warnings-content"></div>
             </div>
+            <div id="pcbinfo-panel" class="hidden">
+                <div class="pcbinfo-intro">
+                    Everything derived from the Gerber and drill files themselves — no assumptions,
+                    no defaults. Layers are read as you have typed them in the sidebar, so correcting
+                    a layer type here changes what is measured.
+                </div>
+                <div id="pcbinfo-content"></div>
+            </div>
         </div>
     </div>
 
@@ -497,6 +539,7 @@
         let scale = 1, panX = 0, panY = 0, isPanning = false, startX, startY;
         let components = [];  // [{refdes, value, footprint, mountType, x, y, rotation, side}]
         let warnings = [];    // [{file, messages:[...]}]
+        let pcbInfo = null;   // everything the library derives about the board — see /api/gerber/render
 
         // Soldermask color options for the realistic view. `mask`/`silk` are the
         // colors actually rendered (mirrors SoldermaskColor.java); the tab swatch
@@ -539,60 +582,6 @@
             return 'unknown';
         }
 
-        function detectPcbLayerType(name, fileType, content) {
-            const lower = name.toLowerCase();
-            if (fileType === 'drill') return 'DRILL';
-
-            // KiCad (and other EDAs) emit drill data as Gerber X2 with .gbr extension.
-            // The TF.FileFunction attribute is the authoritative signal; filename
-            // patterns like "-pth-drl.gbr" / "-npth-drl.gbr" / "-drill.gbr" are the
-            // fallback when the content hasn't been scanned.
-            if (content) {
-                const ffMatch = content.match(/%TF\.FileFunction,([^*%]+)\*/);
-                if (ffMatch) {
-                    const parts = ffMatch[1].split(',').map(s => s.trim());
-                    // KiCad's NPTH export omits the trailing "Drill" token, so the
-                    // PTH/NPTH tokens on their own are treated as drill signals too.
-                    if (parts.some(p => p === 'NPTH')) return 'DRILL_NON_PLATED';
-                    if (parts.some(p => p === 'PTH')) return 'DRILL_PLATED';
-                    if (parts.some(p => p === 'Drill' || p === 'Route')) {
-                        if (parts.some(p => p === 'NonPlated')) return 'DRILL_NON_PLATED';
-                        if (parts.some(p => p === 'Plated')) return 'DRILL_PLATED';
-                        return 'DRILL';
-                    }
-                    if (parts[0] === 'Component') {
-                        if (parts.some(p => p === 'Top')) return 'PNP_TOP';
-                        if (parts.some(p => p === 'Bot' || p === 'Bottom')) return 'PNP_BOTTOM';
-                    }
-                }
-            }
-            if (/pnp[_.-]?top|top[_.-]?pnp/.test(lower)) return 'PNP_TOP';
-            if (/pnp[_.-]?bot|bot[_.-]?pnp|pnp[_.-]?bottom|bottom[_.-]?pnp/.test(lower)) return 'PNP_BOTTOM';
-            if (/-npth(?:[-_.]|$)|nonplated.*drl|npth.*drl/.test(lower)) return 'DRILL_NON_PLATED';
-            if (/-pth(?:[-_.]|$)|[-_.]drl\.|drill\.gbr$/.test(lower)) return 'DRILL_PLATED';
-
-            if (/\.gko$|\.gm\d*$|edge|outline|boardoutline|profile/.test(lower)) {
-                // Only assign OUTLINE if the file has actual connected drawing content
-                if (!content) return 'OUTLINE';
-                // Must have coordinates
-                if (!/X\d+Y\d+/.test(content)) return 'OTHER';
-                // A connected outline has more draws (D01) than moves (D02).
-                // Disconnected corner markers have equal or more D02s than D01s.
-                const d01Count = (content.match(/D01\b/g) || []).length;
-                const d02Count = (content.match(/D02\b/g) || []).length;
-                if (d01Count > 0 && d02Count >= d01Count) return 'OTHER';
-                return 'OUTLINE';
-            }
-            if (/gtl|f_cu|f\\.cu/.test(lower) || lower.endsWith('.cmp') || /top_copper|copper_top/.test(lower)) return 'COPPER_TOP';
-            if (/gbl|b_cu|b\\.cu/.test(lower) || lower.endsWith('.sol') || /bottom_copper|copper_bottom/.test(lower)) return 'COPPER_BOTTOM';
-            if (/gts|f_mask|f\\.mask/.test(lower) || lower.endsWith('.stc') || /soldermask_top|top_mask/.test(lower)) return 'SOLDERMASK_TOP';
-            if (/gbs|b_mask|b\\.mask/.test(lower) || lower.endsWith('.sts') || /soldermask_bottom|bottom_mask/.test(lower)) return 'SOLDERMASK_BOTTOM';
-            if (/gto|f_silks|f\\.silkscreen/.test(lower) || lower.endsWith('.plc') || /silkscreen_top|top_silk/.test(lower)) return 'SILKSCREEN_TOP';
-            if (/gbo|b_silks|b\\.silkscreen/.test(lower) || lower.endsWith('.pls') || /silkscreen_bottom|bottom_silk/.test(lower)) return 'SILKSCREEN_BOTTOM';
-            if (/gtp|f_paste/.test(lower)) return 'PASTE_TOP';
-            if (/gbp|b_paste/.test(lower)) return 'PASTE_BOTTOM';
-            return 'OTHER';
-        }
 
         const LAYER_COLORS = {
             gtl:'#e94560', f_cu:'#e94560', cmp:'#e94560',
@@ -784,7 +773,11 @@
             for (const f of files) {
                 if (f.fileType === 'unknown') continue;
                 const contentBytes = encoder.encode(f.content);
-                const header = `FILE\t${f.name}\t${f.fileType}\t${f.layerType}\t${contentBytes.length}\n`;
+                // Only a type the user chose is sent back; everything else is re-classified, so
+                // a set stored before the classifier improved is not stuck with its old answer.
+                const layerType = f.userTyped && f.layerType ? f.layerType : 'AUTO';
+                const number = f.userTyped && f.layerNumber != null ? f.layerNumber : '';
+                const header = `FILE\t${f.name}\t${f.fileType}\t${layerType}\t${contentBytes.length}\t${number}\n`;
                 parts.push(encoder.encode(header));
                 parts.push(contentBytes);
                 parts.push(encoder.encode('\n'));
@@ -839,17 +832,40 @@
         }
 
         // ===== Layer type constants =====
-        const LAYER_TYPES = ['OUTLINE','COPPER_TOP','COPPER_BOTTOM','SOLDERMASK_TOP','SOLDERMASK_BOTTOM',
+        // Mirrors com.deltaproto.deltagerber.renderer.svg.LayerType.
+        const LAYER_TYPES = ['OUTLINE','COPPER_TOP','COPPER_INNER','COPPER_BOTTOM','SOLDERMASK_TOP','SOLDERMASK_BOTTOM',
             'SILKSCREEN_TOP','SILKSCREEN_BOTTOM','PASTE_TOP','PASTE_BOTTOM','DRILL','DRILL_PLATED','DRILL_NON_PLATED',
             'PNP_TOP','PNP_BOTTOM','OTHER'];
         const LAYER_TYPE_LABELS = {
-            'OUTLINE':'Outline','COPPER_TOP':'Cu Top','COPPER_BOTTOM':'Cu Bot',
+            'OUTLINE':'Outline','COPPER_TOP':'Cu Top','COPPER_INNER':'Cu Inner','COPPER_BOTTOM':'Cu Bot',
             'SOLDERMASK_TOP':'Mask Top','SOLDERMASK_BOTTOM':'Mask Bot',
             'SILKSCREEN_TOP':'Silk Top','SILKSCREEN_BOTTOM':'Silk Bot',
             'PASTE_TOP':'Paste Top','PASTE_BOTTOM':'Paste Bot',
             'DRILL':'Drill','DRILL_PLATED':'Drill PTH','DRILL_NON_PLATED':'Drill NPTH',
             'PNP_TOP':'PnP Top','PNP_BOTTOM':'PnP Bot','OTHER':'Other'
         };
+        /** Inner copper carries a stack-up index; every other layer is fully described by its type. */
+        const MAX_INNER_LAYERS = 14;
+
+        /** Dropdown options as `TYPE` or `COPPER_INNER:<n>` — the only type that takes a number. */
+        function layerTypeOptions() {
+            const opts = [{value: 'AUTO', label: 'Auto (detect)'}];
+            for (const t of LAYER_TYPES) {
+                if (t === 'COPPER_INNER') {
+                    for (let n = 1; n <= MAX_INNER_LAYERS; n++) {
+                        opts.push({value: `COPPER_INNER:${n}`, label: `Cu Inner ${n}`});
+                    }
+                    opts.push({value: 'COPPER_INNER', label: 'Cu Inner'});
+                } else {
+                    opts.push({value: t, label: LAYER_TYPE_LABELS[t]});
+                }
+            }
+            return opts;
+        }
+
+        const layerTypeValue = layer =>
+            layer.layerType === 'COPPER_INNER' && layer.layerNumber
+                ? `COPPER_INNER:${layer.layerNumber}` : layer.layerType;
 
         // ===== File input & drag-drop =====
         fileInput.addEventListener('change', (e) => {
@@ -905,9 +921,12 @@
                 projectName = file.name;
                 projectFiles = rawFiles.map(f => {
                     const fileType = detectFileType(f.name, f.content);
-                    const layerType = detectPcbLayerType(f.name, fileType, f.content);
                     const color = getLayerColor(f.name);
-                    return {name: f.name, content: f.content, fileType, layerType, color};
+                    // No layerType: the server classifies. `userTyped` records whether the value
+                    // that comes back was chosen by a person, so a later render can re-derive the
+                    // machine's guess while leaving the person's decision alone.
+                    return {name: f.name, content: f.content, fileType, color,
+                            layerType: null, layerNumber: null, userTyped: false};
                 }).filter(f => f.fileType !== 'unknown');
 
                 // Save to IndexedDB
@@ -924,6 +943,32 @@
             }
         }
 
+        /**
+         * Take the server's resolved layer types — it is the only classifier — and remember them.
+         *
+         * Matched by name, because the server drops files it could not parse, so the two lists
+         * differ in length. `userTyped` survives: it lives on projectFiles and says whether the
+         * type came from a person or from the classifier.
+         */
+        async function adoptLayerTypes(serverLayers) {
+            const resolved = new Map((serverLayers || []).map(l => [l.name, l]));
+            const typedByUser = new Map(projectFiles.map(f => [f.name, !!f.userTyped]));
+            for (const layer of layers) {
+                const r = resolved.get(layer.name);
+                if (!r) continue;
+                layer.layerType = r.layerType;
+                layer.layerNumber = r.layerNumber;
+                layer.userTyped = typedByUser.get(layer.name) || false;
+            }
+            for (const f of projectFiles) {
+                const r = resolved.get(f.name);
+                if (!r) continue;
+                f.layerType = r.layerType;
+                f.layerNumber = r.layerNumber;
+            }
+            try { await saveProject(projectName, projectFiles); } catch (e) { console.warn('IndexedDB save failed', e); }
+        }
+
         async function renderFromFiles(files) {
             const data = await sendRenderRequest(files);
             if (data.error) throw new Error(data.error);
@@ -936,11 +981,10 @@
             renderCentroidTable();
             warnings = data.warnings || [];
             renderWarningsTab();
+            pcbInfo = data.pcbInfo || null;
+            renderPcbInfoTab();
 
-            // Sync layer types back to projectFiles (in case server assigned IDs differently)
-            for (let i = 0; i < layers.length && i < files.length; i++) {
-                layers[i].layerType = files[i].layerType;
-            }
+            await adoptLayerTypes(data.layers);
 
             document.getElementById('view-tabs').style.display = 'flex';
             const topTab = document.querySelector('[data-view="top"]');
@@ -992,8 +1036,9 @@
             }
             commonPrefix = computeCommonPrefix(layers.map(l => l.name));
             layerList.innerHTML = layers.map((layer, index) => {
-                const opts = LAYER_TYPES.map(t =>
-                    `<option value="${t}" ${layer.layerType === t ? 'selected' : ''}>${LAYER_TYPE_LABELS[t]}</option>`
+                const selected = layerTypeValue(layer);
+                const opts = layerTypeOptions().map(o =>
+                    `<option value="${o.value}" ${selected === o.value ? 'selected' : ''}>${o.label}</option>`
                 ).join('');
                 return `<div class="layer-item" data-index="${index}"
                         onmouseenter="hoverLayerStart(${index})"
@@ -1074,9 +1119,15 @@
         }
 
         let typeChangeTimer = null;
-        async function changeLayerType(index, newType) {
+        async function changeLayerType(index, value) {
+            const [newType, num] = value.split(':');
+            const userTyped = value !== 'AUTO';
+            const newNumber = num ? Number(num) : null;
             layers[index].layerType = newType;
-            if (projectFiles[index]) projectFiles[index].layerType = newType;
+            layers[index].layerNumber = newNumber;
+            layers[index].userTyped = userTyped;
+            const file = projectFiles.find(f => f.name === layers[index].name);
+            if (file) { file.layerType = newType; file.layerNumber = newNumber; file.userTyped = userTyped; }
             // Save updated types to IndexedDB
             try { await saveProject(projectName, projectFiles); } catch(e) {}
             // Debounce server call
@@ -1098,8 +1149,15 @@
                     warnings = data.warnings || [];
                     renderWarningsTab();
                     if (currentView === 'warnings') { refreshWarningsPanel(); }
+                    pcbInfo = data.pcbInfo || null;
+                    renderPcbInfoTab();
+                    if (currentView === 'pcbinfo') { refreshPcbInfoPanel(); }
+                    // Picking "Auto" sends AUTO; this is where the detected type comes back. The
+                    // server also overrides a drill file typed as anything else.
+                    await adoptLayerTypes(data.layers);
+                    renderLayerList();
                     renderSvg();
-                    if (currentView !== 'layers' && currentView !== 'warnings') fitToView();
+                    if (currentView !== 'layers' && currentView !== 'warnings' && currentView !== 'pcbinfo') fitToView();
                 } catch (e) { console.error('Re-render failed:', e); }
             }, 500);
         }
@@ -1178,24 +1236,24 @@
             if (view === 'bottom' && !realisticBottomSvg) return;
             if (view === 'centroid' && (!components || components.length === 0)) return;
             if (view === 'warnings' && (!warnings || warnings.length === 0)) return;
+            if (view === 'pcbinfo' && !pcbInfo) return;
             currentView = view;
             document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
             const vc = document.getElementById('viewer-container');
             const cp = document.getElementById('centroid-panel');
             const wp = document.getElementById('warnings-panel');
+            const pp = document.getElementById('pcbinfo-panel');
+            [vc, cp, wp, pp].forEach(p => p.classList.add('hidden'));
             if (view === 'centroid') {
-                vc.classList.add('hidden');
-                wp.classList.add('hidden');
                 cp.classList.remove('hidden');
                 refreshCentroidTable();
             } else if (view === 'warnings') {
-                vc.classList.add('hidden');
-                cp.classList.add('hidden');
                 wp.classList.remove('hidden');
                 refreshWarningsPanel();
+            } else if (view === 'pcbinfo') {
+                pp.classList.remove('hidden');
+                refreshPcbInfoPanel();
             } else {
-                cp.classList.add('hidden');
-                wp.classList.add('hidden');
                 vc.classList.remove('hidden');
                 renderSvg();
                 fitToView();
@@ -1276,6 +1334,109 @@
             tab.disabled = false;
             tab.style.opacity = '1';
             tab.textContent = `Centroid (${components.length})`;
+        }
+
+        // ===== PCB Information =====
+        const SIDE_LABELS = {NONE: 'None', TOP: 'Top', BOTTOM: 'Bottom', BOTH: 'Both', NA: '—', INNER: 'Inner', UNKNOWN: '?'};
+
+        function renderPcbInfoTab() {
+            const tab = document.getElementById('pcbinfo-tab');
+            if (!tab) return;
+            tab.disabled = !pcbInfo;
+            tab.style.opacity = pcbInfo ? 1 : 0.4;
+        }
+
+        /** A value cell, or a muted em-dash when the files do not answer the question. */
+        function infoValue(value, unit) {
+            if (value === null || value === undefined || value === '') {
+                return '<span class="pcbinfo-val absent">—</span>';
+            }
+            const suffix = unit ? `<span class="pcbinfo-unit">${unit}</span>` : '';
+            return `<span class="pcbinfo-val">${escapeHtml(value)}${suffix}</span>`;
+        }
+
+        function infoRow(key, value, unit) {
+            return `<div class="pcbinfo-item"><span class="pcbinfo-key">${escapeHtml(key)}</span>${infoValue(value, unit)}</div>`;
+        }
+
+        function infoSection(title, rows, wide) {
+            return `<div class="pcbinfo-section${wide ? ' wide' : ''}"><h3>${escapeHtml(title)}</h3>
+                <div class="pcbinfo-grid">${rows.join('')}</div></div>`;
+        }
+
+        const fixed = (n, d) => (n === null || n === undefined) ? null : Number(n).toFixed(d);
+        const side = s => (s === null || s === undefined) ? null : (SIDE_LABELS[s] || s);
+        const yesNo = b => b ? 'Yes' : 'No';
+
+        function refreshPcbInfoPanel() {
+            const el = document.getElementById('pcbinfo-content');
+            if (!pcbInfo) { el.innerHTML = '<div class="pcbinfo-intro">No PCB information.</div>'; return; }
+            const i = pcbInfo;
+            const b = i.bounds;
+
+            const board = [
+                infoRow('Board width', fixed(i.sizeX, 3), 'mm'),
+                infoRow('Board height', fixed(i.sizeY, 3), 'mm'),
+                infoRow('Copper layers', i.copperLayers),
+                infoRow('Min track width', fixed(i.minTrackUm, 1), 'µm'),
+                infoRow('Min drill diameter', fixed(i.minDrillMm, 3), 'mm'),
+                infoRow('Soldermask', side(i.solderMaskSide)),
+                infoRow('Silkscreen', side(i.silkscreenSide)),
+                infoRow('Stencil needed', side(i.stencilSide)),
+                infoRow('Has outline', yesNo(i.hasOutline)),
+                infoRow('Has copper', yesNo(i.hasCopper)),
+                infoRow('Has drill', yesNo(i.hasDrill)),
+            ];
+
+            // The board is measured in the files' own coordinate space; the origin is wherever the
+            // CAD tool left it, so the extents are worth showing rather than just the size.
+            const extents = b ? [
+                infoRow('Min X', fixed(b.minX, 3), 'mm'),
+                infoRow('Min Y', fixed(b.minY, 3), 'mm'),
+                infoRow('Max X', fixed(b.maxX, 3), 'mm'),
+                infoRow('Max Y', fixed(b.maxY, 3), 'mm'),
+            ] : [infoRow('Extents', null)];
+
+            const source = [
+                infoRow('Generation software', i.generationSoftware),
+                infoRow('Project', i.projectId),
+                infoRow('Created', i.creationDate),
+                infoRow('Part', i.part),
+            ];
+
+            // A layer is a function, a side, and — for inner copper alone — a stack-up index.
+            // Anything else shown here would be a restatement of those three that can drift from
+            // them: the old "Layer" column carried a label, and a .GTL retyped as silkscreen still
+            // read "top copper".
+            const rows = (i.layers || []).map(l => {
+                const lb = l.bounds;
+                const cell = (v) => v === null || v === undefined
+                    ? `<td class="num absent">—</td>` : `<td class="num">${escapeHtml(v)}</td>`;
+                return `<tr>
+                    <td>${escapeHtml(l.file)}</td>
+                    <td>${escapeHtml(l.function)}</td>
+                    <td>${escapeHtml(SIDE_LABELS[l.side] || l.side)}</td>
+                    ${cell(l.number)}
+                    ${cell(lb ? fixed(lb.width, 3) : null)}
+                    ${cell(lb ? fixed(lb.height, 3) : null)}
+                    ${cell(fixed(l.minTrackUm, 1))}
+                    ${cell(fixed(l.minDrillMm, 3))}
+                    <td>${l.hasGeometry === null || l.hasGeometry === undefined ? '—' : yesNo(l.hasGeometry)}</td>
+                </tr>`;
+            }).join('');
+
+            el.innerHTML = infoSection('Board', board)
+                + infoSection('Extents', extents)
+                + infoSection('Source', source, true)
+                + `<div class="pcbinfo-section"><h3>Layers</h3><div class="pcbinfo-table-wrap">
+                    <table class="pcbinfo-table">
+                        <thead><tr>
+                            <th>File</th><th>Function</th><th>Side</th><th>Layer #</th>
+                            <th>Width (mm)</th><th>Height (mm)</th>
+                            <th>Min track (µm)</th><th>Min drill (mm)</th><th>Draws</th>
+                        </tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table></div></div>`;
         }
 
         // ===== Warnings =====

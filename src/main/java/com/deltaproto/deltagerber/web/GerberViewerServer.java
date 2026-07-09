@@ -3,7 +3,12 @@ package com.deltaproto.deltagerber.web;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import com.deltaproto.deltagerber.classify.LayerClassification;
+import com.deltaproto.deltagerber.classify.LayerClassifier;
+import com.deltaproto.deltagerber.classify.LayerFunction;
+import com.deltaproto.deltagerber.classify.LayerSide;
 import com.deltaproto.deltagerber.model.drill.DrillDocument;
+import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.ComponentPlacement;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
 import com.deltaproto.deltagerber.parser.ExcellonParser;
@@ -11,6 +16,9 @@ import com.deltaproto.deltagerber.parser.GerberParser;
 import com.deltaproto.deltagerber.renderer.svg.LayerType;
 import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
 import com.deltaproto.deltagerber.renderer.svg.SoldermaskColor;
+import com.deltaproto.deltagerber.spec.AnalyzedLayer;
+import com.deltaproto.deltagerber.spec.BoardSpecification;
+import com.deltaproto.deltagerber.spec.PcbAnalyzer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -120,6 +128,10 @@ public class GerberViewerServer {
                 List<LayerMeta> layerMetas = new ArrayList<>();
                 List<ComponentPlacement> allComponents = new ArrayList<>();
                 List<FileWarnings> allWarnings = new ArrayList<>();
+                // What each file is, by name. The client's layer type wins — the user can correct it
+                // in the dropdown, and a corrected outline changes how every copper layer is measured.
+                Map<String, LayerClassification> classifications = new LinkedHashMap<>();
+                List<PendingLayer> pending = new ArrayList<>();
 
                 // Parse the length-prefixed file protocol
                 int pos = 0;
@@ -136,6 +148,9 @@ public class GerberViewerServer {
                     String fileType = parts[1];
                     String layerTypeStr = parts[2];
                     int contentLength = Integer.parseInt(parts[3]);
+                    // Optional 5th field: the inner-copper layer number the user picked.
+                    Integer clientNumber = parts.length >= 5 && !parts[4].isBlank()
+                            ? Integer.valueOf(parts[4].trim()) : null;
 
                     pos = lineEnd + 1;
                     String content = new String(body, pos, contentLength, StandardCharsets.UTF_8);
@@ -147,30 +162,60 @@ public class GerberViewerServer {
 
                     try {
                         MultiLayerSVGRenderer.Layer layer = null;
-                        LayerType layerType = LayerType.valueOf(layerTypeStr);
+                        GerberDocument gerberDoc = null;
 
                         if ("drill".equals(fileType)) {
                             DrillDocument doc = drillParser.parse(content);
                             layer = new MultiLayerSVGRenderer.Layer(name, doc);
                         } else if ("gerber".equals(fileType)) {
-                            GerberDocument doc = gerberParser.parse(content);
-                            allComponents.addAll(doc.getComponents());
-                            layer = new MultiLayerSVGRenderer.Layer(name, doc);
+                            gerberDoc = gerberParser.parse(content);
+                            allComponents.addAll(gerberDoc.getComponents());
+                            layer = new MultiLayerSVGRenderer.Layer(name, gerberDoc);
                         }
 
                         if (layer != null) {
+                            LayerClassification detected = LayerClassifier.classify(name, content);
+                            LayerType layerType = resolveLayerType(layerTypeStr, fileType, detected, gerberDoc);
+
                             String color = getLayerColor(name);
                             double opacity = (layerType == LayerType.PNP_TOP || layerType == LayerType.PNP_BOTTOM)
                                 ? 0.45 : 0.85;
                             layer.setColor(color).setOpacity(opacity).setLayerType(layerType);
                             layers.add(layer);
-
-                            String id = name.replaceAll("[^a-zA-Z0-9._-]", "_");
-                            layerMetas.add(new LayerMeta(name, id, color, fileType, layerTypeStr));
+                            // Classification waits for the whole set: an inner layer's index cannot
+                            // be normalized until every inner layer has been seen.
+                            pending.add(new PendingLayer(name, fileType, layerTypeStr, clientNumber,
+                                    detected, layerType, color));
                         }
                     } catch (Exception e) {
                         log.warn("Failed to parse {}: {}", name, e.getMessage());
                     }
+                }
+
+                // The set is complete, so the inner copper layers can be renumbered from 1 whether
+                // the generator counted from 1 (Protel, Allegro) or from 2 (Gerber X2).
+                List<LayerClassification> normalized = LayerClassifier.normalizeInnerCopperNumbers(
+                        pending.stream().map(PendingLayer::detected).toList());
+
+                for (int i = 0; i < pending.size(); i++) {
+                    PendingLayer p = pending.get(i);
+                    LayerClassification detected = normalized.get(i);
+
+                    // What a layer *is* and what it is *drawn as* are different questions. Left to
+                    // itself, the classifier's answer is the better one: a sideless soldermask is
+                    // still a soldermask even though no renderer can place it. Once the user has
+                    // picked a type, that pick is the answer.
+                    LayerClassification classification = AUTO.equals(p.layerTypeStr()) && detected != null
+                            ? detected
+                            : classify(p.layerType(), p.clientNumber(), detected, p.name());
+                    if (p.layerType().isDrill() && !classification.function().isDrill()) {
+                        classification = new LayerClassification(p.name(), LayerFunction.DRILL, LayerSide.NA);
+                    }
+                    classifications.put(p.name(), classification);
+
+                    String id = p.name().replaceAll("[^a-zA-Z0-9._-]", "_");
+                    layerMetas.add(new LayerMeta(p.name(), id, p.color(), p.fileType(),
+                            p.layerType().name(), classification.number()));
                 }
 
                 // Detect and correct a drill/Gerber origin mismatch before rendering (render() itself
@@ -209,6 +254,7 @@ public class GerberViewerServer {
                     json.append(",\"color\":").append(escapeJson(m.color));
                     json.append(",\"type\":").append(escapeJson(m.type));
                     json.append(",\"layerType\":").append(escapeJson(m.layerType));
+                    json.append(",\"layerNumber\":").append(m.layerNumber);
                     json.append("}");
                 }
                 json.append("],\"svg\":").append(escapeJson(svg));
@@ -252,8 +298,14 @@ public class GerberViewerServer {
                     }
                     json.append("]}");
                 }
-                json.append("]}");
+                json.append("]");
 
+                // Everything the library derives about the board itself. Measured from the
+                // documents already parsed above — a viewer that renders a set has no business
+                // parsing it a second time to describe it.
+                appendPcbInfo(json, layers, classifications);
+
+                json.append("}");
 
                 long elapsed = System.currentTimeMillis() - startTime;
                 log.info("Render complete: {} layers in {}ms", layerMetas.size(), elapsed);
@@ -266,10 +318,214 @@ public class GerberViewerServer {
             }
         }
 
+        /** Layer type the client sends when it has no opinion and the library should classify. */
+        private static final String AUTO = "AUTO";
+
+        /**
+         * A parsed layer, held until the whole set is known. Its classification cannot be settled
+         * file-by-file: an inner copper index is only meaningful relative to the other inner layers.
+         */
+        private record PendingLayer(String name, String fileType, String layerTypeStr, Integer clientNumber,
+                                    LayerClassification detected, LayerType layerType, String color) {
+        }
+
+        /**
+         * What to draw this file as. {@code AUTO} means the client has no opinion and the library's
+         * classifier decides; anything else is the user's choice from the dropdown and stands.
+         */
+        static LayerType resolveLayerType(String layerTypeStr, String fileType,
+                                          LayerClassification detected, GerberDocument document) {
+            LayerType layerType;
+            if (AUTO.equals(layerTypeStr)) {
+                layerType = renderTypeOf(detected, document);
+            } else {
+                try {
+                    layerType = LayerType.valueOf(layerTypeStr);
+                } catch (IllegalArgumentException e) {
+                    layerType = LayerType.OTHER;
+                }
+            }
+            // The client read this file as Excellon; whatever its name suggests, it is a drill.
+            return "drill".equals(fileType) && !layerType.isDrill() ? LayerType.DRILL : layerType;
+        }
+
+        /**
+         * A classification restated as the {@link LayerType} the renderer draws with.
+         *
+         * <p>A pick-and-place file is the one thing the classifier cannot name — {@code .FileFunction
+         * Component} is not a fabrication layer, so it comes back UNKNOWN. The parsed document knows,
+         * because it collected the component placements.
+         *
+         * <p>An outline that draws nothing is demoted to {@link LayerType#OTHER}: the realistic view
+         * would take it for the board edge and produce an empty board.
+         */
+        private static LayerType renderTypeOf(LayerClassification classification, GerberDocument document) {
+            if (document != null && document.isComponentFile()) {
+                return "Bottom".equals(document.getComponentSide()) ? LayerType.PNP_BOTTOM : LayerType.PNP_TOP;
+            }
+            if (classification == null) {
+                return LayerType.OTHER;
+            }
+            if (classification.function() == LayerFunction.OUTLINE
+                    && document != null && document.getObjects().isEmpty()) {
+                return LayerType.OTHER;
+            }
+            return LayerType.of(classification.function(), classification.side());
+        }
+
+        /**
+         * The user's layer type, restated as a {@link LayerClassification}.
+         *
+         * <p>{@link LayerType} carries no inner-layer index, so the index comes from the user's
+         * choice when they made one, and otherwise from the library's own reading of the file.
+         * Retyping an inner layer as anything else drops the index: {@link LayerClassification}
+         * keeps a number only for inner copper.
+         */
+        static LayerClassification classify(LayerType layerType, Integer number,
+                                            LayerClassification detected, String name) {
+            Integer index = number != null ? number : (detected != null ? detected.number() : null);
+            LayerClassification classification =
+                    new LayerClassification("", layerType.getFunction(), layerType.getSide(), index);
+            // The label has to be derived from the type the user picked, never carried over from
+            // what the file used to look like — otherwise a .GTL retyped as silkscreen still reads
+            // "top copper", and the label contradicts the function beside it.
+            return classification.withName(label(layerType, classification.number()));
+        }
+
+        /** A human label for a layer type; the only place the viewer names one. */
+        static String label(LayerType layerType, Integer number) {
+            return switch (layerType) {
+                case OUTLINE -> "board outline";
+                case COPPER_TOP -> "top copper";
+                case COPPER_BOTTOM -> "bottom copper";
+                case COPPER_INNER -> number != null ? "inner copper " + number : "inner copper";
+                case SOLDERMASK_TOP -> "top soldermask";
+                case SOLDERMASK_BOTTOM -> "bottom soldermask";
+                case SILKSCREEN_TOP -> "top silkscreen";
+                case SILKSCREEN_BOTTOM -> "bottom silkscreen";
+                case PASTE_TOP -> "top paste";
+                case PASTE_BOTTOM -> "bottom paste";
+                case DRILL -> "drill";
+                case DRILL_PLATED -> "plated drill";
+                case DRILL_NON_PLATED -> "non-plated drill";
+                case PNP_TOP -> "top pick-and-place";
+                case PNP_BOTTOM -> "bottom pick-and-place";
+                case OTHER -> "other";
+            };
+        }
+
+        /** Union of the profile centrelines of the outline layers — the board rectangle. */
+        private static BoundingBox outlineBounds(List<MultiLayerSVGRenderer.Layer> layers,
+                                                 Map<String, LayerClassification> classifications) {
+            BoundingBox union = new BoundingBox();
+            for (MultiLayerSVGRenderer.Layer layer : layers) {
+                LayerClassification c = classifications.get(layer.getName());
+                if (c != null && c.function() == LayerFunction.OUTLINE && layer.isGerber()) {
+                    union.include(layer.getGerberDoc().calculatePathBoundingBox());
+                }
+            }
+            return union.isValid() ? union : null;
+        }
+
+        private static void appendPcbInfo(StringBuilder json, List<MultiLayerSVGRenderer.Layer> layers,
+                                          Map<String, LayerClassification> classifications) {
+            BoundingBox outline = outlineBounds(layers, classifications);
+
+            List<AnalyzedLayer> analyzed = new ArrayList<>();
+            for (MultiLayerSVGRenderer.Layer layer : layers) {
+                LayerClassification c = classifications.get(layer.getName());
+                if (layer.isDrill()) {
+                    analyzed.add(PcbAnalyzer.measure(layer.getName(), layer.getDrillDoc(), c));
+                } else if (layer.isGerber()) {
+                    analyzed.add(PcbAnalyzer.measure(layer.getName(), layer.getGerberDoc(), c, outline));
+                }
+            }
+            BoardSpecification spec = BoardSpecification.from(analyzed);
+
+            json.append(",\"pcbInfo\":{");
+            json.append("\"sizeX\":").append(number(spec.getSizeXMm(), 4));
+            json.append(",\"sizeY\":").append(number(spec.getSizeYMm(), 4));
+            json.append(",\"bounds\":");
+            appendBounds(json, spec.getBounds());
+            json.append(",\"copperLayers\":").append(spec.getCopperLayerCount());
+            json.append(",\"solderMaskSide\":").append(escapeJson(name(spec.getSolderMaskSide())));
+            json.append(",\"silkscreenSide\":").append(escapeJson(name(spec.getSilkscreenSide())));
+            json.append(",\"stencilSide\":").append(escapeJson(name(spec.getStencilSide())));
+            json.append(",\"minTrackUm\":").append(number(spec.getMinTrackWidthUm(), 3));
+            json.append(",\"minDrillMm\":").append(number(spec.getMinDrillDiameterMm(), 4));
+            json.append(",\"hasCopper\":").append(spec.hasCopper());
+            json.append(",\"hasDrill\":").append(spec.hasDrill());
+            json.append(",\"hasOutline\":").append(spec.hasOutline());
+
+            // Gerber X2 file attributes: what the CAD tool told us about the job itself.
+            json.append(",\"generationSoftware\":").append(escapeJson(
+                    firstAttribute(layers, GerberDocument::getGenerationSoftware)));
+            json.append(",\"projectId\":").append(escapeJson(firstAttribute(layers,
+                    d -> d.getProjectId().isEmpty() ? null : d.getProjectId().get(0))));
+            json.append(",\"creationDate\":").append(escapeJson(
+                    firstAttribute(layers, GerberDocument::getCreationDate)));
+            json.append(",\"part\":").append(escapeJson(firstAttribute(layers, GerberDocument::getPart)));
+
+            json.append(",\"layers\":[");
+            boolean first = true;
+            for (AnalyzedLayer layer : analyzed) {
+                if (!first) json.append(",");
+                first = false;
+                json.append("{\"file\":").append(escapeJson(layer.getFileName()));
+                json.append(",\"name\":").append(escapeJson(
+                        layer.getClassification() == null ? null : layer.getClassification().name()));
+                json.append(",\"function\":").append(escapeJson(layer.getFunction().name()));
+                json.append(",\"side\":").append(escapeJson(layer.getSide().name()));
+                json.append(",\"number\":").append(layer.getLayerNumber());
+                json.append(",\"bounds\":");
+                appendBounds(json, layer.getBounds());
+                json.append(",\"minTrackUm\":").append(number(layer.getMinTrackWidthUm(), 3));
+                json.append(",\"minDrillMm\":").append(number(layer.getMinDrillDiameterMm(), 4));
+                json.append(",\"hasGeometry\":").append(layer.getHasGeometry());
+                json.append("}");
+            }
+            json.append("]}");
+        }
+
+        /** The first non-null value of {@code attribute} across the Gerber layers, or null. */
+        private static String firstAttribute(List<MultiLayerSVGRenderer.Layer> layers,
+                                             java.util.function.Function<GerberDocument, String> attribute) {
+            for (MultiLayerSVGRenderer.Layer layer : layers) {
+                if (!layer.isGerber()) continue;
+                String value = attribute.apply(layer.getGerberDoc());
+                if (value != null && !value.isBlank()) return value;
+            }
+            return null;
+        }
+
+        private static void appendBounds(StringBuilder json, BoundingBox bounds) {
+            if (bounds == null || !bounds.isValid()) {
+                json.append("null");
+                return;
+            }
+            json.append("{\"minX\":").append(number(bounds.getMinX(), 4));
+            json.append(",\"minY\":").append(number(bounds.getMinY(), 4));
+            json.append(",\"maxX\":").append(number(bounds.getMaxX(), 4));
+            json.append(",\"maxY\":").append(number(bounds.getMaxY(), 4));
+            json.append(",\"width\":").append(number(bounds.getWidth(), 4));
+            json.append(",\"height\":").append(number(bounds.getHeight(), 4));
+            json.append("}");
+        }
+
+        private static String number(Double value, int decimals) {
+            return value == null ? "null" : String.format(Locale.US, "%." + decimals + "f", value);
+        }
+
+        private static String name(Enum<?> value) {
+            return value == null ? null : value.name();
+        }
+
         private static class LayerMeta {
             final String name, id, color, type, layerType;
-            LayerMeta(String name, String id, String color, String type, String layerType) {
-                this.name = name; this.id = id; this.color = color; this.type = type; this.layerType = layerType;
+            final Integer layerNumber;
+            LayerMeta(String name, String id, String color, String type, String layerType, Integer layerNumber) {
+                this.name = name; this.id = id; this.color = color; this.type = type;
+                this.layerType = layerType; this.layerNumber = layerNumber;
             }
         }
 
@@ -374,12 +630,16 @@ public class GerberViewerServer {
             if (pos < body.length && body[pos] == '\n') pos++;
             try {
                 MultiLayerSVGRenderer.Layer layer = null;
-                LayerType layerType = LayerType.valueOf(layerTypeStr);
+                GerberDocument gerberDoc = null;
                 if ("drill".equals(fileType)) {
                     layer = new MultiLayerSVGRenderer.Layer(name, drillParser.parse(content));
                 } else if ("gerber".equals(fileType)) {
-                    layer = new MultiLayerSVGRenderer.Layer(name, gerberParser.parse(content));
+                    gerberDoc = gerberParser.parse(content);
+                    layer = new MultiLayerSVGRenderer.Layer(name, gerberDoc);
                 }
+                // A thumbnail can be asked for before any render has resolved the types.
+                LayerType layerType = RenderHandler.resolveLayerType(
+                        layerTypeStr, fileType, LayerClassifier.classify(name, content), gerberDoc);
                 if (layer != null) {
                     layer.setColor(getLayerColor(name)).setOpacity(0.85).setLayerType(layerType);
                     layers.add(layer);

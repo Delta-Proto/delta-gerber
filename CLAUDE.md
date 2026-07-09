@@ -19,6 +19,12 @@ See [DEPLOY.md](DEPLOY.md) for release instructions. The GPG passphrase is in `.
 mvn clean deploy -Prelease -Dgpg.passphrase=$(cat .mvn-gpg-passphrase)
 ```
 
+## Test data
+
+Customer board files must **not** be committed — this repo is public and published to Maven
+Central. Put them under `excluded/` (gitignored) and have the test skip when they are absent
+(see `NdcBoardSpecificationTest`), backed by a synthetic fixture that always runs.
+
 ## Key Conventions
 
 - Coordinates and dimensions are normalized to millimetres at parse time by **all three** parsers:
@@ -30,3 +36,38 @@ mvn clean deploy -Prelease -Dgpg.passphrase=$(cat .mvn-gpg-passphrase)
   `Ipc356Document`, so all parsed geometry can be treated as mm with no conversion — drill holes,
   Gerber flashes, and netlist test points share one coordinate space (this is what lets
   `DrillGerberAlignment` correlate them directly).
+- Two bounding boxes, and they mean different things. `getBoundingBox()` is the **inked** extent —
+  the path grown by half the aperture. `getPathBoundingBox()` is the **centreline**. A board
+  outline measures to the centreline, because that is where the router cuts: a 32 mm board drawn
+  with a 0.05 mm aperture inks 32.05 mm but *is* 32 mm. (KiCad's `.gbrjob` reports the inked
+  figure, so expect our size to be one aperture-width smaller than what a job file declares.)
+
+## Board analysis
+
+`classify.LayerClassifier` decides what each file in a set is, from strongest evidence to weakest:
+X2 `.FileFunction` → Allegro `FILE IDENTIFICATION RECORD` → Excellon `;TYPE=` → filename patterns
+ordered by the CAD tool detected from `.GenerationSoftware`. It never mutates its pattern tables.
+
+`LayerClassification.number()` is the stack-up index, and it exists **iff** the layer is inner
+copper — the record's constructor drops it otherwise, so no caller has to remember. Outer copper
+gets none: its side already says everything, and the `L<p>` an X2 file gives it is just the absolute
+stack position. `renderer.svg.LayerType.of(function, side)` is the one place a classification
+becomes something a renderer can draw, and `getFunction()`/`getSide()` invert it.
+
+Inner-layer numbering is a **set-level** question. Protel (`.G1`) and Allegro (`IN1`) count inner
+layers from 1; Gerber X2 (`Copper,L2,Inr`) states the absolute stack position, so KiCad's `In1_Cu`
+arrives as 2. `LayerClassifier.normalizeInnerCopperNumbers(List)` shifts a whole set so its lowest
+inner layer is 1 — shifting, not densely renumbering, so a gap stays a gap (a missing file, not a
+shorter stack-up). `PcbAnalyzer` applies it to the classifications it derived; a classification
+supplied on a `PcbFile` is final and is never renumbered.
+
+`spec.PcbAnalyzer` classifies, measures and reduces a whole set to a `spec.BoardSpecification`
+(size, copper layer count, mask/silkscreen/stencil sides, min track in µm, min drill in mm).
+It never renders. `BoardSpecification.from(List<AnalyzedLayer>)` re-derives the same answer from
+persisted measurements, without the files.
+
+Pass `AnalysisDepth.SPECIFICATION` when you only want the specification: layers whose geometry
+cannot change it (silkscreen above all) are then classified but never parsed. Parsing a Gerber
+costs memory proportional to what it draws — a 27 MB silkscreen needs ~1 GB of heap to build and
+contributes nothing once the set has an outline. `FULL` (the default) measures every layer, and is
+what you want if you are going to keep the per-layer bounds to align rendered SVGs.

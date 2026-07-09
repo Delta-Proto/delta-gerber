@@ -45,6 +45,18 @@ public class GerberDocument {
     }
 
     /**
+     * Bounding box of every object's path, ignoring aperture widths — see
+     * {@link GraphicsObject#getPathBoundingBox()}. This is what a board profile measures to.
+     */
+    public BoundingBox calculatePathBoundingBox() {
+        BoundingBox bounds = new BoundingBox();
+        for (GraphicsObject obj : objects) {
+            bounds.include(obj.getPathBoundingBox());
+        }
+        return bounds;
+    }
+
+    /**
      * Get the file function from .FileFunction attribute (first comma-separated value,
      * e.g. "Plated" or "Copper"). See {@link #getFileFunctionValues()} for the full list.
      */
