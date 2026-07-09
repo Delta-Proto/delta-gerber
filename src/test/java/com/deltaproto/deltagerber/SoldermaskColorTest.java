@@ -33,13 +33,25 @@ public class SoldermaskColorTest {
 
     @Test
     void allSevenFabColorsPresent() {
-        assertEquals(7, SoldermaskColor.values().length);
         assertEquals("#ac13a6", SoldermaskColor.PURPLE.getMaskColor());
         assertEquals("#bf0100", SoldermaskColor.RED.getMaskColor());
         assertEquals("#ffaa16", SoldermaskColor.YELLOW.getMaskColor());
         assertEquals("#002d8c", SoldermaskColor.BLUE.getMaskColor());
         assertEquals("#f7f9fe", SoldermaskColor.WHITE.getMaskColor());
         assertEquals("#0f1010", SoldermaskColor.BLACK.getMaskColor());
+        assertEquals(8, SoldermaskColor.values().length, "seven fab colors plus NONE");
+    }
+
+    @Test
+    void noneIsTheOnlyColorThatIsNotApplied() {
+        assertNull(SoldermaskColor.NONE.getMaskColor(), "NONE has no mask to fill");
+        assertFalse(SoldermaskColor.NONE.isApplied());
+        for (SoldermaskColor c : SoldermaskColor.values()) {
+            if (c != SoldermaskColor.NONE) {
+                assertTrue(c.isApplied(), c + " is a real mask color");
+                assertNotNull(c.getMaskColor());
+            }
+        }
     }
 
     @Test
@@ -49,5 +61,12 @@ public class SoldermaskColorTest {
         assertEquals(SoldermaskColor.GREEN, SoldermaskColor.fromString(null));
         assertEquals(SoldermaskColor.GREEN, SoldermaskColor.fromString(""));
         assertEquals(SoldermaskColor.GREEN, SoldermaskColor.fromString("chartreuse"));
+    }
+
+    @Test
+    void fromStringResolvesNoneRatherThanFallingBack() {
+        assertEquals(SoldermaskColor.NONE, SoldermaskColor.fromString("none"),
+            "a board ordered without soldermask must not silently become green");
+        assertEquals(SoldermaskColor.NONE, SoldermaskColor.fromString("NONE"));
     }
 }

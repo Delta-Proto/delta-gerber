@@ -15,6 +15,7 @@ import com.deltaproto.deltagerber.parser.ExcellonParser;
 import com.deltaproto.deltagerber.parser.GerberParser;
 import com.deltaproto.deltagerber.renderer.svg.LayerType;
 import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
+import com.deltaproto.deltagerber.renderer.svg.SilkscreenColor;
 import com.deltaproto.deltagerber.renderer.svg.SoldermaskColor;
 import com.deltaproto.deltagerber.spec.AnalyzedLayer;
 import com.deltaproto.deltagerber.spec.BoardSpecification;
@@ -564,8 +565,10 @@ public class GerberViewerServer {
                 width  = clampDim(width,  0, 4000); // 0 = auto
                 height = clampDim(height, 0, 4000);
                 if (width == 0 && height == 0) width = 400;
-                // Soldermask color (green|purple|red|yellow|blue|white|black); unknown → green.
+                // Soldermask color (green|purple|red|yellow|blue|white|black|none); unknown → green.
                 SoldermaskColor soldermask = SoldermaskColor.fromString(q.get("soldermask"));
+                // Silkscreen color (white|black|yellow|none); absent → whatever the mask pairs with.
+                String silkscreenParam = q.get("silkscreen");
 
                 byte[] body = exchange.getRequestBody().readAllBytes();
                 List<MultiLayerSVGRenderer.Layer> layers = parseLayerBody(body);
@@ -573,9 +576,11 @@ public class GerberViewerServer {
                 // correction must be re-derived here too (it is not carried over from /render).
                 layers = MultiLayerSVGRenderer.alignDrillLayers(layers);
 
-                byte[] png = new MultiLayerSVGRenderer()
-                    .setSoldermaskColor(soldermask)
-                    .renderRealisticSidePng(layers, side, width, height);
+                MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer().setSoldermaskColor(soldermask);
+                if (silkscreenParam != null && !silkscreenParam.isBlank()) {
+                    renderer.setSilkscreenColor(SilkscreenColor.fromString(silkscreenParam));
+                }
+                byte[] png = renderer.renderRealisticSidePng(layers, side, width, height);
                 if (png == null) {
                     sendResponse(exchange, 422, "application/json",
                         "{\"error\":\"no outline layer or side has no content\"}");
@@ -702,6 +707,17 @@ public class GerberViewerServer {
     }
 
     public static String renderRealisticSide(List<MultiLayerSVGRenderer.Layer> allLayers, boolean topSide) {
+        return renderRealisticSide(allLayers, topSide, null, null);
+    }
+
+    /**
+     * As {@link #renderRealisticSide(List, boolean)}, with the board's finish colors for this
+     * side. A {@code null} soldermask or silkscreen leaves the renderer's default in place —
+     * green mask with the white legend it pairs with. Use {@link SoldermaskColor#NONE} /
+     * {@link SilkscreenColor#NONE} to render a board ordered without that finish.
+     */
+    public static String renderRealisticSide(List<MultiLayerSVGRenderer.Layer> allLayers, boolean topSide,
+                                             SoldermaskColor soldermask, SilkscreenColor silkscreen) {
         try {
             List<MultiLayerSVGRenderer.Layer> sideLayers = new ArrayList<>();
             for (MultiLayerSVGRenderer.Layer layer : allLayers) {
@@ -727,7 +743,11 @@ public class GerberViewerServer {
             boolean hasOutline = sideLayers.stream().anyMatch(l -> l.getLayerType() == LayerType.OUTLINE);
             boolean hasCopper = sideLayers.stream().anyMatch(l -> l.getLayerType() == copperType);
             if ((!hasOutline && !hasCopper) || sideLayers.size() < 2) return null;
-            return new MultiLayerSVGRenderer().renderRealistic(sideLayers);
+
+            MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer();
+            if (soldermask != null) renderer.setSoldermaskColor(soldermask);
+            if (silkscreen != null) renderer.setSilkscreenColor(silkscreen);
+            return renderer.renderRealistic(sideLayers);
         } catch (Exception e) {
             LoggerFactory.getLogger(GerberViewerServer.class)
                 .warn("Failed to render realistic {} side: {}", topSide ? "top" : "bottom", e.getMessage());

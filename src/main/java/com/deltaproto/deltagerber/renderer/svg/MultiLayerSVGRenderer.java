@@ -60,11 +60,52 @@ public class MultiLayerSVGRenderer {
     // interactive SVG path keeps union bounds so a separate paste overlay shares its frame.
     private boolean preferOutlineBoundsForViewBox = false;
 
-    // Soldermask + silkscreen colors for renderRealistic. Default to the realistic
-    // dark green; override via setSoldermaskColor(...). The silkscreen color is paired
-    // with the mask (white on every color except white mask, which uses black).
-    private String soldermaskColor = SOLDERMASK_GREEN;
-    private String silkscreenColor = SILKSCREEN_WHITE;
+    // Soldermask + silkscreen colors for renderRealistic, held per side so a board masked
+    // green on top and black underneath renders as one. Default to the realistic dark green
+    // with the white legend it pairs with; override via setSoldermaskColor/setSilkscreenColor.
+    private final SideColors topColors = new SideColors();
+    private final SideColors bottomColors = new SideColors();
+
+    /**
+     * The soldermask and silkscreen fills for one side of the board. A {@code null} fill means
+     * that finish is not applied: {@link #renderRealistic} draws no mask sheet, or no legend,
+     * rather than substituting a color.
+     *
+     * <p>Silkscreen carries three states — unset, a color, or none — so that the two setters
+     * commute. Unset takes the color the mask pairs with, which is what a fab does when you
+     * don't ask; once a caller names a {@link SilkscreenColor}, a later {@link SoldermaskColor}
+     * re-pairs nothing and leaves the legend alone.
+     */
+    private static final class SideColors {
+        private String mask = SoldermaskColor.DEFAULT.getMaskColor();
+        private String pairedSilkscreen = SoldermaskColor.DEFAULT.getSilkscreenColor();
+        private String silkscreen;
+        private boolean silkscreenSet;
+
+        void setSoldermask(SoldermaskColor color) {
+            this.mask = color.getMaskColor();
+            this.pairedSilkscreen = color.getSilkscreenColor();
+        }
+
+        void setSoldermask(String maskColor) {
+            this.mask = maskColor;
+        }
+
+        void setSilkscreen(String color) {
+            this.silkscreen = color;
+            this.silkscreenSet = true;
+        }
+
+        /** The mask fill, or {@code null} when no soldermask is applied. */
+        String mask() {
+            return mask;
+        }
+
+        /** The legend fill, or {@code null} when no silkscreen is printed. */
+        String silkscreen() {
+            return silkscreenSet ? silkscreen : pairedSilkscreen;
+        }
+    }
 
     /**
      * A layer to be rendered, containing either a Gerber or Drill document.
@@ -150,24 +191,66 @@ public class MultiLayerSVGRenderer {
     }
 
     /**
-     * Set the soldermask color for {@link #renderRealistic} and the PNG paths built
-     * on it. Also selects the paired silkscreen color (black on white soldermask,
-     * white on every other). Defaults to {@link SoldermaskColor#GREEN}.
+     * Set the soldermask color on both sides, for {@link #renderRealistic} and the PNG paths
+     * built on it. Unless {@link #setSilkscreenColor} says otherwise the legend takes the color
+     * this mask pairs with — black on white soldermask, white on every other. Defaults to
+     * {@link SoldermaskColor#GREEN}; {@link SoldermaskColor#NONE} leaves the copper bare.
      */
     public MultiLayerSVGRenderer setSoldermaskColor(SoldermaskColor color) {
-        this.soldermaskColor = color.getMaskColor();
-        this.silkscreenColor = color.getSilkscreenColor();
+        topColors.setSoldermask(color);
+        bottomColors.setSoldermask(color);
+        return this;
+    }
+
+    /** As {@link #setSoldermaskColor(SoldermaskColor)}, but for one side of the board. */
+    public MultiLayerSVGRenderer setSoldermaskColor(Side side, SoldermaskColor color) {
+        colorsFor(side).setSoldermask(color);
         return this;
     }
 
     /**
-     * Set explicit soldermask and silkscreen hex fills (e.g. {@code "#004200"}),
-     * for colors outside the {@link SoldermaskColor} palette.
+     * Set explicit soldermask and silkscreen hex fills on both sides (e.g. {@code "#004200"}),
+     * for colors outside the {@link SoldermaskColor} palette. Either may be {@code null} to
+     * leave that finish off the board.
      */
     public MultiLayerSVGRenderer setSoldermaskColor(String maskColor, String silkscreenColor) {
-        this.soldermaskColor = maskColor;
-        this.silkscreenColor = silkscreenColor;
+        topColors.setSoldermask(safeColor(maskColor));
+        bottomColors.setSoldermask(safeColor(maskColor));
+        return setSilkscreenColor(silkscreenColor);
+    }
+
+    /**
+     * Set the silkscreen color on both sides, overriding the color the soldermask pairs with.
+     * {@link SilkscreenColor#NONE} prints no legend at all. Order-independent: a later
+     * {@link #setSoldermaskColor} does not take this choice back.
+     */
+    public MultiLayerSVGRenderer setSilkscreenColor(SilkscreenColor color) {
+        return setSilkscreenColor(color.getColor());
+    }
+
+    /** As {@link #setSilkscreenColor(SilkscreenColor)}, but for one side of the board. */
+    public MultiLayerSVGRenderer setSilkscreenColor(Side side, SilkscreenColor color) {
+        colorsFor(side).setSilkscreen(color.getColor());
         return this;
+    }
+
+    /**
+     * Set an explicit silkscreen hex fill on both sides, for colors outside the
+     * {@link SilkscreenColor} palette. {@code null} prints no legend.
+     */
+    public MultiLayerSVGRenderer setSilkscreenColor(String color) {
+        topColors.setSilkscreen(safeColor(color));
+        bottomColors.setSilkscreen(safeColor(color));
+        return this;
+    }
+
+    private SideColors colorsFor(Side side) {
+        return side == Side.BOTTOM ? bottomColors : topColors;
+    }
+
+    /** Sanitize a caller-supplied fill, preserving {@code null} as "this finish is not applied". */
+    private static String safeColor(String color) {
+        return color == null ? null : sanitizeColor(color);
     }
 
     /**
@@ -501,12 +584,11 @@ public class MultiLayerSVGRenderer {
     // between separately-poured zones so the board comes out as a single piece.
     private static final double DERIVED_OUTLINE_CLOSE_MM = 0.6;
 
-    // Default realistic PCB colors (matches typical PCB viewer rendering)
+    // Default realistic PCB colors (matches typical PCB viewer rendering). The soldermask and
+    // silkscreen fills are not here: they are per-side and caller-settable, see SideColors.
     private static final String FR4_COLOR = "#666666";           // Dark gray substrate
     private static final String COPPER_COLOR = "#cccccc";         // Silver/gray copper under soldermask
     private static final String COPPER_FINISH_COLOR = "#cc9933";  // Gold HASL/ENIG finish on exposed pads
-    private static final String SOLDERMASK_GREEN = "#004200";     // Dark green soldermask
-    private static final String SILKSCREEN_WHITE = "#ffffff";     // White silkscreen
     private static final double SOLDERMASK_DEFAULT_OPACITY = 0.75;
 
     /**
@@ -896,7 +978,11 @@ public class MultiLayerSVGRenderer {
         for (Layer smLayer : soldermaskLayers) {
             boolean isTop = smLayer.getLayerType() == LayerType.SOLDERMASK_TOP;
             String smMaskId = isTop ? "sm-top-mask" : "sm-bottom-mask";
-            String smColor = soldermaskColor;
+            SideColors colors = isTop ? topColors : bottomColors;
+            String smColor = colors.mask();
+            String ssColor = colors.silkscreen();
+            // A side ordered with neither finish contributes nothing — leave the copper bare.
+            if (smColor == null && ssColor == null) continue;
             // Always use the realistic default opacity for soldermask — the layer's
             // opacity is for the "all layers" overlay view, not the realistic view
             double smOpacity = SOLDERMASK_DEFAULT_OPACITY;
@@ -905,32 +991,37 @@ public class MultiLayerSVGRenderer {
 
             // Soldermask fill. The pcb-soldermask class lets the viewer recolor the
             // mask client-side (the color-swatch tabs) without a server round-trip.
-            svg.append(String.format(Locale.US,
-                "      <rect class=\"pcb-soldermask\" %s fill=\"%s\" opacity=\"%.2f\"/>\n",
-                fullRectAttrs, smColor, smOpacity));
+            // Skipped entirely for a board ordered without soldermask.
+            if (smColor != null) {
+                svg.append(String.format(Locale.US,
+                    "      <rect class=\"pcb-soldermask\" %s fill=\"%s\" opacity=\"%.2f\"/>\n",
+                    fullRectAttrs, smColor, smOpacity));
+            }
 
-            // Silkscreen inside soldermask (only renders where mask is present)
-            for (Layer ssLayer : silkscreenLayers) {
-                boolean ssIsTop = ssLayer.getLayerType() == LayerType.SILKSCREEN_TOP;
-                if (ssIsTop != isTop) continue; // Match top/bottom sides
+            // Silkscreen inside soldermask (only renders where mask is present). A side
+            // ordered without a legend prints none, whatever silkscreen files it ships.
+            if (ssColor != null) {
+                for (Layer ssLayer : silkscreenLayers) {
+                    boolean ssIsTop = ssLayer.getLayerType() == LayerType.SILKSCREEN_TOP;
+                    if (ssIsTop != isTop) continue; // Match top/bottom sides
 
-                String ssColor = silkscreenColor;
-                String apPrefix = aperturePrefixes.get(ssLayer);
-                String maskPrefix = "L" + layerIndexMap.get(ssLayer) + "_cm";
-                List<PolarityMaskHelper.PolarityGroup> groups = polarityGroups.get(ssLayer);
+                    String apPrefix = aperturePrefixes.get(ssLayer);
+                    String maskPrefix = "L" + layerIndexMap.get(ssLayer) + "_cm";
+                    List<PolarityMaskHelper.PolarityGroup> groups = polarityGroups.get(ssLayer);
 
-                // pcb-silkscreen marks the group so the viewer can recolor it (and its
-                // descendant fills/strokes) when the soldermask color changes.
-                svg.append(String.format(
-                    "      <g class=\"pcb-silkscreen\" fill=\"%s\" color=\"%s\" stroke=\"none\" stroke-width=\"0\">\n",
-                    ssColor, ssColor));
+                    // pcb-silkscreen marks the group so the viewer can recolor it (and its
+                    // descendant fills/strokes) when the soldermask color changes.
+                    svg.append(String.format(
+                        "      <g class=\"pcb-silkscreen\" fill=\"%s\" color=\"%s\" stroke=\"none\" stroke-width=\"0\">\n",
+                        ssColor, ssColor));
 
-                SvgOptions layerOptions = svgOptions.copy()
-                    .setApertureIdPrefix(apPrefix)
-                    .setDarkColor(ssColor).setClearColor(ssColor).setFlipY(flipY);
-                PolarityMaskHelper.renderWithMasks(svg, groups, maskPrefix, layerOptions);
+                    SvgOptions layerOptions = svgOptions.copy()
+                        .setApertureIdPrefix(apPrefix)
+                        .setDarkColor(ssColor).setClearColor(ssColor).setFlipY(flipY);
+                    PolarityMaskHelper.renderWithMasks(svg, groups, maskPrefix, layerOptions);
 
-                svg.append("      </g>\n");
+                    svg.append("      </g>\n");
+                }
             }
 
             svg.append("    </g>\n");
@@ -2215,7 +2306,7 @@ public class MultiLayerSVGRenderer {
     private static final java.util.regex.Pattern SAFE_COLOR = java.util.regex.Pattern.compile(
         "#[0-9a-fA-F]{3,8}|[a-zA-Z]+|rgba?\\([0-9.,%\\s]+\\)");
 
-    private String sanitizeColor(String color) {
+    private static String sanitizeColor(String color) {
         if (color != null && SAFE_COLOR.matcher(color).matches()) {
             return color;
         }

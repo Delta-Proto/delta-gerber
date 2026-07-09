@@ -42,6 +42,21 @@ Central. Put them under `excluded/` (gitignored) and have the test skip when the
   with a 0.05 mm aperture inks 32.05 mm but *is* 32 mm. (KiCad's `.gbrjob` reports the inked
   figure, so expect our size to be one aperture-width smaller than what a job file declares.)
 
+## Board finish colors
+
+`MultiLayerSVGRenderer.renderRealistic` (and every PNG path built on it) colors the board from
+two palettes: `SoldermaskColor` and `SilkscreenColor`. Both are held **per side**, so
+`setSoldermaskColor(Side.BOTTOM, BLACK)` recolors only the bottom; the no-`Side` overloads set both.
+
+`NONE` in either palette means *the board was ordered without that finish* — the mask sheet or the
+legend group is simply not emitted, rather than drawn in a substitute color. Consequently
+`getMaskColor()`/`getColor()` return `null` for `NONE`, which is what the renderer keys off.
+
+Silkscreen is tri-state (unset / a color / none) so the two setters **commute**: unset takes the
+color the mask pairs with (white on everything but a white mask, which pairs black), and once a
+caller names a `SilkscreenColor` a later `setSoldermaskColor` re-pairs nothing. Don't collapse this
+back to "mask setter also assigns silk" — call order would then decide the legend color.
+
 ## Board analysis
 
 `classify.LayerClassifier` decides what each file in a set is, from strongest evidence to weakest:
