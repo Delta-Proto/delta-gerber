@@ -528,6 +528,12 @@
     </div>
 
     <script>
+        // Where the viewer's API lives — the prefix every endpoint below hangs off. The standalone
+        // server answers on /api/gerber; a host application that mounts the API elsewhere sets
+        // window.GERBER_API_BASE before this script runs (deltaproto.com puts it behind a tracked,
+        // rate-limited /api/gerber/public prefix).
+        const API_BASE = window.GERBER_API_BASE || '/api/gerber';
+
         // ===== State =====
         let layers = [];
         let projectFiles = [];  // [{name, content, fileType, layerType, color}]
@@ -786,7 +792,7 @@
         }
 
         async function sendRenderRequest(files) {
-            const resp = await fetch('/api/gerber/render', {method: 'POST', body: buildLayerBody(files)});
+            const resp = await fetch(`${API_BASE}/render`, {method: 'POST', body: buildLayerBody(files)});
             if (!resp.ok) throw new Error('Server error: ' + resp.status);
             return await resp.json();
         }
@@ -808,7 +814,7 @@
                 // closer inspection. Project-list consumers can call the endpoint
                 // directly with a smaller width.
                 const width = 800;
-                const resp = await fetch(`/api/gerber/thumbnail?side=${side}&width=${width}&soldermask=${selectedSoldermask}`,
+                const resp = await fetch(`${API_BASE}/thumbnail?side=${side}&width=${width}&soldermask=${selectedSoldermask}`,
                     {method: 'POST', body: buildLayerBody(projectFiles)});
                 if (!resp.ok) throw new Error('Server error: ' + resp.status);
                 const blob = await resp.blob();
@@ -889,7 +895,7 @@
             progressBar.classList.add('progress-bar-indeterminate');
             loadingStatus.textContent = 'Loading Arduino Uno example...';
             try {
-                const resp = await fetch('/api/gerber/arduino-uno-example.zip');
+                const resp = await fetch(`${API_BASE}/arduino-uno-example.zip`);
                 if (!resp.ok) throw new Error('Failed to fetch example');
                 const blob = await resp.blob();
                 const file = new File([blob], 'arduino-uno-example.zip', {type: 'application/zip'});

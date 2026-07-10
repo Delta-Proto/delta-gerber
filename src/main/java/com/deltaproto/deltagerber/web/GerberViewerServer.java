@@ -108,215 +108,223 @@ public class GerberViewerServer {
     static class RenderHandler implements HttpHandler {
         private static final Logger log = LoggerFactory.getLogger(RenderHandler.class);
 
-        private final GerberParser gerberParser = new GerberParser();
-        private final ExcellonParser drillParser = new ExcellonParser();
-
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             if (!"POST".equals(exchange.getRequestMethod())) {
                 sendResponse(exchange, 405, "text/plain", "Method Not Allowed");
                 return;
             }
-
-            long startTime = System.currentTimeMillis();
-            log.info("Received render request");
-
             try {
                 byte[] body = exchange.getRequestBody().readAllBytes();
-                log.info("Request body: {} bytes", body.length);
-
-                List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
-                List<LayerMeta> layerMetas = new ArrayList<>();
-                List<ComponentPlacement> allComponents = new ArrayList<>();
-                List<FileWarnings> allWarnings = new ArrayList<>();
-                // What each file is, by name. The client's layer type wins — the user can correct it
-                // in the dropdown, and a corrected outline changes how every copper layer is measured.
-                Map<String, LayerClassification> classifications = new LinkedHashMap<>();
-                List<PendingLayer> pending = new ArrayList<>();
-
-                // Parse the length-prefixed file protocol
-                int pos = 0;
-                while (pos < body.length) {
-                    // Find header line end
-                    int lineEnd = indexOf(body, (byte) '\n', pos);
-                    if (lineEnd < 0) break;
-                    String header = new String(body, pos, lineEnd - pos, StandardCharsets.UTF_8);
-                    if (!header.startsWith("FILE\t")) break;
-
-                    String[] parts = header.substring(5).split("\t");
-                    if (parts.length < 4) break;
-                    String name = parts[0];
-                    String fileType = parts[1];
-                    String layerTypeStr = parts[2];
-                    int contentLength = Integer.parseInt(parts[3]);
-                    // Optional 5th field: the inner-copper layer number the user picked.
-                    Integer clientNumber = parts.length >= 5 && !parts[4].isBlank()
-                            ? Integer.valueOf(parts[4].trim()) : null;
-
-                    pos = lineEnd + 1;
-                    String content = new String(body, pos, contentLength, StandardCharsets.UTF_8);
-                    pos += contentLength;
-                    // Skip optional trailing newline
-                    if (pos < body.length && body[pos] == '\n') pos++;
-
-                    log.debug("File: {} type={} layerType={} size={}", name, fileType, layerTypeStr, contentLength);
-
-                    try {
-                        MultiLayerSVGRenderer.Layer layer = null;
-                        GerberDocument gerberDoc = null;
-
-                        if ("drill".equals(fileType)) {
-                            DrillDocument doc = drillParser.parse(content);
-                            layer = new MultiLayerSVGRenderer.Layer(name, doc);
-                        } else if ("gerber".equals(fileType)) {
-                            gerberDoc = gerberParser.parse(content);
-                            allComponents.addAll(gerberDoc.getComponents());
-                            layer = new MultiLayerSVGRenderer.Layer(name, gerberDoc);
-                        }
-
-                        if (layer != null) {
-                            LayerClassification detected = LayerClassifier.classify(name, content);
-                            LayerType layerType = resolveLayerType(layerTypeStr, fileType, detected, gerberDoc);
-
-                            String color = getLayerColor(name);
-                            double opacity = (layerType == LayerType.PNP_TOP || layerType == LayerType.PNP_BOTTOM)
-                                ? 0.45 : 0.85;
-                            layer.setColor(color).setOpacity(opacity).setLayerType(layerType);
-                            layers.add(layer);
-                            // Classification waits for the whole set: an inner layer's index cannot
-                            // be normalized until every inner layer has been seen.
-                            pending.add(new PendingLayer(name, fileType, layerTypeStr, clientNumber,
-                                    detected, layerType, color));
-                        }
-                    } catch (Exception e) {
-                        log.warn("Failed to parse {}: {}", name, e.getMessage());
-                    }
-                }
-
-                // The set is complete, so the inner copper layers can be renumbered from 1 whether
-                // the generator counted from 1 (Protel, Allegro) or from 2 (Gerber X2).
-                List<LayerClassification> normalized = LayerClassifier.normalizeInnerCopperNumbers(
-                        pending.stream().map(PendingLayer::detected).toList());
-
-                for (int i = 0; i < pending.size(); i++) {
-                    PendingLayer p = pending.get(i);
-                    LayerClassification detected = normalized.get(i);
-
-                    // What a layer *is* and what it is *drawn as* are different questions. Left to
-                    // itself, the classifier's answer is the better one: a sideless soldermask is
-                    // still a soldermask even though no renderer can place it. Once the user has
-                    // picked a type, that pick is the answer.
-                    LayerClassification classification = AUTO.equals(p.layerTypeStr()) && detected != null
-                            ? detected
-                            : classify(p.layerType(), p.clientNumber(), detected, p.name());
-                    if (p.layerType().isDrill() && !classification.function().isDrill()) {
-                        classification = new LayerClassification(p.name(), LayerFunction.DRILL, LayerSide.NA);
-                    }
-                    classifications.put(p.name(), classification);
-
-                    String id = p.name().replaceAll("[^a-zA-Z0-9._-]", "_");
-                    layerMetas.add(new LayerMeta(p.name(), id, p.color(), p.fileType(),
-                            p.layerType().name(), classification.number()));
-                }
-
-                // Detect and correct a drill/Gerber origin mismatch before rendering (render() itself
-                // stays pure). The correction is baked into a copy of the drill document with a
-                // reversible originOffset stamp, and the explanatory warning is recorded on it. The
-                // server re-detects on every request (cheap, deterministic) so the client never has
-                // to track or echo offsets.
-                layers = MultiLayerSVGRenderer.alignDrillLayers(layers);
-
-                // Render all SVGs
-                log.info("Rendering {} layers...", layers.size());
-                MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer();
-                String svg = renderer.render(layers);
-                String realisticTop = renderRealisticSide(layers, true);
-                String realisticBottom = renderRealisticSide(layers, false);
-
-                // Collect warnings from the final layer documents — parse-time anomalies plus any
-                // drill re-alignment explanation recorded above.
-                for (MultiLayerSVGRenderer.Layer layer : layers) {
-                    List<String> w = layer.isDrill() ? layer.getDrillDoc().getWarnings()
-                        : layer.isGerber() ? layer.getGerberDoc().getWarnings() : null;
-                    if (w != null && !w.isEmpty()) {
-                        allWarnings.add(new FileWarnings(layer.getName(), new ArrayList<>(w)));
-                    }
-                }
-
-                // Build JSON response
-                StringBuilder json = new StringBuilder();
-                json.append("{\"layers\":[");
-                boolean first = true;
-                for (LayerMeta m : layerMetas) {
-                    if (!first) json.append(",");
-                    first = false;
-                    json.append("{\"name\":").append(escapeJson(m.name));
-                    json.append(",\"id\":").append(escapeJson(m.id));
-                    json.append(",\"color\":").append(escapeJson(m.color));
-                    json.append(",\"type\":").append(escapeJson(m.type));
-                    json.append(",\"layerType\":").append(escapeJson(m.layerType));
-                    json.append(",\"layerNumber\":").append(m.layerNumber);
-                    json.append("}");
-                }
-                json.append("],\"svg\":").append(escapeJson(svg));
-                json.append(",\"realisticTopSvg\":");
-                json.append(realisticTop != null ? escapeJson(realisticTop) : "null");
-                json.append(",\"realisticBottomSvg\":");
-                json.append(realisticBottom != null ? escapeJson(realisticBottom) : "null");
-
-                // Component placement data from PnP files
-                json.append(",\"components\":[");
-                boolean firstComp = true;
-                for (ComponentPlacement c : allComponents) {
-                    if (!firstComp) json.append(",");
-                    firstComp = false;
-                    json.append("{\"refdes\":").append(escapeJson(c.getRefdes()));
-                    json.append(",\"value\":").append(escapeJson(c.getValue()));
-                    json.append(",\"footprint\":").append(escapeJson(c.getFootprint()));
-                    json.append(",\"mountType\":").append(escapeJson(c.getMountType()));
-                    json.append(",\"x\":").append(String.format(java.util.Locale.US, "%.4f", c.getX()));
-                    json.append(",\"y\":").append(String.format(java.util.Locale.US, "%.4f", c.getY()));
-                    json.append(",\"rotation\":").append(String.format(java.util.Locale.US, "%.2f", c.getRotation()));
-                    json.append(",\"side\":").append(escapeJson(c.getSide()));
-                    json.append("}");
-                }
-                json.append("]");
-
-                // Per-file parser warnings (truncated blocks, undefined apertures, bad
-                // coordinates, …). The viewer surfaces these in a dedicated tab.
-                json.append(",\"warnings\":[");
-                boolean firstW = true;
-                for (FileWarnings fw : allWarnings) {
-                    if (!firstW) json.append(",");
-                    firstW = false;
-                    json.append("{\"file\":").append(escapeJson(fw.file));
-                    json.append(",\"messages\":[");
-                    boolean firstM = true;
-                    for (String m : fw.messages) {
-                        if (!firstM) json.append(",");
-                        firstM = false;
-                        json.append(escapeJson(m));
-                    }
-                    json.append("]}");
-                }
-                json.append("]");
-
-                // Everything the library derives about the board itself. Measured from the
-                // documents already parsed above — a viewer that renders a set has no business
-                // parsing it a second time to describe it.
-                appendPcbInfo(json, layers, classifications);
-
-                json.append("}");
-
-                long elapsed = System.currentTimeMillis() - startTime;
-                log.info("Render complete: {} layers in {}ms", layerMetas.size(), elapsed);
-
-                sendResponse(exchange, 200, "application/json", json.toString());
+                sendResponse(exchange, 200, "application/json", renderToJson(body));
             } catch (Exception e) {
                 log.error("Error rendering", e);
                 sendResponse(exchange, 500, "application/json",
                     "{\"error\":" + escapeJson(e.getMessage()) + "}");
             }
+        }
+
+        /**
+         * Parse, classify and render one viewer request body, as the JSON the viewer's JS expects.
+         *
+         * <p>Separate from {@link #handle} so a host application can serve this viewer from its own
+         * HTTP stack — dp-3 runs it inside a sandboxed child JVM behind its own tracked, rate-limited
+         * endpoint — without reimplementing the flow and drifting from it.
+         */
+        static String renderToJson(byte[] body) {
+            long startTime = System.currentTimeMillis();
+            log.info("Rendering request body: {} bytes", body.length);
+
+            GerberParser gerberParser = new GerberParser();
+            ExcellonParser drillParser = new ExcellonParser();
+
+            List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
+            List<LayerMeta> layerMetas = new ArrayList<>();
+            List<ComponentPlacement> allComponents = new ArrayList<>();
+            List<FileWarnings> allWarnings = new ArrayList<>();
+            // What each file is, by name. The client's layer type wins — the user can correct it
+            // in the dropdown, and a corrected outline changes how every copper layer is measured.
+            Map<String, LayerClassification> classifications = new LinkedHashMap<>();
+            List<PendingLayer> pending = new ArrayList<>();
+
+            // Parse the length-prefixed file protocol
+            int pos = 0;
+            while (pos < body.length) {
+                // Find header line end
+                int lineEnd = indexOf(body, (byte) '\n', pos);
+                if (lineEnd < 0) break;
+                String header = new String(body, pos, lineEnd - pos, StandardCharsets.UTF_8);
+                if (!header.startsWith("FILE\t")) break;
+
+                String[] parts = header.substring(5).split("\t");
+                if (parts.length < 4) break;
+                String name = parts[0];
+                String fileType = parts[1];
+                String layerTypeStr = parts[2];
+                int contentLength = Integer.parseInt(parts[3]);
+                // Optional 5th field: the inner-copper layer number the user picked.
+                Integer clientNumber = parts.length >= 5 && !parts[4].isBlank()
+                        ? Integer.valueOf(parts[4].trim()) : null;
+
+                pos = lineEnd + 1;
+                String content = new String(body, pos, contentLength, StandardCharsets.UTF_8);
+                pos += contentLength;
+                // Skip optional trailing newline
+                if (pos < body.length && body[pos] == '\n') pos++;
+
+                log.debug("File: {} type={} layerType={} size={}", name, fileType, layerTypeStr, contentLength);
+
+                try {
+                    MultiLayerSVGRenderer.Layer layer = null;
+                    GerberDocument gerberDoc = null;
+
+                    if ("drill".equals(fileType)) {
+                        DrillDocument doc = drillParser.parse(content);
+                        layer = new MultiLayerSVGRenderer.Layer(name, doc);
+                    } else if ("gerber".equals(fileType)) {
+                        gerberDoc = gerberParser.parse(content);
+                        allComponents.addAll(gerberDoc.getComponents());
+                        layer = new MultiLayerSVGRenderer.Layer(name, gerberDoc);
+                    }
+
+                    if (layer != null) {
+                        LayerClassification detected = LayerClassifier.classify(name, content);
+                        LayerType layerType = resolveLayerType(layerTypeStr, fileType, detected, gerberDoc);
+
+                        String color = getLayerColor(name);
+                        double opacity = (layerType == LayerType.PNP_TOP || layerType == LayerType.PNP_BOTTOM)
+                            ? 0.45 : 0.85;
+                        layer.setColor(color).setOpacity(opacity).setLayerType(layerType);
+                        layers.add(layer);
+                        // Classification waits for the whole set: an inner layer's index cannot
+                        // be normalized until every inner layer has been seen.
+                        pending.add(new PendingLayer(name, fileType, layerTypeStr, clientNumber,
+                                detected, layerType, color));
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to parse {}: {}", name, e.getMessage());
+                }
+            }
+
+            // The set is complete, so the inner copper layers can be renumbered from 1 whether
+            // the generator counted from 1 (Protel, Allegro) or from 2 (Gerber X2).
+            List<LayerClassification> normalized = LayerClassifier.normalizeInnerCopperNumbers(
+                    pending.stream().map(PendingLayer::detected).toList());
+
+            for (int i = 0; i < pending.size(); i++) {
+                PendingLayer p = pending.get(i);
+                LayerClassification detected = normalized.get(i);
+
+                // What a layer *is* and what it is *drawn as* are different questions. Left to
+                // itself, the classifier's answer is the better one: a sideless soldermask is
+                // still a soldermask even though no renderer can place it. Once the user has
+                // picked a type, that pick is the answer.
+                LayerClassification classification = AUTO.equals(p.layerTypeStr()) && detected != null
+                        ? detected
+                        : classify(p.layerType(), p.clientNumber(), detected, p.name());
+                if (p.layerType().isDrill() && !classification.function().isDrill()) {
+                    classification = new LayerClassification(p.name(), LayerFunction.DRILL, LayerSide.NA);
+                }
+                classifications.put(p.name(), classification);
+
+                String id = p.name().replaceAll("[^a-zA-Z0-9._-]", "_");
+                layerMetas.add(new LayerMeta(p.name(), id, p.color(), p.fileType(),
+                        p.layerType().name(), classification.number()));
+            }
+
+            // Detect and correct a drill/Gerber origin mismatch before rendering (render() itself
+            // stays pure). The correction is baked into a copy of the drill document with a
+            // reversible originOffset stamp, and the explanatory warning is recorded on it. The
+            // server re-detects on every request (cheap, deterministic) so the client never has
+            // to track or echo offsets.
+            layers = MultiLayerSVGRenderer.alignDrillLayers(layers);
+
+            // Render all SVGs
+            log.info("Rendering {} layers...", layers.size());
+            MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer();
+            String svg = renderer.render(layers);
+            String realisticTop = renderRealisticSide(layers, true);
+            String realisticBottom = renderRealisticSide(layers, false);
+
+            // Collect warnings from the final layer documents — parse-time anomalies plus any
+            // drill re-alignment explanation recorded above.
+            for (MultiLayerSVGRenderer.Layer layer : layers) {
+                List<String> w = layer.isDrill() ? layer.getDrillDoc().getWarnings()
+                    : layer.isGerber() ? layer.getGerberDoc().getWarnings() : null;
+                if (w != null && !w.isEmpty()) {
+                    allWarnings.add(new FileWarnings(layer.getName(), new ArrayList<>(w)));
+                }
+            }
+
+            // Build JSON response
+            StringBuilder json = new StringBuilder();
+            json.append("{\"layers\":[");
+            boolean first = true;
+            for (LayerMeta m : layerMetas) {
+                if (!first) json.append(",");
+                first = false;
+                json.append("{\"name\":").append(escapeJson(m.name));
+                json.append(",\"id\":").append(escapeJson(m.id));
+                json.append(",\"color\":").append(escapeJson(m.color));
+                json.append(",\"type\":").append(escapeJson(m.type));
+                json.append(",\"layerType\":").append(escapeJson(m.layerType));
+                json.append(",\"layerNumber\":").append(m.layerNumber);
+                json.append("}");
+            }
+            json.append("],\"svg\":").append(escapeJson(svg));
+            json.append(",\"realisticTopSvg\":");
+            json.append(realisticTop != null ? escapeJson(realisticTop) : "null");
+            json.append(",\"realisticBottomSvg\":");
+            json.append(realisticBottom != null ? escapeJson(realisticBottom) : "null");
+
+            // Component placement data from PnP files
+            json.append(",\"components\":[");
+            boolean firstComp = true;
+            for (ComponentPlacement c : allComponents) {
+                if (!firstComp) json.append(",");
+                firstComp = false;
+                json.append("{\"refdes\":").append(escapeJson(c.getRefdes()));
+                json.append(",\"value\":").append(escapeJson(c.getValue()));
+                json.append(",\"footprint\":").append(escapeJson(c.getFootprint()));
+                json.append(",\"mountType\":").append(escapeJson(c.getMountType()));
+                json.append(",\"x\":").append(String.format(java.util.Locale.US, "%.4f", c.getX()));
+                json.append(",\"y\":").append(String.format(java.util.Locale.US, "%.4f", c.getY()));
+                json.append(",\"rotation\":").append(String.format(java.util.Locale.US, "%.2f", c.getRotation()));
+                json.append(",\"side\":").append(escapeJson(c.getSide()));
+                json.append("}");
+            }
+            json.append("]");
+
+            // Per-file parser warnings (truncated blocks, undefined apertures, bad
+            // coordinates, …). The viewer surfaces these in a dedicated tab.
+            json.append(",\"warnings\":[");
+            boolean firstW = true;
+            for (FileWarnings fw : allWarnings) {
+                if (!firstW) json.append(",");
+                firstW = false;
+                json.append("{\"file\":").append(escapeJson(fw.file));
+                json.append(",\"messages\":[");
+                boolean firstM = true;
+                for (String m : fw.messages) {
+                    if (!firstM) json.append(",");
+                    firstM = false;
+                    json.append(escapeJson(m));
+                }
+                json.append("]}");
+            }
+            json.append("]");
+
+            // Everything the library derives about the board itself. Measured from the
+            // documents already parsed above — a viewer that renders a set has no business
+            // parsing it a second time to describe it.
+            appendPcbInfo(json, layers, classifications);
+
+            json.append("}");
+
+            long elapsed = System.currentTimeMillis() - startTime;
+            log.info("Render complete: {} layers in {}ms", layerMetas.size(), elapsed);
+
+            return json.toString();
         }
 
         /** Layer type the client sends when it has no opinion and the library should classify. */
@@ -557,30 +565,10 @@ public class GerberViewerServer {
 
             try {
                 Map<String, String> q = parseQuery(exchange.getRequestURI().getRawQuery());
-                String sideStr = q.getOrDefault("side", "top").toLowerCase();
-                MultiLayerSVGRenderer.Side side = "bottom".equals(sideStr)
-                    ? MultiLayerSVGRenderer.Side.BOTTOM : MultiLayerSVGRenderer.Side.TOP;
-                int width  = parseIntOrDefault(q.get("width"),  400);
-                int height = parseIntOrDefault(q.get("height"), 0);
-                width  = clampDim(width,  0, 4000); // 0 = auto
-                height = clampDim(height, 0, 4000);
-                if (width == 0 && height == 0) width = 400;
-                // Soldermask color (green|purple|red|yellow|blue|white|black|none); unknown → green.
-                SoldermaskColor soldermask = SoldermaskColor.fromString(q.get("soldermask"));
-                // Silkscreen color (white|black|yellow|none); absent → whatever the mask pairs with.
-                String silkscreenParam = q.get("silkscreen");
-
                 byte[] body = exchange.getRequestBody().readAllBytes();
-                List<MultiLayerSVGRenderer.Layer> layers = parseLayerBody(body);
-                // The server is stateless: this request re-parsed the raw drill bytes, so the origin
-                // correction must be re-derived here too (it is not carried over from /render).
-                layers = MultiLayerSVGRenderer.alignDrillLayers(layers);
-
-                MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer().setSoldermaskColor(soldermask);
-                if (silkscreenParam != null && !silkscreenParam.isBlank()) {
-                    renderer.setSilkscreenColor(SilkscreenColor.fromString(silkscreenParam));
-                }
-                byte[] png = renderer.renderRealisticSidePng(layers, side, width, height);
+                byte[] png = renderThumbnailPng(body, q.get("side"),
+                        parseIntOrDefault(q.get("width"), 400), parseIntOrDefault(q.get("height"), 0),
+                        q.get("soldermask"), q.get("silkscreen"));
                 if (png == null) {
                     sendResponse(exchange, 422, "application/json",
                         "{\"error\":\"no outline layer or side has no content\"}");
@@ -598,6 +586,57 @@ public class GerberViewerServer {
                     "{\"error\":" + escapeJson(e.getMessage()) + "}");
             }
         }
+
+        /**
+         * Render one viewer request body as a realistic-side PNG, or {@code null} when the set has
+         * no outline or that side has nothing on it. Separate from {@link #handle} for the same
+         * reason as {@link RenderHandler#renderToJson}: a host application serves it from its own
+         * HTTP stack.
+         *
+         * <p>{@code side} is {@code top}/{@code bottom} (default top). {@code width} and
+         * {@code height} are pixels, clamped to 4000; a zero means "derive from the other", and
+         * both zero means 400 wide. {@code soldermask} and {@code silkscreen} are colour names —
+         * an unknown mask is green, an absent legend is whatever the mask pairs with. All four are
+         * nullable, so a caller can pass query parameters straight through.
+         */
+        static byte[] renderThumbnailPng(byte[] body, String side, int width, int height,
+                                         String soldermask, String silkscreen) {
+            MultiLayerSVGRenderer.Side renderSide = "bottom".equalsIgnoreCase(side)
+                ? MultiLayerSVGRenderer.Side.BOTTOM : MultiLayerSVGRenderer.Side.TOP;
+            width  = clampDim(width,  0, 4000); // 0 = auto
+            height = clampDim(height, 0, 4000);
+            if (width == 0 && height == 0) width = 400;
+
+            List<MultiLayerSVGRenderer.Layer> layers = parseLayerBody(body);
+            // The server is stateless: this request re-parsed the raw drill bytes, so the origin
+            // correction must be re-derived here too (it is not carried over from /render).
+            layers = MultiLayerSVGRenderer.alignDrillLayers(layers);
+
+            MultiLayerSVGRenderer renderer = new MultiLayerSVGRenderer()
+                .setSoldermaskColor(SoldermaskColor.fromString(soldermask));
+            if (silkscreen != null && !silkscreen.isBlank()) {
+                renderer.setSilkscreenColor(SilkscreenColor.fromString(silkscreen));
+            }
+            return renderer.renderRealisticSidePng(layers, renderSide, width, height);
+        }
+    }
+
+    // --- Public API for host applications ------------------------------------------------
+    //
+    // deltaproto.com serves this viewer from its own Spring endpoint so it can track and rate-limit
+    // the traffic, and runs the library inside a sandboxed child JVM so an OOM on a hostile upload
+    // cannot take the site down. Both entry points below take the viewer's own request body, so the
+    // host never has to reimplement — and drift from — the flow the standalone server runs.
+
+    /** @see RenderHandler#renderToJson(byte[]) */
+    public static String renderToJson(byte[] body) {
+        return RenderHandler.renderToJson(body);
+    }
+
+    /** @see ThumbnailHandler#renderThumbnailPng(byte[], String, int, int, String, String) */
+    public static byte[] renderThumbnailPng(byte[] body, String side, int width, int height,
+                                            String soldermask, String silkscreen) {
+        return ThumbnailHandler.renderThumbnailPng(body, side, width, height, soldermask, silkscreen);
     }
 
     private static int indexOf(byte[] data, byte target, int from) {
