@@ -17,6 +17,8 @@ import com.deltaproto.deltagerber.renderer.svg.LayerType;
 import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
 import com.deltaproto.deltagerber.renderer.svg.SilkscreenColor;
 import com.deltaproto.deltagerber.renderer.svg.SoldermaskColor;
+import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
+import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.spec.AnalyzedLayer;
 import com.deltaproto.deltagerber.spec.BoardSpecification;
 import com.deltaproto.deltagerber.spec.PcbAnalyzer;
@@ -441,15 +443,29 @@ public class GerberViewerServer {
             BoundingBox outline = outlineBounds(layers, classifications);
 
             List<AnalyzedLayer> analyzed = new ArrayList<>();
+            List<GerberDocument> topPaste = new ArrayList<>();
+            List<GerberDocument> bottomPaste = new ArrayList<>();
+            List<DrillDocument> drills = new ArrayList<>();
             for (MultiLayerSVGRenderer.Layer layer : layers) {
                 LayerClassification c = classifications.get(layer.getName());
                 if (layer.isDrill()) {
                     analyzed.add(PcbAnalyzer.measure(layer.getName(), layer.getDrillDoc(), c));
+                    drills.add(layer.getDrillDoc());
                 } else if (layer.isGerber()) {
                     analyzed.add(PcbAnalyzer.measure(layer.getName(), layer.getGerberDoc(), c, outline));
+                    if (layer.getLayerType() == LayerType.PASTE_TOP) {
+                        topPaste.add(layer.getGerberDoc());
+                    } else if (layer.getLayerType() == LayerType.PASTE_BOTTOM) {
+                        bottomPaste.add(layer.getGerberDoc());
+                    }
                 }
             }
-            BoardSpecification spec = BoardSpecification.from(analyzed);
+            // Drills here are already aligned into the Gerber frame (alignDrillLayers ran before
+            // rendering), so detect directly rather than re-aligning.
+            ViaInPadResult viaInPad = (topPaste.isEmpty() && bottomPaste.isEmpty()) || drills.isEmpty()
+                    ? null
+                    : ViaInPadDetector.detect(topPaste, bottomPaste, drills);
+            BoardSpecification spec = BoardSpecification.from(analyzed, viaInPad);
 
             json.append(",\"pcbInfo\":{");
             json.append("\"sizeX\":").append(number(spec.getSizeXMm(), 4));
@@ -465,6 +481,12 @@ public class GerberViewerServer {
             json.append(",\"hasCopper\":").append(spec.hasCopper());
             json.append(",\"hasDrill\":").append(spec.hasDrill());
             json.append(",\"hasOutline\":").append(spec.hasOutline());
+
+            // Via in pad: a drilled hole inside an SMD pad forces a filled-and-capped via process
+            // (IPC-4761 Type VII). null means the set had no paste or no drill to judge from.
+            json.append(",\"hasViaInPad\":").append(spec.hasViaInPad());
+            json.append(",\"viaInPadCount\":").append(spec.getViaInPadCount());
+            json.append(",\"viaInPadSide\":").append(escapeJson(name(spec.getViaInPadSide())));
 
             // Gerber X2 file attributes: what the CAD tool told us about the job itself.
             json.append(",\"generationSoftware\":").append(escapeJson(

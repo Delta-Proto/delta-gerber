@@ -50,6 +50,26 @@ public class Flash extends GraphicsObject {
         return aperture;
     }
 
+    /** Aperture rotation applied to this flash, in degrees (from an LR command); 0 when none. */
+    public double getRotation() {
+        return rotation;
+    }
+
+    /** Uniform aperture scale applied to this flash (from an LS command); 1 when none. */
+    public double getScale() {
+        return scale;
+    }
+
+    /** Whether this flash mirrors the aperture across the X axis (from an LM command). */
+    public boolean isMirrorX() {
+        return mirrorX;
+    }
+
+    /** Whether this flash mirrors the aperture across the Y axis (from an LM command). */
+    public boolean isMirrorY() {
+        return mirrorY;
+    }
+
     @Override
     public BoundingBox getBoundingBox() {
         BoundingBox apBounds = aperture.getBoundingBox();

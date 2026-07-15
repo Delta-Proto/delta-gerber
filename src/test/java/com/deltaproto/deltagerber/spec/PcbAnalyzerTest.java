@@ -464,6 +464,87 @@ class PcbAnalyzerTest {
     }
 
     @Nested
+    @DisplayName("Via in pad")
+    class ViaInPad {
+
+        /** Top paste with two openings: a 1×1 mm pad at (10,10) and a ⌀1 mm pad at (20,20). */
+        private static final String F_PASTE = String.join("\n",
+                "%FSLAX46Y46*%",
+                "%MOMM*%",
+                "%ADD10R,1.000000X1.000000*%",
+                "%ADD11C,1.000000*%",
+                "D10*",
+                "X10000000Y10000000D03*",
+                "D11*",
+                "X20000000Y20000000D03*",
+                "M02*");
+
+        /** Excellon drill, 3.3 format, full-width coordinates so the origin is unambiguous. */
+        private static String drill(String... xyMm) {
+            StringBuilder sb = new StringBuilder("M48\nMETRIC,TZ\nT1C0.300\n%\nT1\n");
+            for (String xy : xyMm) {
+                sb.append(xy).append('\n');
+            }
+            return sb.append("M30\n").toString();
+        }
+
+        @Test
+        @DisplayName("Holes inside paste openings are flagged, with count and side")
+        void detectsViaInPad() {
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-Edge_Cuts.gbr", EDGE_CUTS),
+                    PcbFile.of("board-F_Cu.gbr", F_CU),
+                    PcbFile.of("board-F_Paste.gbr", F_PASTE),
+                    // Two vias land on the pads at (10,10) and (20,20).
+                    PcbFile.of("board-PTH.drl", drill("X010000Y010000", "X020000Y020000"))));
+
+            assertEquals(Boolean.TRUE, spec.hasViaInPad());
+            assertEquals(2, spec.getViaInPadCount());
+            assertEquals(BoardSide.TOP, spec.getViaInPadSide());
+        }
+
+        @Test
+        @DisplayName("A drill clear of every pad is not a via in pad")
+        void noViaInPadWhenHolesMissThePads() {
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-Edge_Cuts.gbr", EDGE_CUTS),
+                    PcbFile.of("board-F_Paste.gbr", F_PASTE),
+                    PcbFile.of("board-PTH.drl", drill("X005000Y005000", "X015000Y015000"))));
+
+            assertEquals(Boolean.FALSE, spec.hasViaInPad());
+            assertEquals(0, spec.getViaInPadCount());
+            assertEquals(BoardSide.NONE, spec.getViaInPadSide());
+        }
+
+        @Test
+        @DisplayName("Without a paste layer or a drill, via-in-pad is left unknown")
+        void unknownWhenInputsMissing() {
+            BoardSpecification noDrill = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-Edge_Cuts.gbr", EDGE_CUTS),
+                    PcbFile.of("board-F_Paste.gbr", F_PASTE)));
+            assertNull(noDrill.hasViaInPad());
+            assertNull(noDrill.getViaInPadSide());
+
+            BoardSpecification noPaste = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-Edge_Cuts.gbr", EDGE_CUTS),
+                    PcbFile.of("board-PTH.drl", drill("X010000Y010000"))));
+            assertNull(noPaste.hasViaInPad());
+        }
+
+        @Test
+        @DisplayName("Detected even at SPECIFICATION depth, where paste is otherwise skipped")
+        void detectedAtSpecificationDepth() {
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-Edge_Cuts.gbr", EDGE_CUTS),
+                    PcbFile.of("board-F_Paste.gbr", F_PASTE),
+                    PcbFile.of("board-PTH.drl", drill("X010000Y010000"))),
+                    AnalysisDepth.SPECIFICATION);
+            assertEquals(Boolean.TRUE, spec.hasViaInPad());
+            assertEquals(1, spec.getViaInPadCount());
+        }
+    }
+
+    @Nested
     @DisplayName("Degenerate input")
     class Degenerate {
 

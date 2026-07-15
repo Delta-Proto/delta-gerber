@@ -2,6 +2,7 @@ package com.deltaproto.deltagerber.spec;
 
 import com.deltaproto.deltagerber.classify.LayerFunction;
 import com.deltaproto.deltagerber.classify.LayerSide;
+import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 
 import java.util.EnumSet;
@@ -44,13 +45,14 @@ public final class BoardSpecification {
     private final boolean hasDrill;
     private final boolean hasCopper;
     private final boolean hasOutline;
+    private final ViaInPadResult viaInPad;
     private final List<AnalyzedLayer> layers;
 
     private BoardSpecification(Double sizeXMm, Double sizeYMm, BoundingBox bounds, Integer copperLayerCount,
                                BoardSide solderMaskSide, BoardSide silkscreenSide, BoardSide stencilSide,
                                Double minTrackWidthUm, Double minDrillDiameterMm,
                                boolean hasDrill, boolean hasCopper, boolean hasOutline,
-                               List<AnalyzedLayer> layers) {
+                               ViaInPadResult viaInPad, List<AnalyzedLayer> layers) {
         this.sizeXMm = sizeXMm;
         this.sizeYMm = sizeYMm;
         this.bounds = bounds;
@@ -63,6 +65,7 @@ public final class BoardSpecification {
         this.hasDrill = hasDrill;
         this.hasCopper = hasCopper;
         this.hasOutline = hasOutline;
+        this.viaInPad = viaInPad;
         this.layers = layers;
     }
 
@@ -70,9 +73,20 @@ public final class BoardSpecification {
      * Derive the board specification from already-measured layers.
      *
      * <p>Separate from {@link PcbAnalyzer#analyze} so a caller that persisted its measurements can
-     * re-derive the specification without the files.
+     * re-derive the specification without the files. Via-in-pad is a geometric relationship between
+     * two layers, not a per-layer measurement, so it cannot be re-derived here — it is left
+     * {@linkplain #hasViaInPad() unknown}; use {@link #from(List, ViaInPadResult)} to supply it.
      */
     public static BoardSpecification from(List<AnalyzedLayer> layers) {
+        return from(layers, null);
+    }
+
+    /**
+     * As {@link #from(List)}, but with a {@link ViaInPadResult} the caller detected separately (
+     * {@link PcbAnalyzer} runs it during analysis; a caller re-deriving from persisted data can pass
+     * a stored result). A {@code null} result leaves via-in-pad {@linkplain #hasViaInPad() unknown}.
+     */
+    public static BoardSpecification from(List<AnalyzedLayer> layers, ViaInPadResult viaInPad) {
         List<AnalyzedLayer> safe = layers == null ? List.of() : List.copyOf(layers);
         BoundingBox bounds = boardBounds(safe);
         boolean empty = safe.isEmpty();
@@ -90,7 +104,7 @@ public final class BoardSpecification {
                 safe.stream().anyMatch(l -> l.getFunction().isDrill()),
                 safe.stream().anyMatch(l -> l.getFunction().isCopper()),
                 safe.stream().anyMatch(l -> l.getFunction() == LayerFunction.OUTLINE),
-                safe);
+                viaInPad, safe);
     }
 
     /**
@@ -210,6 +224,37 @@ public final class BoardSpecification {
     /** True when the set contains a board outline layer. */
     public boolean hasOutline() {
         return hasOutline;
+    }
+
+    /**
+     * Whether the board has any via in pad — a drilled hole inside a surface-mount pad, which
+     * forces a filled-and-capped via process (IPC-4761 Type VII). {@code null} when it could not be
+     * determined: the set has no paste layer, no drill, or was re-derived from persisted layer
+     * measurements without re-running detection. See {@link #getViaInPad()} for the detail.
+     */
+    public Boolean hasViaInPad() {
+        return viaInPad == null ? null : viaInPad.hasViaInPad();
+    }
+
+    /** How many vias in pad were found; 0 when there are none or it was not determined. */
+    public int getViaInPadCount() {
+        return viaInPad == null ? 0 : viaInPad.getCount();
+    }
+
+    /**
+     * Which side(s) carry a via in pad, or {@link BoardSide#NONE} when there are none. {@code null}
+     * when via-in-pad was not determined (see {@link #hasViaInPad()}).
+     */
+    public BoardSide getViaInPadSide() {
+        return viaInPad == null ? null : BoardSide.of(viaInPad.isOnTop(), viaInPad.isOnBottom());
+    }
+
+    /**
+     * The full via-in-pad detection result (every offending hole), or {@code null} when detection
+     * was not run for this specification.
+     */
+    public ViaInPadResult getViaInPad() {
+        return viaInPad;
     }
 
     /** Every analysed file, in the order given. */

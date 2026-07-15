@@ -1374,6 +1374,16 @@
         const side = s => (s === null || s === undefined) ? null : (SIDE_LABELS[s] || s);
         const yesNo = b => b ? 'Yes' : 'No';
 
+        // Via in pad — a drilled hole inside an SMD pad — forces a filled & capped via process
+        // (IPC-4761 Type VII). null means the set had no paste or no drill to judge from.
+        function viaInPad(i) {
+            if (i.hasViaInPad === null || i.hasViaInPad === undefined) return null;
+            if (!i.hasViaInPad) return 'No';
+            const where = side(i.viaInPadSide);
+            const n = i.viaInPadCount ? ` (${i.viaInPadCount}${where ? ', ' + where : ''})` : '';
+            return `Yes${n} — needs filled & capped vias (IPC-4761 Type VII)`;
+        }
+
         function refreshPcbInfoPanel() {
             const el = document.getElementById('pcbinfo-content');
             if (!pcbInfo) { el.innerHTML = '<div class="pcbinfo-intro">No PCB information.</div>'; return; }
@@ -1392,6 +1402,7 @@
                 infoRow('Has outline', yesNo(i.hasOutline)),
                 infoRow('Has copper', yesNo(i.hasCopper)),
                 infoRow('Has drill', yesNo(i.hasDrill)),
+                infoRow('Via in pad', viaInPad(i)),
             ];
 
             // The board is measured in the files' own coordinate space; the origin is wherever the

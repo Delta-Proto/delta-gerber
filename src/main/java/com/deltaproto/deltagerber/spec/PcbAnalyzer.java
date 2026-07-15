@@ -1,8 +1,12 @@
 package com.deltaproto.deltagerber.spec;
 
+import com.deltaproto.deltagerber.align.DrillGerberAlignment;
 import com.deltaproto.deltagerber.classify.LayerClassification;
 import com.deltaproto.deltagerber.classify.LayerClassifier;
 import com.deltaproto.deltagerber.classify.LayerFunction;
+import com.deltaproto.deltagerber.classify.LayerSide;
+import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
+import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.model.drill.DrillDocument;
 import com.deltaproto.deltagerber.model.drill.Tool;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
@@ -98,11 +102,20 @@ public class PcbAnalyzer {
         BoundingBox outline = outlineBounds(files, classifications);
         boolean usableOutline = outline != null && outline.getWidth() > 0 && outline.getHeight() > 0;
 
+        // Via-in-pad is a relationship between the paste layer and the drill, so those two are
+        // collected across the whole set (the paste's pads and the drill's holes) and correlated
+        // once at the end. It is only worth parsing the paste for this when the set actually has a
+        // drill to test against.
+        boolean setHasDrill = classifications.stream()
+                .anyMatch(c -> c != null && c.function().isDrill());
+        ViaInPadCollector viaInPad = new ViaInPadCollector();
+
         List<AnalyzedLayer> layers = new ArrayList<>(files.size());
         for (int i = 0; i < files.size(); i++) {
-            layers.add(measure(files.get(i), classifications.get(i), outline, usableOutline, depth));
+            layers.add(measure(files.get(i), classifications.get(i), outline, usableOutline, depth,
+                    setHasDrill, viaInPad));
         }
-        return BoardSpecification.from(layers);
+        return BoardSpecification.from(layers, viaInPad.detect());
     }
 
     /**
@@ -134,8 +147,14 @@ public class PcbAnalyzer {
      * Everything else — silkscreen above all, which is routinely the largest file in the set —
      * only ever contributes its extent, and only when there is no outline to take the size from.
      */
-    private static boolean mustParse(LayerFunction function, boolean usableOutline, AnalysisDepth depth) {
+    private static boolean mustParse(LayerFunction function, boolean usableOutline, AnalysisDepth depth,
+                                     boolean setHasDrill) {
         if (depth == AnalysisDepth.FULL) {
+            return true;
+        }
+        // Paste has to be parsed even at SPECIFICATION depth so via-in-pad can be checked against
+        // the drill — but only when the set has a drill, and paste layers are small regardless.
+        if (function == LayerFunction.PASTE && setHasDrill) {
             return true;
         }
         return function == LayerFunction.OUTLINE || function.isCopper() || function.isDrill()
@@ -214,14 +233,15 @@ public class PcbAnalyzer {
 
     /** Parse one file, take its measurements, and let the document go before the next one. */
     private AnalyzedLayer measure(PcbFile file, LayerClassification classification,
-                                  BoundingBox outline, boolean usableOutline, AnalysisDepth depth) {
+                                  BoundingBox outline, boolean usableOutline, AnalysisDepth depth,
+                                  boolean setHasDrill, ViaInPadCollector viaInPad) {
         String content = file.getContent();
         if (content == null || content.isBlank()) {
             return AnalyzedLayer.builder(file.getFileName()).classification(classification).build();
         }
 
         LayerFunction function = classification == null ? LayerFunction.UNKNOWN : classification.function();
-        if (!mustParse(function, usableOutline, depth)) {
+        if (!mustParse(function, usableOutline, depth, setHasDrill)) {
             // Nothing this layer draws can change the specification. Its extent is unmeasured;
             // whether it draws at all still is, because an empty paste layer needs no stencil.
             return AnalyzedLayer.builder(file.getFileName())
@@ -231,9 +251,16 @@ public class PcbAnalyzer {
         }
 
         try {
-            return isExcellon(content, function)
-                    ? measure(file.getFileName(), new ExcellonParser().parse(content), classification)
-                    : measure(file.getFileName(), new GerberParser().parse(content), classification, outline);
+            // Parse once, then both measure the layer and feed the via-in-pad correlation, so the
+            // paste/copper/drill documents are not parsed a second time for the DFM check.
+            if (isExcellon(content, function)) {
+                DrillDocument doc = new ExcellonParser().parse(content);
+                viaInPad.addDrill(doc);
+                return measure(file.getFileName(), doc, classification);
+            }
+            GerberDocument doc = new GerberParser().parse(content);
+            viaInPad.addGerber(function, classification == null ? LayerSide.NA : classification.side(), doc);
+            return measure(file.getFileName(), doc, classification, outline);
         } catch (RuntimeException e) {
             log.warn("Could not parse {}: {}", file.getFileName(), e.toString());
             return AnalyzedLayer.builder(file.getFileName())
@@ -385,5 +412,56 @@ public class PcbAnalyzer {
                 .map(a -> ((CircleAperture) a).getDiameter())
                 .min(Double::compare)
                 .orElse(null);
+    }
+
+    // ------------------------------------------------------------------------
+    // Via in pad
+    // ------------------------------------------------------------------------
+
+    /**
+     * Gathers the two ingredients of a via-in-pad check as the set is parsed — the paste pads and
+     * the drill holes — plus the copper flashes needed to align a drill that was exported on a
+     * different origin. The heavy copper documents are released after each is measured; only their
+     * flash centres (a few numbers each) and bounds are kept, so the DFM check does not defeat the
+     * one-file-at-a-time memory model.
+     */
+    private static final class ViaInPadCollector {
+        private final List<GerberDocument> topPaste = new ArrayList<>();
+        private final List<GerberDocument> bottomPaste = new ArrayList<>();
+        private final List<DrillDocument> drills = new ArrayList<>();
+        private final List<double[]> copperFlashCenters = new ArrayList<>();
+        private final BoundingBox copperBounds = new BoundingBox();
+
+        void addDrill(DrillDocument doc) {
+            drills.add(doc);
+        }
+
+        void addGerber(LayerFunction function, LayerSide side, GerberDocument doc) {
+            if (function == LayerFunction.PASTE) {
+                // A sideless paste layer (rare) is assumed top; its pads still count either way.
+                (side == LayerSide.BOTTOM ? bottomPaste : topPaste).add(doc);
+            } else if (function.isCopper()) {
+                copperFlashCenters.addAll(DrillGerberAlignment.flashCenters(doc));
+                BoundingBox b = doc.getBoundingBox();
+                if (b != null && b.isValid()) {
+                    copperBounds.include(b);
+                }
+            }
+        }
+
+        /**
+         * Correlate the collected pads and holes. Returns {@code null} — "not determined" — when the
+         * set lacks a paste layer or a drill, since via-in-pad cannot be judged without both.
+         */
+        ViaInPadResult detect() {
+            if ((topPaste.isEmpty() && bottomPaste.isEmpty()) || drills.isEmpty()) {
+                return null;
+            }
+            List<DrillDocument> aligned = new ArrayList<>(drills.size());
+            for (DrillDocument drill : drills) {
+                aligned.add(DrillGerberAlignment.aligned(drill, copperBounds, copperFlashCenters));
+            }
+            return ViaInPadDetector.detect(topPaste, bottomPaste, aligned);
+        }
     }
 }

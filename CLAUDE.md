@@ -81,6 +81,21 @@ supplied on a `PcbFile` is final and is never renumbered.
 It never renders. `BoardSpecification.from(List<AnalyzedLayer>)` re-derives the same answer from
 persisted measurements, without the files.
 
+`dfm.ViaInPadDetector` answers one DFM question: is any drilled hole inside a surface-mount pad
+(*via in pad*), which forces a filled-and-capped via process (IPC-4761 Type VII) and drives cost.
+The pad geometry comes from the **solder-paste** layer — paste marks exactly the SMD lands and a
+through-hole pad gets none — so a hole whose centre falls in a paste opening is the via in pad; this
+catches thermal vias under a QFN/BGA pad and ignores an ordinary plated through-hole. Holes must be
+in the Gerber frame first (`detectAligned` runs `DrillGerberAlignment` for a drill on a foreign
+origin). `PcbAnalyzer` collects the paste pads, drill holes and copper flashes as it parses (heavy
+copper is still released; only its flash centres survive), correlates them once, and surfaces the
+verdict on `BoardSpecification.hasViaInPad()` / `getViaInPadCount()` / `getViaInPadSide()`. That
+getter is `null` — *not determined* — when the set has no paste or no drill, or was rebuilt from
+persisted `AnalyzedLayer` measurements (via-in-pad is a two-layer relationship, so
+`BoardSpecification.from(layers)` cannot re-derive it; pass a stored result to
+`from(layers, viaInPad)`). Paste is parsed for this even at `SPECIFICATION` depth when a drill is
+present, because the verdict *is* part of the specification.
+
 Pass `AnalysisDepth.SPECIFICATION` when you only want the specification: layers whose geometry
 cannot change it (silkscreen above all) are then classified but never parsed. Parsing a Gerber
 costs memory proportional to what it draws — a 27 MB silkscreen needs ~1 GB of heap to build and

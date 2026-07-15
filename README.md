@@ -106,6 +106,21 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
   an all-layers underlay so off-board annotations (drill charts, stackup tables, fab
   notes) stay visible; scales to dense multi-layer boards via a raster silhouette path
 
+### Board Analysis & DFM
+- `PcbAnalyzer` reduces a whole folder of Gerber + drill files to one `BoardSpecification`:
+  board size, copper layer count, soldermask / silkscreen / stencil sides, minimum track width
+  (µm) and minimum drill diameter (mm) — classifying every file first, then measuring only what
+  can change the answer
+- **Via-in-pad detection** — determines whether any drilled hole lands inside a surface-mount pad
+  (read from the solder-paste layer), which forces a filled-and-capped via process
+  (**IPC-4761 Type VII**) and raises fabrication cost and lead time. Catches thermal vias under a
+  QFN/BGA pad; ignores ordinary plated through-holes. Surfaced as
+  `spec.hasViaInPad()` / `getViaInPadCount()` / `getViaInPadSide()`, or standalone via
+  `dfm.ViaInPadDetector`
+- Drill/Gerber origin auto-alignment (`DrillGerberAlignment`) recovers an exact offset when the NC
+  drill was exported on a different origin than the copper (e.g. some Altium flows), so holes and
+  pads share one coordinate space before any analysis
+
 ### Parse Diagnostics
 - Both Gerber and drill documents expose a de-duplicated list of parse warnings
 - Malformed, truncated, or hostile files degrade gracefully with a recorded warning
@@ -221,6 +236,91 @@ all.addAll(parser.parse(pnpBottomContent).getComponents());
 ```
 
 Each coordinate is in **millimetres**, normalised at parse time regardless of the source file unit. The `mountType` field is `"SMD"` or `"TH"` as declared in `%TO.CMnt*%`.
+
+### Board Specification & Via-in-Pad Detection
+
+Give `PcbAnalyzer` the whole file set and it returns a `BoardSpecification` describing the bare
+board — size, layer count, processes, tolerances — and, when the set has both a solder-paste layer
+and a drill, whether the board has any **via in pad**.
+
+```java
+import com.deltaproto.deltagerber.spec.PcbAnalyzer;
+import com.deltaproto.deltagerber.spec.PcbFile;
+import com.deltaproto.deltagerber.spec.BoardSpecification;
+
+// One PcbFile per file in the customer's Gerber/drill set. The analyzer classifies each by
+// name + content, so you do not have to tell it which file is which.
+List<PcbFile> files = List.of(
+    PcbFile.of("board-Edge_Cuts.gbr", outlineBytes),
+    PcbFile.of("board-F_Cu.gbr",      topCopperBytes),
+    PcbFile.of("board-F_Paste.gbr",   topPasteBytes),   // the paste layer is what defines SMD pads
+    PcbFile.of("board-PTH.drl",       drillBytes));
+
+BoardSpecification spec = new PcbAnalyzer().analyze(files);
+
+Boolean viaInPad = spec.hasViaInPad();   // TRUE / FALSE, or null when it can't be judged
+int     count    = spec.getViaInPadCount();
+```
+
+`hasViaInPad()` is a **nullable** `Boolean` on purpose:
+
+| Value   | Meaning                                                                          |
+|---------|----------------------------------------------------------------------------------|
+| `TRUE`  | At least one hole sits inside an SMD pad → the board needs IPC-4761 Type VII      |
+| `FALSE` | Paste and drill were both present and no hole falls in a pad                      |
+| `null`  | Not determined — the set had no paste layer, or no drill, so the question is open |
+
+`PcbFile.of` accepts a `String` or a `byte[]`; bytes are decoded as ISO-8859-1 (both formats are
+ASCII), so you can hand it raw upload bytes directly. Customer files should never be committed to a
+public repo — keep them out of version control.
+
+#### Integrating into a calculator / quoting flow
+
+```java
+BoardSpecification spec = new PcbAnalyzer().analyze(files);
+
+// Flag the extra process only on a positive result; treat null (unknown) as "no data",
+// not as a pass — the same way you would treat a missing paste layer.
+if (Boolean.TRUE.equals(spec.hasViaInPad())) {
+    quote.requireProcess(Process.IPC_4761_TYPE_VII);   // filled & capped vias
+    quote.addNote(spec.getViaInPadCount() + " via(s) in pad on " + spec.getViaInPadSide());
+}
+```
+
+For the full list of offending holes (each with its location and drilled diameter), read the
+detection result off the spec:
+
+```java
+import com.deltaproto.deltagerber.dfm.ViaInPad;
+import com.deltaproto.deltagerber.dfm.ViaInPadResult;
+
+ViaInPadResult vip = spec.getViaInPad();   // null when detection did not run
+if (vip != null) {
+    for (ViaInPad v : vip.getViaInPads()) {
+        System.out.printf("via in pad at (%.3f, %.3f) mm, ⌀%.3f mm%n",
+            v.getX(), v.getY(), v.getHoleDiameterMm());
+    }
+}
+```
+
+If you have already parsed the paste and drill documents for another purpose (rendering, say),
+call the detector directly instead of re-analysing — pass the paste layers split by side, and use
+`detectAligned(...)` when the drill might be on a different origin than the copper:
+
+```java
+import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
+
+ViaInPadResult vip = ViaInPadDetector.detect(
+    List.of(topPasteDoc),      // top-side paste GerberDocuments
+    List.of(bottomPasteDoc),   // bottom-side paste GerberDocuments
+    List.of(drillDoc));        // Excellon DrillDocuments (already in the Gerber coordinate frame)
+
+boolean needsViaFill = vip.hasViaInPad();
+```
+
+> Cost note: at `AnalysisDepth.SPECIFICATION` the analyzer skips parsing layers that can't change
+> the spec (a large silkscreen, for instance) but still parses the small paste layer when a drill
+> is present, so via-in-pad is reported at both depths.
 
 ### Realistic PCB Rendering
 
