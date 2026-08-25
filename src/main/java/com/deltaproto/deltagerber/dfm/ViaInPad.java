@@ -45,6 +45,12 @@ public final class ViaInPad {
         return holeDiameterMm;
     }
 
+    /** Area of the drilled hole in mm² — the paste that drains into the barrel rather than reflows. */
+    public double getHoleAreaMm2() {
+        double r = holeDiameterMm / 2;
+        return Math.PI * r * r;
+    }
+
     /** True when the hole sits inside a pad on the top paste layer. */
     public boolean isTop() {
         return top;

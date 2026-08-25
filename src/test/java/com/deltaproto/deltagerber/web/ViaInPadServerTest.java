@@ -57,5 +57,36 @@ class ViaInPadServerTest {
         assertTrue(json.contains("\"hasViaInPad\":true"), json);
         assertTrue(json.contains("\"viaInPadCount\":1"), json);
         assertTrue(json.contains("\"viaInPadSide\":\"TOP\""), json);
+        // A ⌀1 mm land (0.79 mm²) holding a 0.3 mm via is no heat spreader — it needs the process,
+        // and the pad that says so travels with the verdict.
+        assertTrue(json.contains("\"requiresFilledAndCappedVias\":true"), json);
+        assertTrue(json.contains("\"padAreaMm2\":0.7854"), json);
+        assertTrue(json.contains("\"viaCount\":1"), json);
+        assertTrue(json.contains("\"viaDiameterMm\":0.3000"), json);
+        assertTrue(json.contains("\"thermal\":false"), json);
+    }
+
+    /** Two vias in a 3×3 mm land: still vias in pads, but a thermal field, so no fill process. */
+    @Test
+    void renderJsonClearsAThermalViaField() {
+        String paste = String.join("\n",
+                "%FSLAX46Y46*%",
+                "%MOMM*%",
+                "%ADD10R,3.000000X3.000000*%",
+                "D10*",
+                "X10000000Y10000000D03*",
+                "M02*");
+        String drill = "M48\nMETRIC,TZ\nT1C0.300\n%\nT1\nX009500Y009500\nX010500Y010500\nM30\n";
+
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        file(body, "board-Edge_Cuts.gbr", "gerber", EDGE_CUTS);
+        file(body, "board-F_Paste.gbr", "gerber", paste);
+        file(body, "board-PTH.drl", "drill", drill);
+
+        String json = GerberViewerServer.renderToJson(body.toByteArray());
+        assertTrue(json.contains("\"hasViaInPad\":true"), json);
+        assertTrue(json.contains("\"requiresFilledAndCappedVias\":false"), json);
+        assertTrue(json.contains("\"viaCount\":2"), json);
+        assertTrue(json.contains("\"thermal\":true"), json);
     }
 }

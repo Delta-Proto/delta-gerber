@@ -13,6 +13,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -178,5 +179,171 @@ class ViaInPadDetectorTest {
                 List.of(pasteThree), List.of(), List.of(copper), List.of(shifted));
         assertTrue(r.hasViaInPad());
         assertEquals(3, r.getCount());
+    }
+
+    // ------------------------------------------------------------------------
+    // Grouping by pad, and the filled-and-capped verdict that follows from it
+    // ------------------------------------------------------------------------
+
+    /** Top paste: a 3×3 mm thermal land at (10,10) — 9 mm² of paste. */
+    private static GerberDocument thermalLand() {
+        return paste("""
+            %ADD10R,3.000000X3.000000*%
+            D10*
+            X10000000Y10000000D03*
+            """);
+    }
+
+    /** Top paste: a ⌀0.8 mm signal land at (20,20) — 0.503 mm², too little to spare any. */
+    private static GerberDocument signalLand() {
+        return paste("""
+            %ADD11C,0.800000*%
+            D11*
+            X20000000Y20000000D03*
+            """);
+    }
+
+    @Test
+    void holesInOnePadCollapseIntoOneGroupCarryingItsAreaAndViaSize() {
+        // Four vias inside the one 3×3 land — the classic QFN thermal via field.
+        DrillDocument d = drill(new double[]{9.5, 9.5}, new double[]{10.5, 9.5},
+                new double[]{9.5, 10.5}, new double[]{10.5, 10.5});
+        ViaInPadResult r = ViaInPadDetector.detect(List.of(thermalLand()), List.of(), List.of(d));
+
+        assertEquals(4, r.getCount());
+        assertEquals(1, r.getGroups().size());
+        ViaInPadGroup g = r.getGroups().get(0);
+        assertEquals(4, g.getViaCount());
+        assertEquals(9.0, g.getPadAreaMm2(), 1e-9);
+        assertEquals(0.3, g.getViaDiameterMm(), 1e-9);
+        assertEquals(10, g.getPadCenterX(), 1e-9);
+        assertEquals("R", g.getPadShape());
+        assertTrue(g.isTop());
+        assertFalse(g.isBottom());
+    }
+
+    @Test
+    void aViaFieldIsThermalAndNeedsNoFill() {
+        DrillDocument d = drill(new double[]{9.5, 9.5}, new double[]{10.5, 10.5});
+        ViaInPadResult r = ViaInPadDetector.detect(List.of(thermalLand()), List.of(), List.of(d));
+        assertTrue(r.hasViaInPad());              // the holes are in a pad ...
+        assertFalse(r.requiresFilledAndCapped()); // ... but two of them make the pad a heat spreader
+        assertTrue(r.getGroups().get(0).isLikelyThermal());
+        assertEquals(1, r.getThermalGroups().size());
+        assertEquals(0, r.getFilledAndCappedGroups().size());
+    }
+
+    @Test
+    void oneViaInALandFarLargerThanItIsAlsoThermal() {
+        // 9 mm² of paste against 0.071 mm² of hole — ratio 127, so the joint is not starved.
+        DrillDocument d = drill(new double[]{10, 10});
+        ViaInPadResult r = ViaInPadDetector.detect(List.of(thermalLand()), List.of(), List.of(d));
+        ViaInPadGroup g = r.getGroups().get(0);
+        assertEquals(1, g.getViaCount());
+        assertEquals(9.0 / (Math.PI * 0.15 * 0.15), g.getPadToViaAreaRatio(), 1e-6);
+        assertFalse(r.requiresFilledAndCapped());
+    }
+
+    @Test
+    void oneViaInASmallLandForcesFilledAndCapped() {
+        DrillDocument d = drill(new double[]{20, 20});
+        ViaInPadResult r = ViaInPadDetector.detect(List.of(signalLand()), List.of(), List.of(d));
+        ViaInPadGroup g = r.getGroups().get(0);
+        assertEquals(Math.PI * 0.4 * 0.4, g.getPadAreaMm2(), 1e-9);
+        assertFalse(g.isLikelyThermal());
+        assertTrue(g.requiresFilledAndCapped());
+        assertTrue(r.requiresFilledAndCapped());
+    }
+
+    @Test
+    void oneOffendingLandAmongThermalOnesStillForcesTheProcess() {
+        DrillDocument d = drill(new double[]{9.5, 9.5}, new double[]{10.5, 10.5}, new double[]{20, 20});
+        ViaInPadResult r = ViaInPadDetector.detect(
+                List.of(thermalLand(), signalLand()), List.of(), List.of(d));
+        assertEquals(2, r.getGroups().size());
+        assertTrue(r.requiresFilledAndCapped());
+        assertEquals(1, r.getFilledAndCappedGroups().size());
+        assertEquals(1, r.getThermalGroups().size());
+        // The land that forces the process is the small round one, not the heat spreader.
+        assertEquals(Math.PI * 0.4 * 0.4, r.getFilledAndCappedGroups().get(0).getPadAreaMm2(), 1e-9);
+    }
+
+    @Test
+    void aPolicyMovesWhereTheLineSits() {
+        // The 3×3 land with a single via is thermal by default; demanding a 200× ratio flips it.
+        DrillDocument d = drill(new double[]{10, 10});
+        ViaInPadResult r = ViaInPadDetector.detect(List.of(thermalLand()), List.of(), List.of(d));
+        assertFalse(r.requiresFilledAndCapped());
+        assertTrue(r.requiresFilledAndCapped(new ViaInPadPolicy(2, 200.0, 2.0)));
+
+        // And a policy that will not call any pad thermal below 20 mm² does the same.
+        assertTrue(r.requiresFilledAndCapped(new ViaInPadPolicy(2, 25.0, 20.0)));
+    }
+
+    @Test
+    void aPadOnBothSidesYieldsOneHoleInTwoGroups() {
+        GerberDocument top = paste("""
+            %ADD10C,1.000000*%
+            D10*
+            X8000000Y8000000D03*
+            """);
+        GerberDocument bottom = paste("""
+            %ADD10C,1.000000*%
+            D10*
+            X8000000Y8000000D03*
+            """);
+        DrillDocument d = drill(new double[]{8, 8});
+        ViaInPadResult r = ViaInPadDetector.detect(List.of(top), List.of(bottom), List.of(d));
+        assertEquals(1, r.getCount());
+        assertEquals(2, r.getGroups().size());
+        assertTrue(r.getGroups().get(0).isTop());
+        assertTrue(r.getGroups().get(1).isBottom());
+        // The same hit object in both groups, not a copy per side.
+        assertSame(r.getViaInPads().get(0), r.getGroups().get(0).getVias().get(0));
+        assertSame(r.getViaInPads().get(0), r.getGroups().get(1).getVias().get(0));
+    }
+
+    @Test
+    void padAreaFollowsTheApertureShapeNotItsBoundingBox() {
+        // An obround 2×1 is a stadium: 2·1 less the (4−π)r² the rounded ends cut away.
+        GerberDocument obround = paste("""
+            %ADD12O,2.000000X1.000000*%
+            D12*
+            X30000000Y30000000D03*
+            """);
+        DrillDocument d = drill(new double[]{30, 30});
+        ViaInPadGroup g = ViaInPadDetector.detect(List.of(obround), List.of(), List.of(d))
+                .getGroups().get(0);
+        assertEquals(2.0 - (4 - Math.PI) * 0.25, g.getPadAreaMm2(), 1e-9);
+        assertEquals("O", g.getPadShape());
+    }
+
+    @Test
+    void aRegionPadIsMeasuredByItsOutline() {
+        GerberDocument region = paste("""
+            G36*
+            X10000000Y10000000D02*
+            X12000000Y10000000D01*
+            X12000000Y12000000D01*
+            X10000000Y12000000D01*
+            X10000000Y10000000D01*
+            G37*
+            """);
+        DrillDocument d = drill(new double[]{11, 11});
+        ViaInPadGroup g = ViaInPadDetector.detect(List.of(region), List.of(), List.of(d))
+                .getGroups().get(0);
+        assertEquals(4.0, g.getPadAreaMm2(), 1e-9);   // 2 mm square
+        assertEquals("region", g.getPadShape());
+        assertEquals(11, g.getPadCenterX(), 1e-9);
+        assertTrue(g.isLikelyThermal());              // 4 mm² against a 0.3 mm hole
+    }
+
+    @Test
+    void noViaInPadMeansNoGroupsAndNoProcess() {
+        DrillDocument d = drill(new double[]{30, 30});
+        ViaInPadResult r = ViaInPadDetector.detect(List.of(thermalLand()), List.of(), List.of(d));
+        assertTrue(r.getGroups().isEmpty());
+        assertFalse(r.requiresFilledAndCapped());
+        assertFalse(ViaInPadResult.empty().requiresFilledAndCapped());
     }
 }

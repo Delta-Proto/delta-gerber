@@ -82,7 +82,8 @@ It never renders. `BoardSpecification.from(List<AnalyzedLayer>)` re-derives the 
 persisted measurements, without the files.
 
 `dfm.ViaInPadDetector` answers one DFM question: is any drilled hole inside a surface-mount pad
-(*via in pad*), which forces a filled-and-capped via process (IPC-4761 Type VII) and drives cost.
+(*via in pad*), and if so does that actually force a filled-and-capped via process (IPC-4761
+Type VII), which drives cost.
 The pad geometry comes from the **solder-paste** layer — paste marks exactly the SMD lands and a
 through-hole pad gets none — so a hole whose centre falls in a paste opening is the via in pad; this
 catches thermal vias under a QFN/BGA pad and ignores an ordinary plated through-hole. Holes must be
@@ -95,6 +96,20 @@ persisted `AnalyzedLayer` measurements (via-in-pad is a two-layer relationship, 
 `BoardSpecification.from(layers)` cannot re-derive it; pass a stored result to
 `from(layers, viaInPad)`). Paste is parsed for this even at `SPECIFICATION` depth when a drill is
 present, because the verdict *is* part of the specification.
+
+Finding a hole in a pad and *needing to plug it* are two different answers, and the detector keeps
+them apart. The hits are grouped by the pad they sit in — one `ViaInPadGroup` per paste opening,
+carrying that opening's true area in mm² (the aperture as flashed, or the painted region — not its
+bounding box), the hole diameter and how many holes landed there. `ViaInPadPolicy` then reads the
+group: **several vias in one pad** is a via field, which only ever appears under a heat spreader, and
+**a pad far larger than its holes** carries paste to spare, so what wicks down the barrel does not
+starve the joint. Either makes the pad thermal and needs no cap; anything else — the lone via in an
+0402 or SOIC land — does. So `hasViaInPad()` is the geometric fact and
+`requiresFilledAndCappedVias()` is the process verdict, and a board of QFN thermal vias answers
+`TRUE` to the first and `FALSE` to the second. Quote off the second. The default thresholds (2 vias;
+25× the hole area with a 2.0 mm² floor) put the cut between a QFN heat pad and a discrete land —
+fabricators disagree about exactly where it sits, so every judging method takes a `ViaInPadPolicy`
+overload.
 
 Pass `AnalysisDepth.SPECIFICATION` when you only want the specification: layers whose geometry
 cannot change it (silkscreen above all) are then classified but never parsed. Parsing a Gerber

@@ -112,11 +112,11 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
   (µm) and minimum drill diameter (mm) — classifying every file first, then measuring only what
   can change the answer
 - **Via-in-pad detection** — determines whether any drilled hole lands inside a surface-mount pad
-  (read from the solder-paste layer), which forces a filled-and-capped via process
-  (**IPC-4761 Type VII**) and raises fabrication cost and lead time. Catches thermal vias under a
-  QFN/BGA pad; ignores ordinary plated through-holes. Surfaced as
-  `spec.hasViaInPad()` / `getViaInPadCount()` / `getViaInPadSide()`, or standalone via
-  `dfm.ViaInPadDetector`
+  (read from the solder-paste layer), and groups the holes by the pad they sit in, with that pad's
+  area, so a *thermal via field* under a QFN/BGA heat pad is told apart from a via in a signal land.
+  Only the second forces a filled-and-capped via process (**IPC-4761 Type VII**) and its cost and
+  lead time. Surfaced as `spec.hasViaInPad()` / `requiresFilledAndCappedVias()` /
+  `getViaInPadGroups()`, or standalone via `dfm.ViaInPadDetector`
 - Drill/Gerber origin auto-alignment (`DrillGerberAlignment`) recovers an exact offset when the NC
   drill was exported on a different origin than the copper (e.g. some Altium flows), so holes and
   pads share one coordinate space before any analysis
@@ -258,21 +258,69 @@ List<PcbFile> files = List.of(
 
 BoardSpecification spec = new PcbAnalyzer().analyze(files);
 
-Boolean viaInPad = spec.hasViaInPad();   // TRUE / FALSE, or null when it can't be judged
+Boolean viaInPad = spec.hasViaInPad();                    // a hole sits in a pad at all
+Boolean needsFill = spec.requiresFilledAndCappedVias();   // ... and it has to be plugged
 int     count    = spec.getViaInPadCount();
 ```
 
-`hasViaInPad()` is a **nullable** `Boolean` on purpose:
+Both are **nullable** `Boolean`s on purpose:
 
 | Value   | Meaning                                                                          |
 |---------|----------------------------------------------------------------------------------|
-| `TRUE`  | At least one hole sits inside an SMD pad → the board needs IPC-4761 Type VII      |
-| `FALSE` | Paste and drill were both present and no hole falls in a pad                      |
+| `TRUE`  | `hasViaInPad`: a hole sits inside an SMD pad. `requiresFilledAndCappedVias`: and at least one such pad needs IPC-4761 Type VII |
+| `FALSE` | Paste and drill were both present, and no hole falls in a pad / every pad that caught one is thermal |
 | `null`  | Not determined — the set had no paste layer, or no drill, so the question is open |
 
 `PcbFile.of` accepts a `String` or a `byte[]`; bytes are decoded as ISO-8859-1 (both formats are
 ASCII), so you can hand it raw upload bytes directly. Customer files should never be committed to a
 public repo — keep them out of version control.
+
+#### Thermal via field, or a via that has to be plugged?
+
+`hasViaInPad()` is a geometric fact; `requiresFilledAndCappedVias()` is the process verdict, and
+they differ on the most common board there is. Nine vias under a QFN heat pad and one via in an
+0402 land look identical hole by hole — but the heat pad is 9 mm² of paste with room to spare, so
+what wicks down the barrels does not starve anything, while the 0402 land drains dry and the via
+must be filled and capped.
+
+The detector therefore groups the holes by the pad they land in and measures that pad. A pad counts
+as **thermal** — no capping needed — when either signal holds:
+
+| Signal | Default | Why |
+|---|---|---|
+| Several vias in one pad | ≥ 2 | Nobody puts a via array in a signal land; a via field only appears under a heat spreader |
+| Pad far larger than its holes | ≥ 25× the hole area, and ≥ 2.0 mm² | A large land carries enough paste that what drains away does not starve the joint |
+
+Those defaults put the cut between a QFN/DFN heat pad and a discrete land (an SOIC land is ~0.9 mm²,
+an 1206 land ~1.9 mm²). Fabricators disagree about where exactly it sits, so pass your own
+`ViaInPadPolicy` to any of the judging methods:
+
+```java
+import com.deltaproto.deltagerber.dfm.ViaInPadGroup;
+import com.deltaproto.deltagerber.dfm.ViaInPadPolicy;
+
+// Stricter house rule: only a real via field, or a pad 50× its holes and at least 4 mm².
+ViaInPadPolicy strict = new ViaInPadPolicy(2, 50.0, 4.0);
+Boolean needsFill = spec.requiresFilledAndCappedVias(strict);
+
+for (ViaInPadGroup pad : spec.getViaInPadGroups()) {
+    System.out.printf("%s pad at (%.3f, %.3f): %.3f mm² %s, %d via(s) ⌀%.3f mm, %.1f× → %s%n",
+        pad.isTop() ? "top" : "bottom", pad.getPadCenterX(), pad.getPadCenterY(),
+        pad.getPadAreaMm2(), pad.getPadShape(), pad.getViaCount(), pad.getViaDiameterMm(),
+        pad.getPadToViaAreaRatio(),
+        pad.isLikelyThermal() ? "thermal, leave open" : "fill & cap");
+}
+```
+
+```
+top pad at (10.000, 10.000): 9.000 mm² R, 4 via(s) ⌀0.300 mm, 31.8× → thermal, leave open
+top pad at (20.000, 20.000): 0.503 mm² C, 1 via(s) ⌀0.300 mm, 7.1× → fill & cap
+```
+
+The pad area is the paste opening itself — the aperture as flashed (rotation and scale included) or
+the painted region, not its bounding box, which would overstate a round or obround land by a third.
+`getFilledAndCappedGroups()` and `getThermalGroups()` (both with a policy overload) split the list
+for you.
 
 #### Integrating into a calculator / quoting flow
 
@@ -280,10 +328,12 @@ public repo — keep them out of version control.
 BoardSpecification spec = new PcbAnalyzer().analyze(files);
 
 // Flag the extra process only on a positive result; treat null (unknown) as "no data",
-// not as a pass — the same way you would treat a missing paste layer.
-if (Boolean.TRUE.equals(spec.hasViaInPad())) {
+// not as a pass — the same way you would treat a missing paste layer. Key off the verdict, not
+// hasViaInPad(): a board whose only vias in pad are thermal fields needs no via fill.
+if (Boolean.TRUE.equals(spec.requiresFilledAndCappedVias())) {
     quote.requireProcess(Process.IPC_4761_TYPE_VII);   // filled & capped vias
-    quote.addNote(spec.getViaInPadCount() + " via(s) in pad on " + spec.getViaInPadSide());
+    quote.addNote(spec.getViaInPad().getFilledAndCappedGroups().size()
+            + " pad(s) with a via that must be plugged, on " + spec.getViaInPadSide());
 }
 ```
 
@@ -315,7 +365,8 @@ ViaInPadResult vip = ViaInPadDetector.detect(
     List.of(bottomPasteDoc),   // bottom-side paste GerberDocuments
     List.of(drillDoc));        // Excellon DrillDocuments (already in the Gerber coordinate frame)
 
-boolean needsViaFill = vip.hasViaInPad();
+boolean anyViaInPad  = vip.hasViaInPad();              // the geometric fact
+boolean needsViaFill = vip.requiresFilledAndCapped();  // the process verdict — quote off this
 ```
 
 > Cost note: at `AnalysisDepth.SPECIFICATION` the analyzer skips parsing layers that can't change

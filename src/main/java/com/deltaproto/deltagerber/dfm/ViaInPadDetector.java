@@ -33,8 +33,12 @@ import java.util.Map;
  * the thermal vias under a QFN/BGA pad — the classic case — and excludes an ordinary plated
  * through-hole, which has no paste around it.
  *
- * <p>A board with any via in pad must be built with a filled-and-capped via process
- * (IPC-4761 Type VII); {@link ViaInPadResult#hasViaInPad()} is the flag the calculator keys off.
+ * <p>Finding the holes is only half the answer. The result groups them by the pad they sit in
+ * ({@link ViaInPadGroup}), with that pad's area, so a via field under a QFN heat pad can be told
+ * apart from a lone via in an 0402 land: the first carries paste to spare and needs no capping, the
+ * second wicks the joint dry and forces a filled-and-capped via process (IPC-4761 Type VII).
+ * {@link ViaInPadResult#hasViaInPad()} is the geometric fact;
+ * {@link ViaInPadResult#requiresFilledAndCapped()} is the flag the calculator keys off.
  *
  * <p>The holes must be in the same coordinate frame as the paste. Both parsers normalise to mm, so
  * they already are unless the drill was exported on a different origin (some Altium flows) — use
@@ -80,19 +84,39 @@ public final class ViaInPadDetector {
                 }
                 boolean top = false;
                 boolean bottom = false;
+                List<Pad> in = null;
                 for (Pad pad : index.candidates(hit.getX(), hit.getY())) {
                     if (pad.contains(hit.getX(), hit.getY())) {
                         top |= pad.top;
                         bottom |= pad.bottom;
+                        (in == null ? in = new ArrayList<>() : in).add(pad);
                     }
                 }
-                if (top || bottom) {
-                    hits.add(new ViaInPad(hit.getX(), hit.getY(),
-                            hit.getTool().getDiameter(), top, bottom));
+                if (in != null) {
+                    // One ViaInPad per hole, shared by every pad it lands in, so a hole in a
+                    // top and a bottom pad is one hit in two groups rather than two hits.
+                    ViaInPad via = new ViaInPad(hit.getX(), hit.getY(),
+                            hit.getTool().getDiameter(), top, bottom);
+                    hits.add(via);
+                    for (Pad pad : in) {
+                        pad.vias.add(via);
+                    }
                 }
             }
         }
-        return new ViaInPadResult(hits);
+        return new ViaInPadResult(hits, groups(pads));
+    }
+
+    /** The pads that caught at least one hole, each measured, in the order the paste declared them. */
+    private static List<ViaInPadGroup> groups(List<Pad> pads) {
+        List<ViaInPadGroup> groups = new ArrayList<>();
+        for (Pad pad : pads) {
+            if (!pad.vias.isEmpty()) {
+                groups.add(new ViaInPadGroup(pad.area(), pad.centerX(), pad.centerY(), pad.shape(),
+                        pad.top, pad.bottom, pad.vias));
+            }
+        }
+        return groups;
     }
 
     /**
@@ -223,6 +247,7 @@ public final class ViaInPadDetector {
         private final double minY;
         private final double maxX;
         private final double maxY;
+        private final List<ViaInPad> vias = new ArrayList<>();
 
         Pad(Flash flash, boolean top, boolean bottom) {
             this.flash = flash;
@@ -259,6 +284,82 @@ public final class ViaInPadDetector {
             }
             return flash != null ? flashContains(flash, x, y) : regionContains(region, x, y);
         }
+
+        /**
+         * The opening's own area in mm² — the aperture's shape as flashed, or the painted polygon.
+         * Not the bounding box: on a rotated obround or a round pad the box overstates the paste by
+         * a third or more, and the area is what decides whether the pad is thermal.
+         */
+        double area() {
+            if (flash == null) {
+                return regionArea(region);
+            }
+            double scale = flash.getScale();
+            return apertureArea(flash.getAperture()) * (scale > 0 ? scale * scale : 1);
+        }
+
+        double centerX() {
+            return flash != null ? flash.getX() : (minX + maxX) / 2;
+        }
+
+        double centerY() {
+            return flash != null ? flash.getY() : (minY + maxY) / 2;
+        }
+
+        String shape() {
+            return flash != null ? flash.getAperture().getTemplateCode() : "region";
+        }
+    }
+
+    /** Area of an aperture in its own frame, in mm². */
+    private static double apertureArea(Aperture aperture) {
+        if (aperture instanceof CircleAperture circle) {
+            double r = circle.getRadius();
+            return Math.PI * r * r;
+        }
+        if (aperture instanceof RectangleAperture rect) {
+            return rect.getWidth() * rect.getHeight();
+        }
+        if (aperture instanceof ObroundAperture ob) {
+            // A stadium: the full rectangle less what the four rounded corners cut away.
+            double r = Math.min(ob.getWidth(), ob.getHeight()) / 2;
+            return ob.getWidth() * ob.getHeight() - (4 - Math.PI) * r * r;
+        }
+        if (aperture instanceof PolygonAperture poly) {
+            int n = poly.getNumVertices();
+            if (n < 3) {
+                return 0;
+            }
+            double r = poly.getOuterDiameter() / 2;
+            return 0.5 * n * r * r * Math.sin(2 * Math.PI / n);
+        }
+        // Macro / block apertures: fall back to the bounds, as the containment test does. This
+        // overstates a concave macro pad, which can only ever call it thermal too readily.
+        BoundingBox b = aperture.getBoundingBox();
+        return Math.max(b.getMaxX() - b.getMinX(), 0) * Math.max(b.getMaxY() - b.getMinY(), 0);
+    }
+
+    /**
+     * Area of a painted region in mm², by the shoelace formula over its flattened contours. The
+     * signed areas are summed before taking the magnitude, so a contour wound against the outline —
+     * a cut-out — subtracts, matching the even-odd rule {@link #regionContains} tests with.
+     */
+    private static double regionArea(Region region) {
+        double sum = 0;
+        for (Contour contour : region.getContours()) {
+            double[][] poly = flatten(contour);
+            sum += signedArea(poly[0], poly[1]);
+        }
+        return Math.abs(sum);
+    }
+
+    private static double signedArea(double[] xs, double[] ys) {
+        double sum = 0;
+        int n = xs.length;
+        for (int i = 0, j = n - 1; i < n; j = i++) {
+            sum += (xs[j] + xs[i]) * (ys[j] - ys[i]);
+        }
+        return sum / 2;
     }
 
     /** Whether {@code (x, y)} lies inside a flashed aperture, honouring the flash's transform. */

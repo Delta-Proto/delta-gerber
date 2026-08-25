@@ -2,6 +2,8 @@ package com.deltaproto.deltagerber.spec;
 
 import com.deltaproto.deltagerber.classify.LayerFunction;
 import com.deltaproto.deltagerber.classify.LayerSide;
+import com.deltaproto.deltagerber.dfm.ViaInPadGroup;
+import com.deltaproto.deltagerber.dfm.ViaInPadPolicy;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 
@@ -227,10 +229,14 @@ public final class BoardSpecification {
     }
 
     /**
-     * Whether the board has any via in pad — a drilled hole inside a surface-mount pad, which
-     * forces a filled-and-capped via process (IPC-4761 Type VII). {@code null} when it could not be
-     * determined: the set has no paste layer, no drill, or was re-derived from persisted layer
-     * measurements without re-running detection. See {@link #getViaInPad()} for the detail.
+     * Whether the board has any via in pad — a drilled hole inside a surface-mount pad. {@code null}
+     * when it could not be determined: the set has no paste layer, no drill, or was re-derived from
+     * persisted layer measurements without re-running detection. See {@link #getViaInPad()} for the
+     * detail.
+     *
+     * <p>This is the geometric fact, not the process verdict: a via field under a QFN heat pad
+     * answers {@code TRUE} here and still needs no via fill. Quote off
+     * {@link #requiresFilledAndCappedVias()}.
      */
     public Boolean hasViaInPad() {
         return viaInPad == null ? null : viaInPad.hasViaInPad();
@@ -250,8 +256,36 @@ public final class BoardSpecification {
     }
 
     /**
-     * The full via-in-pad detection result (every offending hole), or {@code null} when detection
-     * was not run for this specification.
+     * Whether any via in pad actually forces a filled-and-capped via process (IPC-4761 Type VII),
+     * which raises fabrication cost and lead time. {@code null} when via-in-pad was not determined
+     * (see {@link #hasViaInPad()}).
+     *
+     * <p>It is {@code FALSE} while {@link #hasViaInPad()} is {@code TRUE} whenever every offending
+     * pad is judged thermal — a via field, or a land large enough relative to its holes that the
+     * paste it carries survives what drains away. {@link ViaInPadGroup} holds the per-pad evidence
+     * and {@link ViaInPadPolicy} the thresholds; use
+     * {@link #requiresFilledAndCappedVias(ViaInPadPolicy)} to apply your own.
+     */
+    public Boolean requiresFilledAndCappedVias() {
+        return requiresFilledAndCappedVias(ViaInPadPolicy.DEFAULT);
+    }
+
+    /** As {@link #requiresFilledAndCappedVias()}, judged by {@code policy}. */
+    public Boolean requiresFilledAndCappedVias(ViaInPadPolicy policy) {
+        return viaInPad == null ? null : viaInPad.requiresFilledAndCapped(policy);
+    }
+
+    /**
+     * The vias in pad grouped by the pad they sit in, each with its area, via count and hole
+     * diameter — empty when there are none or via-in-pad was not determined.
+     */
+    public List<ViaInPadGroup> getViaInPadGroups() {
+        return viaInPad == null ? List.of() : viaInPad.getGroups();
+    }
+
+    /**
+     * The full via-in-pad detection result (every offending hole, and the pads they sit in), or
+     * {@code null} when detection was not run for this specification.
      */
     public ViaInPadResult getViaInPad() {
         return viaInPad;

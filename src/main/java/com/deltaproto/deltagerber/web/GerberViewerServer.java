@@ -18,6 +18,7 @@ import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
 import com.deltaproto.deltagerber.renderer.svg.SilkscreenColor;
 import com.deltaproto.deltagerber.renderer.svg.SoldermaskColor;
 import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
+import com.deltaproto.deltagerber.dfm.ViaInPadGroup;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.spec.AnalyzedLayer;
 import com.deltaproto.deltagerber.spec.BoardSpecification;
@@ -482,11 +483,37 @@ public class GerberViewerServer {
             json.append(",\"hasDrill\":").append(spec.hasDrill());
             json.append(",\"hasOutline\":").append(spec.hasOutline());
 
-            // Via in pad: a drilled hole inside an SMD pad forces a filled-and-capped via process
-            // (IPC-4761 Type VII). null means the set had no paste or no drill to judge from.
+            // Via in pad: a drilled hole inside an SMD pad. null means the set had no paste or no
+            // drill to judge from. hasViaInPad is the geometric fact; requiresFilledAndCappedVias
+            // is the process verdict (IPC-4761 Type VII), which a via field under a thermal pad
+            // does not trip — the per-pad evidence for that call is in viaInPadPads.
             json.append(",\"hasViaInPad\":").append(spec.hasViaInPad());
             json.append(",\"viaInPadCount\":").append(spec.getViaInPadCount());
             json.append(",\"viaInPadSide\":").append(escapeJson(name(spec.getViaInPadSide())));
+            json.append(",\"requiresFilledAndCappedVias\":").append(spec.requiresFilledAndCappedVias());
+            json.append(",\"viaInPadPads\":[");
+            List<ViaInPadGroup> groups = spec.getViaInPadGroups();
+            for (int i = 0; i < groups.size(); i++) {
+                ViaInPadGroup g = groups.get(i);
+                if (i > 0) {
+                    json.append(',');
+                }
+                json.append("{\"x\":").append(number(g.getPadCenterX(), 4));
+                json.append(",\"y\":").append(number(g.getPadCenterY(), 4));
+                json.append(",\"side\":").append(escapeJson(g.isTop() ? "TOP" : "BOTTOM"));
+                json.append(",\"padShape\":").append(escapeJson(g.getPadShape()));
+                json.append(",\"padAreaMm2\":").append(number(g.getPadAreaMm2(), 4));
+                json.append(",\"viaCount\":").append(g.getViaCount());
+                json.append(",\"viaDiameterMm\":").append(number(g.getViaDiameterMm(), 4));
+                // Infinite when a hole has no measurable diameter — not a JSON number, so null.
+                double ratio = g.getPadToViaAreaRatio();
+                json.append(",\"padToViaAreaRatio\":")
+                        .append(Double.isFinite(ratio) ? number(ratio, 2) : "null");
+                json.append(",\"thermal\":").append(g.isLikelyThermal());
+                json.append(",\"requiresFilledAndCapped\":").append(g.requiresFilledAndCapped());
+                json.append('}');
+            }
+            json.append(']');
 
             // Gerber X2 file attributes: what the CAD tool told us about the job itself.
             json.append(",\"generationSoftware\":").append(escapeJson(
