@@ -47,4 +47,22 @@ public enum LayerFunction {
     public boolean isCopper() {
         return this == COPPER;
     }
+
+    /**
+     * Whether this file describes something that ends up <em>on</em> the finished board, and so
+     * occupies a z-position in the stack-up: copper, soldermask, silkscreen and paste.
+     *
+     * <p>False for everything that describes a process or a drawing rather than a material — every
+     * drill, the rout, the outline, keep-outs, score lines and the two drawing layers. They are
+     * real enough, but they have no place in a stack-up: a drill passes through it and an outline
+     * bounds it.
+     *
+     * <p>Note that this is about <em>files</em>. Core and prepreg occupy a z-position too, and no
+     * file describes them — only a Gerber job file's {@code MaterialStackup} does. See
+     * {@link com.deltaproto.deltagerber.spec.StackFunction}, which is the vocabulary for the
+     * physical stack and deliberately a separate one.
+     */
+    public boolean isPhysical() {
+        return this == COPPER || this == SOLDERMASK || this == SILKSCREEN || this == PASTE;
+    }
 }

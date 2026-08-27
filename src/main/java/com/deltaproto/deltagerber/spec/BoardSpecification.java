@@ -48,13 +48,15 @@ public final class BoardSpecification {
     private final boolean hasCopper;
     private final boolean hasOutline;
     private final ViaInPadResult viaInPad;
+    private final BoardStack stack;
     private final List<AnalyzedLayer> layers;
 
     private BoardSpecification(Double sizeXMm, Double sizeYMm, BoundingBox bounds, Integer copperLayerCount,
                                BoardSide solderMaskSide, BoardSide silkscreenSide, BoardSide stencilSide,
                                Double minTrackWidthUm, Double minDrillDiameterMm,
                                boolean hasDrill, boolean hasCopper, boolean hasOutline,
-                               ViaInPadResult viaInPad, List<AnalyzedLayer> layers) {
+                               ViaInPadResult viaInPad, BoardStack stack,
+                               List<AnalyzedLayer> layers) {
         this.sizeXMm = sizeXMm;
         this.sizeYMm = sizeYMm;
         this.bounds = bounds;
@@ -68,6 +70,7 @@ public final class BoardSpecification {
         this.hasCopper = hasCopper;
         this.hasOutline = hasOutline;
         this.viaInPad = viaInPad;
+        this.stack = stack;
         this.layers = layers;
     }
 
@@ -78,9 +81,12 @@ public final class BoardSpecification {
      * re-derive the specification without the files. Via-in-pad is a geometric relationship between
      * two layers, not a per-layer measurement, so it cannot be re-derived here — it is left
      * {@linkplain #hasViaInPad() unknown}; use {@link #from(List, ViaInPadResult)} to supply it.
+     * The stack is {@linkplain #getStack() estimated} from the layers for the same reason: only a
+     * job file or an IPC-2581 file states the real one, so pass a stored one to
+     * {@link #from(List, ViaInPadResult, BoardStack)}.
      */
     public static BoardSpecification from(List<AnalyzedLayer> layers) {
-        return from(layers, null);
+        return from(layers, null, null);
     }
 
     /**
@@ -89,7 +95,28 @@ public final class BoardSpecification {
      * a stored result). A {@code null} result leaves via-in-pad {@linkplain #hasViaInPad() unknown}.
      */
     public static BoardSpecification from(List<AnalyzedLayer> layers, ViaInPadResult viaInPad) {
+        return from(layers, viaInPad, null);
+    }
+
+    /**
+     * As {@link #from(List, ViaInPadResult)}, with the physical stack the caller already has —
+     * {@link BoardStack#from(com.deltaproto.deltagerber.model.gerber.GerberJobDocument) read} from
+     * a job file, {@link BoardStack#from(com.deltaproto.deltagerber.model.ipc2581.Ipc2581StackupDocument)
+     * from an IPC-2581 file}, or {@link BoardStack#of stored} and being re-derived.
+     *
+     * <p>The two halves of a stack are resolved separately, because a file may state one without
+     * the other. Layers are {@linkplain BoardStack#estimate estimated} from {@code layers} when the
+     * stack has none — what every set without a job file gets. A stated
+     * {@linkplain BoardStack#getBoardThicknessPm() board thickness} is kept either way, so a file
+     * that gives a total and no stack-up still yields the total.
+     */
+    public static BoardSpecification from(List<AnalyzedLayer> layers, ViaInPadResult viaInPad,
+                                          BoardStack stack) {
         List<AnalyzedLayer> safe = layers == null ? List.of() : List.copyOf(layers);
+        BoardStack given = stack == null ? BoardStack.empty() : stack;
+        BoardStack resolvedStack = given.getEntries().isEmpty()
+                ? BoardStack.of(BoardStack.estimate(safe).getEntries(), given.getBoardThicknessPm())
+                : given;
         BoundingBox bounds = boardBounds(safe);
         boolean empty = safe.isEmpty();
 
@@ -106,7 +133,7 @@ public final class BoardSpecification {
                 safe.stream().anyMatch(l -> l.getFunction().isDrill()),
                 safe.stream().anyMatch(l -> l.getFunction().isCopper()),
                 safe.stream().anyMatch(l -> l.getFunction() == LayerFunction.OUTLINE),
-                viaInPad, safe);
+                viaInPad, resolvedStack, safe);
     }
 
     /**
@@ -291,6 +318,52 @@ public final class BoardSpecification {
         return viaInPad;
     }
 
+    /**
+     * The board's physical build-up, from the top of the board down: copper, the dielectrics
+     * between it, and the mask, legend and paste on the outside. Empty when the set has nothing
+     * that occupies a z-position at all.
+     *
+     * <p>Read from the {@code MaterialStackup} of a Gerber job file when the set ships one — the
+     * only place a Gerber set states its materials and their thicknesses. Otherwise every entry is
+     * {@linkplain StackEntry#isEstimated() estimated}: the layers the set does have, in the right
+     * order, with no dielectrics and no thicknesses. See {@link BoardStack}.
+     */
+    public List<StackEntry> getStack() {
+        return stack.getEntries();
+    }
+
+    /** The stack and the board's thickness together, as one value. */
+    public BoardStack getBoardStack() {
+        return stack;
+    }
+
+    /**
+     * The finished board's thickness in picometres, or {@code null} when nothing states one —
+     * which is the common case, since no Gerber file carries a thickness.
+     *
+     * <p>The figure a Gerber job file, an IPC-2581 file or a stored stack declares; failing that,
+     * the sum of the stack's own layers. Note that this is answered even when the stack itself is
+     * {@linkplain #isStackEstimated() estimated}: an EAGLE job file states the board's thickness
+     * and no stack-up at all, and an ODB++ archive's {@code .board_thickness} passed through
+     * {@link BoardStack#of} behaves the same way.
+     */
+    public Long getBoardThicknessPm() {
+        return stack.getBoardThicknessPm();
+    }
+
+    /** {@link #getBoardThicknessPm()} in millimetres, or null when nothing states one. */
+    public Double getBoardThicknessMm() {
+        return stack.getBoardThicknessMm();
+    }
+
+    /**
+     * Whether {@link #getStack()} was synthesised from the artwork rather than read from a job
+     * file's stack-up. {@code null} when the stack is empty, and so neither.
+     */
+    public Boolean isStackEstimated() {
+        return stack.getEntries().isEmpty() ? null : stack.isEstimated();
+    }
+
     /** Every analysed file, in the order given. */
     public List<AnalyzedLayer> getLayers() {
         return layers;
@@ -298,7 +371,9 @@ public final class BoardSpecification {
 
     @Override
     public String toString() {
-        return String.format("BoardSpecification[%s x %s mm, %s copper layers, minTrack=%sum, minDrill=%smm]",
-                sizeXMm, sizeYMm, copperLayerCount, minTrackWidthUm, minDrillDiameterMm);
+        return String.format("BoardSpecification[%s x %s mm, %s copper layers, %s mm thick, "
+                        + "minTrack=%sum, minDrill=%smm]",
+                sizeXMm, sizeYMm, copperLayerCount, getBoardThicknessMm(), minTrackWidthUm,
+                minDrillDiameterMm);
     }
 }

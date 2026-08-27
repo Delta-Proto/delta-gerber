@@ -111,6 +111,59 @@ starve the joint. Either makes the pad thermal and needs no cap; anything else �
 fabricators disagree about exactly where it sits, so every judging method takes a `ViaInPadPolicy`
 overload.
 
+`spec.BoardStack` is the board's physical build-up **and** its finished thickness — one value,
+because the two come from the same file and a total taken from a different file than the layers is a
+bug. Its entries are `spec.StackEntry` rows (dense ordinal, `StackFunction`, name, thickness in
+picometres, material, `estimated`), surfaced as `BoardSpecification.getStack()`, with the total on
+`getBoardThicknessPm()`/`Mm()`. Four ways to build one: `from(GerberJobDocument)` (a `.gbrjob`'s
+`MaterialStackup` plus `GeneralSpecs.BoardThickness`), `from(Ipc2581StackupDocument)`, `of(entries,
+thicknessPm)` for persisted rows or a format we do not parse (ODB++ — pass its matrix rows and
+`.board_thickness`), and `estimate(layers)` from the classified layers, which is what most sets get.
+An estimated stack has the right layers in the right order (legend, paste, mask, copper top → inner
+by number → bottom, then out again), no dielectrics and no thickness anywhere.
+
+**Either half can be missing and both cases are real**, so they resolve separately: a file that
+states a thickness but no stack-up (EAGLE, ODB++) still answers `getBoardThicknessPm()` while the
+layers are estimated; a KiCad 6/7 stack-up states layers with no thicknesses and the total still
+comes from `GeneralSpecs`. Where nothing declares a total, it is the sum of the entries that state
+one. `PcbAnalyzer` picks up a `.gbrjob` or an IPC-2581 file in the set automatically and prefers
+whichever states more.
+
+`parser.Ipc2581StackupParser` reads **only** the stack-up of an IPC-2581 file (`.cvg`/`.xml`) —
+`CadHeader/@units`, the `Spec` material names, the `Layer` functions and the `Stackup` — as a StAX
+stream that stops at `</Stackup>`, which sits in the first ~2% of the document. These files run to
+158 MB and the stack-up is a few kB. It is the only format we read that states a thickness per layer
+*and* for the board; an IPC-2581 stack-up group also lists documentation layers (assembly, courtyard,
+drill guide) with `thickness="0"`, and `Ipc2581StackupDocument.Function.isPhysical()` is what keeps
+them out of the stack.
+
+Thickness is `Long` picometres, never a `double` of mm: 1 mil = 25 400 000 pm and 1 µin = 25 400 pm
+exactly, so nominal values in either unit system are integers and a stack of them sums exactly (real
+KiCad boards add back up to their declared 1.6 mm). Job files quote mm; the conversion happens once,
+in `BoardStack`.
+
+`StackFunction` is a **separate vocabulary** from `classify.LayerFunction` on purpose — the latter is
+the role a *file* plays, and a dielectric is not a file. `LayerFunction.isPhysical()` (copper, mask,
+silkscreen, paste) is the bridge: does this file occupy a z-position. There is **no CORE or PREPREG**
+and the split is never inferred: the job file format has one `Dielectric` type and no field that
+separates them, and across a corpus of 29 real `.gbrjob` files not one names either. Which layers a
+fabricator builds from core and which from prepreg is the fabricator's call, and it is not in the
+files. `OTHER` exists for a type we do not model (a flex coverlay, say) — the entry keeps its place,
+name and thickness, so the stack still adds up to the board.
+
+IPC-2581 *does* have `DIELCORE`/`DIELPREG` — and cannot be trusted on it: the Altium exports in the
+corpus label every dielectric `DIELCORE`, including the ones whose `Spec` material is `PP-001`. The
+raw value stays on `Ipc2581StackupDocument.StackupLayer.rawFunction()` and the material name is
+carried through, so a caller who wants to make that call still can.
+
+`spec/JobFileCorpusTest` pins what those 29 real files actually contain: exactly five `Type` values
+(Copper, Dielectric, SolderMask, Legend, SolderPaste) and four stack shapes; copper entries always
+equal `LayerNumber` with one fewer dielectric; stated thicknesses sum to the declared
+`BoardThickness` exactly, on every board. KiCad writes a stack-up from v6 but thicknesses only from
+v8; **EAGLE/Fusion writes no stack-up at all** and puts the general specs under `Overall` (with
+`Name.ProjectId` the other way round), which `GerberJobParser` reads as a fallback — without it
+those files are not even recognised as job files.
+
 Pass `AnalysisDepth.SPECIFICATION` when you only want the specification: layers whose geometry
 cannot change it (silkscreen above all) are then classified but never parsed. Parsing a Gerber
 costs memory proportional to what it draws — a 27 MB silkscreen needs ~1 GB of heap to build and

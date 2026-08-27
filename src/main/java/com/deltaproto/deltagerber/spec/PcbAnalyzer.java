@@ -16,8 +16,12 @@ import com.deltaproto.deltagerber.model.gerber.aperture.CircleAperture;
 import com.deltaproto.deltagerber.model.gerber.operation.Arc;
 import com.deltaproto.deltagerber.model.gerber.operation.Draw;
 import com.deltaproto.deltagerber.model.gerber.operation.GraphicsObject;
+import com.deltaproto.deltagerber.model.gerber.GerberJobDocument;
+import com.deltaproto.deltagerber.model.ipc2581.Ipc2581StackupDocument;
 import com.deltaproto.deltagerber.parser.ExcellonParser;
+import com.deltaproto.deltagerber.parser.GerberJobParser;
 import com.deltaproto.deltagerber.parser.GerberParser;
+import com.deltaproto.deltagerber.parser.Ipc2581StackupParser;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -115,7 +119,50 @@ public class PcbAnalyzer {
             layers.add(measure(files.get(i), classifications.get(i), outline, usableOutline, depth,
                     setHasDrill, viaInPad));
         }
-        return BoardSpecification.from(layers, viaInPad.detect());
+        return BoardSpecification.from(layers, viaInPad.detect(), stackOf(files));
+    }
+
+    /**
+     * The physical stack-up the set itself states, or {@link BoardStack#empty()} when nothing in it
+     * does — which is the common case, and leaves the specification to
+     * {@linkplain BoardStack#estimate estimate} the layers from the artwork.
+     *
+     * <p>Two files can carry one, and an IPC-2581 file is the better of the two when a set has
+     * both: it states a thickness per layer where a Gerber job file often states none. Neither is
+     * looked for anywhere else in the set — every other file is artwork or a drill program, and
+     * none of them says anything about materials.
+     */
+    private static BoardStack stackOf(List<PcbFile> files) {
+        BoardStack best = BoardStack.empty();
+        for (PcbFile file : files) {
+            BoardStack stack = stackOf(file);
+            if (!stack.getEntries().isEmpty() && stack.getBoardThicknessPm() != null) {
+                return stack;
+            }
+            if (best.isEmpty() || (best.getEntries().isEmpty() && !stack.getEntries().isEmpty())) {
+                best = stack.isEmpty() ? best : stack;
+            }
+        }
+        return best;
+    }
+
+    private static BoardStack stackOf(PcbFile file) {
+        String name = file.getFileName();
+        String content = file.getContent();
+        if (name == null || content == null || content.isBlank()) {
+            return BoardStack.empty();
+        }
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        if (lower.endsWith(".gbrjob")) {
+            GerberJobDocument job = new GerberJobParser().parse(content);
+            return BoardStack.from(job);
+        }
+        if ((lower.endsWith(".cvg") || lower.endsWith(".xml"))
+                && Ipc2581StackupParser.looksLikeIpc2581(content)) {
+            Ipc2581StackupDocument stackup = new Ipc2581StackupParser().parse(content);
+            return BoardStack.from(stackup);
+        }
+        return BoardStack.empty();
     }
 
     /**

@@ -117,6 +117,12 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
   Only the second forces a filled-and-capped via process (**IPC-4761 Type VII**) and its cost and
   lead time. Surfaced as `spec.hasViaInPad()` / `requiresFilledAndCappedVias()` /
   `getViaInPadGroups()`, or standalone via `dfm.ViaInPadDetector`
+- **Physical stack-up** (`spec.getStack()`) — the board top to bottom as a list of `StackEntry`:
+  copper, dielectric, mask, legend and paste, each with its thickness in picometres, plus the
+  finished **board thickness** (`spec.getBoardThicknessPm()`). Read from a `.gbrjob`'s
+  `MaterialStackup` or from an **IPC-2581** file's `Stackup` (`Ipc2581StackupParser`, streamed and
+  stopped at `</Stackup>` so a 158 MB file costs milliseconds), and otherwise estimated from the
+  layers the set does have
 - Drill/Gerber origin auto-alignment (`DrillGerberAlignment`) recovers an exact offset when the NC
   drill was exported on a different origin than the copper (e.g. some Altium flows), so holes and
   pads share one coordinate space before any analysis
@@ -372,6 +378,90 @@ boolean needsViaFill = vip.requiresFilledAndCapped();  // the process verdict �
 > Cost note: at `AnalysisDepth.SPECIFICATION` the analyzer skips parsing layers that can't change
 > the spec (a large silkscreen, for instance) but still parses the small paste layer when a drill
 > is present, so via-in-pad is reported at both depths.
+
+### Physical Stack-up
+
+`spec.getStack()` is the board from the top down — one `StackEntry` per physical layer, ordinals
+dense from 0. When the set ships a Gerber job file, this is the build the CAD tool actually
+specified: the dielectrics between the copper, their materials and every thickness. That is the
+only place a Gerber set states any of it.
+
+```java
+BoardSpecification spec = new PcbAnalyzer().analyze(files);   // include the .gbrjob in `files`
+
+for (StackEntry layer : spec.getStack()) {
+    System.out.printf("%2d %-10s %-14s %s%n", layer.getOrdinal(), layer.getFunction(),
+            layer.getName(), layer.getThicknessMm());
+}
+```
+
+```
+ 0 SILKSCREEN Top Silk Screen  null
+ 1 PASTE      Top Solder Paste null
+ 2 SOLDERMASK Top Solder Mask  0.01
+ 3 COPPER     F.Cu             0.035
+ 4 DIELECTRIC F.Cu/In1.Cu      0.1
+ 5 COPPER     In1.Cu           0.035
+ 6 DIELECTRIC In1.Cu/In2.Cu    1.24
+ 7 COPPER     In2.Cu           0.035
+ 8 DIELECTRIC In2.Cu/B.Cu      0.1
+ 9 COPPER     B.Cu             0.035
+10 SOLDERMASK Bottom Solder Mask 0.01
+…
+```
+
+### Where a stack-up comes from
+
+| Source | Layers | Per-layer thickness | Board thickness |
+|---|---|---|---|
+| IPC-2581 (`.cvg`, `.xml`) | yes, with function and material | yes | `Stackup/@overallThickness` |
+| `.gbrjob`, KiCad 8+ | yes | yes | `GeneralSpecs.BoardThickness` |
+| `.gbrjob`, KiCad 6–7 | yes | no | `GeneralSpecs.BoardThickness` |
+| `.gbrjob`, EAGLE/Fusion | no | no | `Overall.BoardThickness` |
+| Gerber artwork alone | estimated | no | not known |
+| Anything else (ODB++, a fab note) | pass it in via `BoardStack.of(entries, thicknessPm)` | | |
+
+`PcbAnalyzer` picks up a `.gbrjob` or an IPC-2581 file in the set automatically and prefers whichever
+states more. The board thickness is answered whenever *anything* states it — including when the
+layers themselves had to be estimated, which is what an EAGLE job file or an ODB++
+`.board_thickness` gives you:
+
+```java
+Long   thicknessPm = spec.getBoardThicknessPm();   // 1_600_000_000 — null when nothing states one
+Double thicknessMm = spec.getBoardThicknessMm();   // 1.6
+```
+
+Dielectrics are reported as `DIELECTRIC`, not split into core and prepreg: the job file format has
+one `Dielectric` type and no field that separates them, and across a corpus of 29 real job files not
+one names either. Which layers a fabricator builds from core and which from prepreg is theirs to
+decide, and it is not in the files.
+
+Thickness is a `Long` count of **picometres** (`getThicknessPm()`), because 1 mil = 25 400 000 pm
+and 1 µin = 25 400 pm exactly: nominal values are integers in either unit system and a stack of
+them sums without drift — the four-layer board above adds up to exactly 1.6 mm. `getThicknessMm()`
+is there when you want the library's usual unit.
+
+Most sets have no job file. Those still get a stack, with `isEstimated()` set on every entry: the
+layers the set does have, in the order a board is built, with no dielectrics and no thicknesses —
+no Gerber file says what is between the copper, let alone how thick. The same applies to a set whose
+job file carries no stack-up: KiCad states one from version 6 on (thicknesses from version 8), while
+EAGLE/Fusion states none.
+
+```java
+Boolean estimated = spec.isStackEstimated();   // null when the set has no physical layers at all
+```
+
+`StackFunction` is deliberately its own vocabulary, separate from `classify.LayerFunction`: a core
+and a prepreg are layers of the board that no file describes, and a drill file is a file that is no
+layer of the board. `LayerFunction.isPhysical()` is the bridge — true exactly for the file roles
+that occupy a z-position.
+
+Rebuilding a spec from persisted measurements takes the stack back the same way via-in-pad does,
+since neither can be re-derived from per-layer measurements alone:
+
+```java
+BoardSpecification spec = BoardSpecification.from(storedLayers, storedViaInPad, storedStack);
+```
 
 ### Realistic PCB Rendering
 
