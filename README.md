@@ -106,6 +106,21 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
   an all-layers underlay so off-board annotations (drill charts, stackup tables, fab
   notes) stay visible; scales to dense multi-layer boards via a raster silhouette path
 
+### STEP / 3D Export
+- **Board outline as a STEP solid** (`renderer.step.StepExporter`) — the resolved board edge
+  extruded to a finished thickness and written as an ISO 10303-21 (AP214) B-rep, ready to drop
+  into an enclosure design in any MCAD tool
+- Uses the same outline the realistic view is clipped to: a real profile layer when the set ships
+  one (internal cut-outs and all), otherwise the silhouette derived from the copper
+- **Drilled holes included** — mounting holes, vias and slots are subtracted from the solid, and
+  because a hole is subtracted whether or not it lies inside the board, the **mouse bites** on a
+  break-off tab scallop the board edge just as the router leaves them
+- **`TOP` and `BOTTOM` written on the two faces** as engraving-style annotation curves (the
+  underside mirrored, so it reads from below) — a bare silhouette gives no other clue which face
+  is which. They are a separate wireframe representation and leave the solid untouched
+- Thickness defaults to 1.6 mm — the ordinary FR-4 board — and is caller-settable; a set that
+  ships a `.gbrjob` or IPC-2581 stack-up can pass its declared `getBoardThicknessMm()`
+
 ### Board Analysis & DFM
 - `PcbAnalyzer` reduces a whole folder of Gerber + drill files to one `BoardSpecification`:
   board size, copper layer count, soldermask / silkscreen / stencil sides, minimum track width
@@ -136,6 +151,7 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
 - Interactive pan/zoom with mouse wheel and drag
 - Three visualization modes: All Layers, Board Top, Board Bottom
 - PNG Top/Bottom export of the realistic view
+- STEP export of the board outline, with an editable board thickness (default 1.6 mm)
 - Warnings tab listing per-file parse warnings (disabled when there are none)
 - Layer type auto-detection from filename and content analysis
 - Layer type dropdowns for manual override
@@ -538,6 +554,55 @@ double pxPerMm = r.pxPerMm;   // e.g. overlay a 10 mm grid behind the board
 Files.write(Path.of("board-top.png"), r.png);
 ```
 
+### STEP Export (board outline as a 3D solid)
+
+The board edge — whether it came from a profile layer or was derived from the copper — extruded
+into a solid and written as an ISO 10303-21 (STEP AP214) file, for an enclosure designer to drop
+into CAD.
+
+```java
+String step = new StepExporter()
+    .setProductName("my-board")
+    .setThicknessMm(1.6)          // the default; nothing in a Gerber file states thickness
+    .export(layers);
+
+Files.writeString(Path.of("my-board.step"), step);
+```
+
+The solid keeps the Gerber frame's X/Y in millimetres — so it lines up with the drill hits,
+component placements and rendered views the library reports — and occupies z ∈ [0, thickness].
+Internal cut-outs carried by the profile layer come through as holes, and so does everything the
+set drills: mounting holes, vias, slots, and the mouse-bite perforations that straddle the board
+edge, which come out as scalloped notches in the outline. Arcs are flattened to 0.01 mm, so a
+rounded corner is faceted rather than a cylinder.
+
+The words `TOP` and `BOTTOM` are written across the two faces so the part is not ambiguous once
+it is in an assembly — annotation curves in their own representation, so the solid is exactly what
+it would be without them. Both extras can be switched off:
+
+```java
+new StepExporter()
+    .setIncludeDrillHoles(false)   // the bare outline, no holes and no mouse bites
+    .setLabelSides(false)          // no TOP / BOTTOM lettering
+    .export(layers);
+```
+
+If the set declares its own thickness, use it instead of the default:
+
+```java
+BoardSpecification spec = new PcbAnalyzer().analyze(files);
+Double declared = spec.getBoardThicknessMm();     // null when nothing in the set states one
+String step = new StepExporter()
+    .setThicknessMm(declared != null ? declared : StepExporter.DEFAULT_THICKNESS_MM)
+    .export(layers);
+```
+
+Over HTTP, the viewer serves the same export at
+`POST /api/gerber/step?thickness=1.6&name=board&drills=true&labels=true`,
+and a host application can call `GerberViewerServer.exportStep(body, thicknessMm, name)` with the
+viewer's own request body. A set with neither a profile layer nor copper has no board edge: the
+endpoint answers `422` and the method returns `null`.
+
 ## Aperture Visual Test
 
 The library includes a comprehensive visual test catalog with 127 test cases covering all aperture types, macros, regions, polarity, transforms, and legacy format support.
@@ -550,6 +615,7 @@ The library includes a comprehensive visual test catalog with 127 test cases cov
 - `src/main/java/com/deltaproto/deltagerber/lexer` — Tokenizer for Gerber files
 - `src/main/java/com/deltaproto/deltagerber/model` — Data model for Gerber/drill documents
 - `src/main/java/com/deltaproto/deltagerber/renderer/svg` — SVG rendering engine
+- `src/main/java/com/deltaproto/deltagerber/renderer/step` — STEP (ISO 10303-21) solid export
 - `src/main/java/com/deltaproto/deltagerber/web` — Web viewer server
 - `src/main/resources/web` — Web viewer HTML/CSS/JS
 - `testdata` — Sample Gerber projects for testing

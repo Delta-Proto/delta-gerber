@@ -620,6 +620,62 @@ public class MultiLayerSVGRenderer {
     private static final int MAX_THUMBNAIL_DIMENSION_PX = 1024;
 
     /**
+     * Resolve the board edge from a layer set — the one place the choice between the two
+     * sources is made.
+     *
+     * <p>A dedicated profile layer wins: its draws, arcs and regions are chained into closed
+     * loops by {@link #extractOutlinePath}, cut-outs included, and the result is read under
+     * the even-odd rule. Without one, the edge is <em>derived</em> from the silhouette of the
+     * copper and soldermask ({@link OutlineDeriver}) — an approximation of the routed edge,
+     * outset by the clearance copper keeps from it, read under the nonzero rule.
+     *
+     * <p>Both {@link #renderRealistic} and
+     * {@link com.deltaproto.deltagerber.renderer.step.StepExporter} go through here, so the
+     * board you see rendered is the board you get extruded.
+     *
+     * @param layers the whole set — layer types decide what is profile, copper and mask
+     * @return the resolved outline, or {@link BoardOutline#none()} when the set has neither a
+     *         profile layer nor any copper to derive an edge from
+     */
+    public BoardOutline resolveBoardOutline(List<Layer> layers) {
+        if (layers == null || layers.isEmpty()) return BoardOutline.none();
+
+        Layer outlineLayer = null;
+        List<GerberDocument> silhouetteDocs = new ArrayList<>();
+        for (Layer layer : layers) {
+            switch (layer.getLayerType()) {
+                case OUTLINE -> {
+                    if (outlineLayer == null && layer.isGerber() && layer.getGerberDoc() != null) {
+                        outlineLayer = layer;
+                    }
+                }
+                // Everything the board is made of contributes to the silhouette: outer copper,
+                // the inner pours a realistic view never draws, and the soldermask sheet.
+                case COPPER_TOP, COPPER_BOTTOM, COPPER_INNER, SOLDERMASK_TOP, SOLDERMASK_BOTTOM -> {
+                    if (layer.isGerber() && layer.getGerberDoc() != null) {
+                        silhouetteDocs.add(layer.getGerberDoc());
+                    }
+                }
+                default -> { }
+            }
+        }
+
+        if (outlineLayer != null) {
+            String path = extractOutlinePath(outlineLayer.getGerberDoc(),
+                svgOptions.copy().setFlipY(flipY));
+            if (path != null && !path.isBlank()) {
+                return new BoardOutline(path, true);
+            }
+        }
+        if (silhouetteDocs.isEmpty()) return BoardOutline.none();
+        String derived = OutlineDeriver.deriveOutlineSvgPath(
+            silhouetteDocs, DERIVED_OUTLINE_CLOSE_MM, DERIVED_OUTLINE_OUTSET_MM);
+        return derived == null || derived.isBlank()
+            ? BoardOutline.none()
+            : new BoardOutline(derived, false);
+    }
+
+    /**
      * Render a realistic PCB view where layers are stacked as they appear on a real board.
      * <p>
      * Requires an OUTLINE layer to define the board boundary. The soldermask layer is
@@ -651,7 +707,6 @@ public class MultiLayerSVGRenderer {
         // Categorize layers by type
         Layer outlineLayer = null;
         List<Layer> copperLayers = new ArrayList<>();
-        List<Layer> innerCopperLayers = new ArrayList<>();
         List<Layer> soldermaskLayers = new ArrayList<>();
         List<Layer> silkscreenLayers = new ArrayList<>();
         List<Layer> drillLayers = new ArrayList<>();
@@ -666,8 +721,8 @@ public class MultiLayerSVGRenderer {
                     copperLayers.add(layer);
                     break;
                 case COPPER_INNER:
-                    // not drawn — inner pours only contribute to outline derivation
-                    innerCopperLayers.add(layer);
+                    // not drawn — inner pours only feed the derived silhouette, which
+                    // resolveBoardOutline collects for itself
                     break;
                 case SOLDERMASK_TOP:
                 case SOLDERMASK_BOTTOM:
@@ -726,37 +781,12 @@ public class MultiLayerSVGRenderer {
 
         svg.append("<defs>\n");
 
-        // Extract board outline path for clipPath and soldermask mask base. With a real
-        // profile layer, chain it; otherwise derive the board edge from the copper.
-        SvgOptions outlineOptions = svgOptions.copy().setFlipY(flipY);
-        String outlinePath;
-        if (haveOutlineLayer) {
-            outlinePath = extractOutlinePath(outlineLayer.getGerberDoc(), outlineOptions);
-        } else {
-            List<GerberDocument> silhouetteDocs = new ArrayList<>();
-            for (Layer l : copperLayers) {
-                if (l.isGerber() && l.getGerberDoc() != null) silhouetteDocs.add(l.getGerberDoc());
-            }
-            for (Layer l : innerCopperLayers) {
-                if (l.isGerber() && l.getGerberDoc() != null) silhouetteDocs.add(l.getGerberDoc());
-            }
-            for (Layer l : soldermaskLayers) {
-                if (l.isGerber() && l.getGerberDoc() != null) silhouetteDocs.add(l.getGerberDoc());
-            }
-            outlinePath = OutlineDeriver.deriveOutlineSvgPath(
-                silhouetteDocs, DERIVED_OUTLINE_CLOSE_MM, DERIVED_OUTLINE_OUTSET_MM);
-        }
-        boolean hasOutlinePath = outlinePath != null && !outlinePath.isBlank();
-
-        // Fill/clip rule for the board-outline path. A real profile layer can carry
-        // genuine internal cut-outs — extractOutlinePath emits the board edge plus
-        // region holes and relies on EVEN-ODD to subtract them. A DERIVED outline has
-        // no real cut-outs: OutlineDeriver fills interior pockets and emits one same-wound
-        // loop per disjoint board piece, which must be UNIONED — the NONZERO rule.
-        // (Its loops never nest, so the two rules agree today; they did not when the
-        // deriver dropped holes rather than filling them, and even-odd then punched the
-        // copper-dense zones out of the clip. See OutlineDeriver.traceSilhouette.)
-        String outlineFillRule = haveOutlineLayer ? "evenodd" : "nonzero";
+        // Board outline path for the clipPath and the soldermask mask base — resolved by the
+        // same method the STEP export uses, so a board is clipped and extruded to one edge.
+        BoardOutline outline = resolveBoardOutline(layers);
+        String outlinePath = outline.getSvgPath();
+        boolean hasOutlinePath = !outline.isEmpty();
+        String outlineFillRule = outline.getFillRule();
 
         if (hasOutlinePath) {
             svg.append("  <clipPath id=\"board-outline\">\n");

@@ -66,6 +66,13 @@
             <artifactId>batik-codec</artifactId>
             <version>1.19</version>
         </dependency>
+        <!-- SVG path parsing for the STEP export (arrives transitively with the
+             transcoder; declared because StepExporter imports it directly) -->
+        <dependency>
+            <groupId>org.apache.xmlgraphics</groupId>
+            <artifactId>batik-parser</artifactId>
+            <version>1.19</version>
+        </dependency>
 
         <!-- Testing -->
         <dependency>

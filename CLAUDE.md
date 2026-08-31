@@ -57,6 +57,53 @@ color the mask pairs with (white on everything but a white mask, which pairs bla
 caller names a `SilkscreenColor` a later `setSoldermaskColor` re-pairs nothing. Don't collapse this
 back to "mask setter also assigns silk" — call order would then decide the legend color.
 
+## Board outline, and the STEP export
+
+`MultiLayerSVGRenderer.resolveBoardOutline(layers)` is the **one** place the board edge is decided,
+and it returns a `renderer.svg.BoardOutline` — the path *plus* the fill rule it must be read under,
+because the two sources do not mean the same thing by a loop. A profile layer is chained by
+`extractOutlinePath` and its extra loops are genuine cut-outs, which only subtract under
+**even-odd**; a set with no profile gets `OutlineDeriver`'s copper silhouette, whose one loop per
+disjoint board piece must be unioned — **nonzero**. Both the realistic view's clip path and
+`renderer.step.StepExporter` go through it, so what renders is what gets extruded. Don't re-derive
+an outline in a new caller; add a consumer of `BoardOutline`.
+
+`StepExporter` extrudes that outline into an ISO 10303-21 (AP214) B-rep: bottom face at z=0, top at
+the thickness, one planar wall per polygon edge, X/Y left in the Gerber frame's millimetres so the
+solid lines up with everything else the library reports. Everything the set drills (`DrillHoles`,
+mirroring what the realistic view's `mech-mask` punches) is subtracted from the outline **before**
+the loops are nested — one `Area.subtract` for the whole drill program. It is deliberately *not*
+clipped to the board first: a mouse bite is a hole that straddles the routed edge, and subtracting
+it unclipped is what scallops the edge. Loop nesting is resolved by **parity** —
+a loop enclosed by an even number of others is material and becomes its own `MANIFOLD_SOLID_BREP`,
+an odd one is a cut-out in the innermost loop enclosing it — which is right for even-odd cut-outs
+and harmless for a derived silhouette, whose loops never nest. Enclosure is decided by a *vote* of
+the inner loop's vertices, not one representative point: board geometry is grid-aligned and loops
+share coordinates constantly, so any single test point lands on the other loop's boundary often
+enough to matter, and a crossing test answers arbitrarily there.
+
+Java2D's `Area` is free to hand one connected region back as several subpaths meeting along a
+seam, and with a few hundred holes subtracted it does — the board arrives sliced into horizontal
+bands, which extrude into separate solids that merely touch. `weldSeams` undoes it: both sides of
+a seam traverse the same points (after `splitAtSharedVertices` gives them the same vertices), so
+every directed edge with an exact opposite twin is cancelled and the survivors are re-chained. On
+a genuine boundary nothing cancels, so it is a no-op where there was no seam.
+
+The two flat faces are named `top`/`bottom` and carry the words as well: `StrokeFont` (a
+single-stroke plotter font, hand-built so output stays identical on every host — `java.awt.Font`
+would depend on the machine's fontconfig and hand back empty glyphs on a stripped container) draws
+them into a `GEOMETRIC_CURVE_SET` in its own `GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION`,
+linked by a `SHAPE_REPRESENTATION_RELATIONSHIP`. Annotation, never material: the solid is
+byte-identical with the labels off, and the underside's word is mirrored so it reads from below.
+
+Orientation is carried entirely by winding — material loops counter-clockwise seen from +Z,
+cut-outs clockwise — which is what lets one wall construction serve both and makes the shell close
+(every edge used exactly twice, once in each direction; `StepExporterTest` asserts it). Thickness is
+the one number no Gerber file carries: it defaults to `DEFAULT_THICKNESS_MM` (1.6 mm) and every
+entry point takes it — the library setter, `GerberViewerServer.exportStep`, the
+`POST /api/gerber/step?thickness=` query parameter, and the viewer's thickness box. A set that
+ships a `.gbrjob` or IPC-2581 stack-up states a real one in `BoardSpecification.getBoardThicknessMm()`.
+
 ## Board analysis
 
 `classify.LayerClassifier` decides what each file in a set is, from strongest evidence to weakest:

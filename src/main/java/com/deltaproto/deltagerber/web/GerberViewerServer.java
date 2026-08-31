@@ -17,6 +17,7 @@ import com.deltaproto.deltagerber.renderer.svg.LayerType;
 import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
 import com.deltaproto.deltagerber.renderer.svg.SilkscreenColor;
 import com.deltaproto.deltagerber.renderer.svg.SoldermaskColor;
+import com.deltaproto.deltagerber.renderer.step.StepExporter;
 import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
 import com.deltaproto.deltagerber.dfm.ViaInPadGroup;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
@@ -41,6 +42,8 @@ import java.util.*;
  * Endpoints:
  * - GET /           — serves the HTML viewer app
  * - POST /api/gerber/render — receives files with metadata, returns multi-layer + realistic SVGs
+ * - POST /api/gerber/thumbnail — the realistic view as a PNG
+ * - POST /api/gerber/step — the board outline, drilled, extruded into a STEP (ISO 10303-21) solid
  */
 public class GerberViewerServer {
 
@@ -58,6 +61,7 @@ public class GerberViewerServer {
         server.createContext("/", new StaticHandler());
         server.createContext("/api/gerber/render", new RenderHandler());
         server.createContext("/api/gerber/thumbnail", new ThumbnailHandler());
+        server.createContext("/api/gerber/step", new StepHandler());
         server.setExecutor(null);
         server.start();
         log.info("Gerber Viewer Server started at http://localhost:{}", port);
@@ -670,6 +674,118 @@ public class GerberViewerServer {
         }
     }
 
+
+    /**
+     * Returns the board outline extruded into a STEP (ISO 10303-21) solid — the board as a
+     * mechanical part, for an enclosure designer. Accepts the same request body as
+     * {@link RenderHandler}. Query params: {@code thickness=<mm>} (default
+     * {@value com.deltaproto.deltagerber.renderer.step.StepExporter#DEFAULT_THICKNESS_MM}),
+     * {@code name=<board name>}, which becomes the part name in CAD and the download's filename,
+     * {@code drills=false} to leave the set's drilled holes (and the mouse bites they take out of
+     * the board edge) out of the solid, and {@code labels=false} to leave the words {@code TOP}
+     * and {@code BOTTOM} off the two faces.
+     */
+    static class StepHandler implements HttpHandler {
+        private static final Logger log = LoggerFactory.getLogger(StepHandler.class);
+
+        /** Thickness bounds. Wide enough for anything fabricable — 0.1 mm flex to a 10 mm slab. */
+        private static final double MIN_THICKNESS_MM = 0.05;
+        private static final double MAX_THICKNESS_MM = 20.0;
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                sendResponse(exchange, 405, "text/plain", "Method Not Allowed");
+                return;
+            }
+            try {
+                Map<String, String> q = parseQuery(exchange.getRequestURI().getRawQuery());
+                double thickness = parseThickness(q.get("thickness"));
+                if (thickness <= 0) {
+                    sendResponse(exchange, 400, "application/json",
+                        "{\"error\":\"thickness must be a number between " + MIN_THICKNESS_MM
+                        + " and " + MAX_THICKNESS_MM + " mm\"}");
+                    return;
+                }
+                String name = boardName(q.get("name"));
+                boolean drills = !"false".equalsIgnoreCase(q.get("drills"));
+                boolean labels = !"false".equalsIgnoreCase(q.get("labels"));
+                byte[] body = exchange.getRequestBody().readAllBytes();
+
+                String step = exportStep(body, thickness, name, drills, labels);
+                if (step == null) {
+                    sendResponse(exchange, 422, "application/json",
+                        "{\"error\":\"no board outline: the set has no profile layer and no copper "
+                        + "to derive the board edge from\"}");
+                    return;
+                }
+                byte[] bytes = step.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "model/step");
+                exchange.getResponseHeaders().set("Content-Disposition",
+                    "attachment; filename=\"" + name + ".step\"");
+                exchange.getResponseHeaders().set("Cache-Control", "no-store");
+                exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+                exchange.sendResponseHeaders(200, bytes.length);
+                try (OutputStream os = exchange.getResponseBody()) { os.write(bytes); }
+            } catch (Exception e) {
+                log.error("STEP export failed", e);
+                sendResponse(exchange, 500, "application/json",
+                    "{\"error\":" + escapeJson(e.getMessage()) + "}");
+            }
+        }
+
+        /**
+         * Export one viewer request body as a STEP solid, or {@code null} when the set has no
+         * board outline to extrude. Separate from {@link #handle} for the same reason as
+         * {@link RenderHandler#renderToJson}: a host application serves it from its own HTTP stack.
+         *
+         * <p>{@code thicknessMm} is the finished board thickness — the one number no Gerber file
+         * carries. A host that has analysed the set can pass
+         * {@link BoardSpecification#getBoardThicknessMm()} when the board declared one, and
+         * {@link StepExporter#DEFAULT_THICKNESS_MM} otherwise. {@code includeDrillHoles} puts
+         * everything the set drills into the solid, mouse bites on the board edge included, and
+         * {@code labelSides} writes {@code TOP} and {@code BOTTOM} across the two faces.
+         */
+        static String exportStep(byte[] body, double thicknessMm, String productName,
+                                 boolean includeDrillHoles, boolean labelSides) {
+            List<MultiLayerSVGRenderer.Layer> layers = parseLayerBody(body);
+            if (layers.isEmpty()) return null;
+            try {
+                return new StepExporter()
+                    .setThicknessMm(thicknessMm)
+                    .setProductName(productName)
+                    .setIncludeDrillHoles(includeDrillHoles)
+                    .setLabelSides(labelSides)
+                    .export(layers);
+            } catch (IllegalArgumentException e) {
+                // No resolvable board edge — the caller gets 422, not a 500.
+                log.info("No STEP export for this set: {}", e.getMessage());
+                return null;
+            }
+        }
+
+        /** The requested thickness in mm, or a non-positive value when the request is bad. */
+        private static double parseThickness(String raw) {
+            if (raw == null || raw.isBlank()) return StepExporter.DEFAULT_THICKNESS_MM;
+            double mm;
+            try {
+                mm = Double.parseDouble(raw.trim());
+            } catch (NumberFormatException e) {
+                return -1;
+            }
+            if (!Double.isFinite(mm) || mm < MIN_THICKNESS_MM || mm > MAX_THICKNESS_MM) return -1;
+            return mm;
+        }
+
+        private static String boardName(String raw) {
+            if (raw == null || raw.isBlank()) return "board";
+            // Query values arrive raw, so a name with a space or an accent is percent-encoded.
+            String decoded = java.net.URLDecoder.decode(raw, StandardCharsets.UTF_8);
+            String cleaned = decoded.trim().replaceAll("[^a-zA-Z0-9._-]", "_");
+            return cleaned.isBlank() ? "board" : cleaned.substring(0, Math.min(64, cleaned.length()));
+        }
+    }
+
     // --- Public API for host applications ------------------------------------------------
     //
     // deltaproto.com serves this viewer from its own Spring endpoint so it can track and rate-limit
@@ -686,6 +802,20 @@ public class GerberViewerServer {
     public static byte[] renderThumbnailPng(byte[] body, String side, int width, int height,
                                             String soldermask, String silkscreen) {
         return ThumbnailHandler.renderThumbnailPng(body, side, width, height, soldermask, silkscreen);
+    }
+
+    /**
+     * As {@link #exportStep(byte[], double, String, boolean, boolean)}, with the drilled holes in
+     * and both faces labelled — what the viewer's STEP button asks for.
+     */
+    public static String exportStep(byte[] body, double thicknessMm, String productName) {
+        return StepHandler.exportStep(body, thicknessMm, productName, true, true);
+    }
+
+    /** @see StepHandler#exportStep(byte[], double, String, boolean, boolean) */
+    public static String exportStep(byte[] body, double thicknessMm, String productName,
+                                    boolean includeDrillHoles, boolean labelSides) {
+        return StepHandler.exportStep(body, thicknessMm, productName, includeDrillHoles, labelSides);
     }
 
     private static int indexOf(byte[] data, byte target, int from) {

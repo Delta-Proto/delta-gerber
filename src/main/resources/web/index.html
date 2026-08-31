@@ -176,6 +176,18 @@
         }
         .sm-swatch:hover { transform: scale(1.15); }
         .sm-swatch.active { box-shadow: 0 0 0 2px var(--bg-card), 0 0 0 4px var(--ring); }
+        /* Board thickness for the STEP export — the one number no Gerber file carries. */
+        .step-thickness {
+            display: inline-flex; align-items: center; gap: 4px;
+            margin-left: 6px; padding-left: 12px; border-left: 1px solid var(--border);
+            font-size: 0.6875rem; color: var(--fg-muted);
+        }
+        .step-thickness input {
+            background: var(--bg-input); color: var(--fg); border: 1px solid var(--border);
+            border-radius: 6px; padding: 3px 4px; font-size: 0.6875rem; width: 52px;
+            font-family: inherit; font-variant-numeric: tabular-nums;
+        }
+        .step-thickness input:focus { outline: 2px solid var(--ring); outline-offset: -1px; }
         .btn-spinner {
             width: 14px; height: 14px; border: 2px solid var(--spinner-track);
             border-top-color: var(--primary); border-radius: 50%;
@@ -459,6 +471,21 @@
                         <line x1="12" y1="15" x2="12" y2="3"/>
                     </svg>
                     <span>PNG Bottom</span>
+                </button>
+                <span class="step-thickness" title="Finished board thickness for the STEP solid (mm). No Gerber file states it, so it defaults to a standard 1.6 mm board.">
+                    <label for="step-thickness">Thickness</label>
+                    <input type="number" id="step-thickness" value="1.6" min="0.05" max="20" step="0.1">
+                    <span>mm</span>
+                </span>
+                <button class="view-tab" id="step-btn" onclick="downloadStep()"
+                    title="Download the board outline as a STEP (ISO 10303-21) solid">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                        <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                        <line x1="12" y1="22.08" x2="12" y2="12"/>
+                    </svg>
+                    <span>STEP</span>
                 </button>
             </div>
             <div class="viewer-container" id="viewer-container">
@@ -837,6 +864,54 @@
             }
         }
 
+        // ===== Download the board outline as a STEP solid =====
+        // Same outline the realistic view is clipped to — a real profile layer when the set
+        // ships one, otherwise the silhouette derived from the copper — extruded to the
+        // thickness in the box. The server defaults to 1.6 mm if the field is left empty.
+        async function downloadStep() {
+            if (!projectFiles || projectFiles.length === 0) return;
+            const btn = document.getElementById('step-btn');
+            if (btn.disabled) return;
+            const thickness = document.getElementById('step-thickness').value;
+            if (thickness !== '' && !(parseFloat(thickness) >= 0.05 && parseFloat(thickness) <= 20)) {
+                alert('Board thickness must be between 0.05 and 20 mm.');
+                return;
+            }
+            const rect = btn.getBoundingClientRect();
+            const originalHtml = btn.innerHTML;
+            btn.style.width = rect.width + 'px';
+            btn.style.height = rect.height + 'px';
+            btn.disabled = true;
+            btn.innerHTML = '<span class="btn-spinner" aria-label="Generating"></span>';
+            try {
+                const base = (projectName || 'board').replace(/[^a-zA-Z0-9._-]/g, '_');
+                const params = new URLSearchParams({name: base});
+                if (thickness !== '') params.set('thickness', thickness);
+                const resp = await fetch(`${API_BASE}/step?${params}`,
+                    {method: 'POST', body: buildLayerBody(projectFiles)});
+                if (!resp.ok) {
+                    const detail = await resp.json().catch(() => null);
+                    throw new Error(detail && detail.error ? detail.error : 'Server error: ' + resp.status);
+                }
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${base}.step`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Failed to export STEP: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+                btn.style.width = '';
+                btn.style.height = '';
+            }
+        }
+
         // ===== Layer type constants =====
         // Mirrors com.deltaproto.deltagerber.renderer.svg.LayerType.
         const LAYER_TYPES = ['OUTLINE','COPPER_TOP','COPPER_INNER','COPPER_BOTTOM','SOLDERMASK_TOP','SOLDERMASK_BOTTOM',
@@ -1001,6 +1076,10 @@
             const pngBotBtn = document.getElementById('png-bot-btn');
             pngTopBtn.disabled = !realisticTopSvg; pngTopBtn.style.opacity = realisticTopSvg ? 1 : 0.4;
             pngBotBtn.disabled = !realisticBottomSvg; pngBotBtn.style.opacity = realisticBottomSvg ? 1 : 0.4;
+            // The STEP solid needs the same board outline either realistic side needs.
+            const stepBtn = document.getElementById('step-btn');
+            const haveOutline = !!(realisticTopSvg || realisticBottomSvg);
+            stepBtn.disabled = !haveOutline; stepBtn.style.opacity = haveOutline ? 1 : 0.4;
 
             currentView = 'layers';
             document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.dataset.view === 'layers'));
@@ -1152,6 +1231,9 @@
                     const pngBotBtn = document.getElementById('png-bot-btn');
                     pngTopBtn.disabled = !realisticTopSvg; pngTopBtn.style.opacity = realisticTopSvg ? 1 : 0.4;
                     pngBotBtn.disabled = !realisticBottomSvg; pngBotBtn.style.opacity = realisticBottomSvg ? 1 : 0.4;
+                    const stepBtn = document.getElementById('step-btn');
+                    const haveOutline = !!(realisticTopSvg || realisticBottomSvg);
+                    stepBtn.disabled = !haveOutline; stepBtn.style.opacity = haveOutline ? 1 : 0.4;
                     warnings = data.warnings || [];
                     renderWarningsTab();
                     if (currentView === 'warnings') { refreshWarningsPanel(); }
