@@ -894,7 +894,7 @@ public class GerberViewerServer {
     public static void main(String[] args) throws IOException {
         java.util.Locale.setDefault(java.util.Locale.US);
 
-        int port = 938;
+        int port = 9380;
         if (args.length > 0) {
             port = Integer.parseInt(args[0]);
         }

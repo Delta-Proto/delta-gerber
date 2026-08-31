@@ -155,7 +155,7 @@ Download the standalone JAR from the [latest release](https://github.com/Delta-P
 java -jar delta-gerber-1.1.6-jar-with-dependencies.jar
 ```
 
-Open http://localhost:938 and drop a Gerber ZIP file onto the viewer, or click **"Try Example"** to load the bundled Arduino Uno board.
+Open http://localhost:9380 and drop a Gerber ZIP file onto the viewer, or click **"Try Example"** to load the bundled Arduino Uno board.
 
 > Requires Java 17+. No other dependencies needed.
 
