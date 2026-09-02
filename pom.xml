@@ -84,6 +84,25 @@
     </dependencies>
 
     <build>
+        <!-- version.properties carries ${project.version} to the running server (the viewer shows
+             it in its header), so that one file is filtered and everything else — the example ZIP
+             above all — is copied through untouched. -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>version.properties</exclude>
+                </excludes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>version.properties</include>
+                </includes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

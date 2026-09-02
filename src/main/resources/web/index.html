@@ -110,20 +110,30 @@
             background: none; border: 1px solid var(--border); width: 36px; height: 36px;
             border-radius: 8px; cursor: pointer; display: flex; align-items: center;
             justify-content: center; color: var(--fg-muted); transition: background 0.15s, color 0.15s;
+            flex-shrink: 0; text-decoration: none;
         }
         .theme-toggle:hover { background: var(--item-hover); color: var(--fg); }
-        .zoom-controls { display: flex; gap: 6px; margin-left: auto; align-items: center; }
+        /* The running library version, filled in by the server; hidden if it can't tell. */
+        .app-version {
+            margin-left: auto; font-size: 0.75rem; color: var(--fg-faint);
+            font-variant-numeric: tabular-nums; white-space: nowrap;
+        }
+        /* Zoom controls float over the artwork, in the viewer's top-right corner. */
+        .zoom-controls {
+            position: absolute; top: 10px; right: 12px; z-index: 2;
+            display: flex; gap: 4px; align-items: center;
+        }
         .zoom-btn {
             background: var(--bg-input); color: var(--fg); border: 1px solid var(--border);
-            width: 36px; height: 36px; border-radius: 8px; cursor: pointer; font-size: 1.1rem;
+            width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 1rem;
             display: flex; align-items: center; justify-content: center;
             transition: background 0.15s; font-family: inherit;
         }
         .zoom-btn:hover { background: var(--item-hover); }
         .zoom-level {
-            background: var(--bg-input); border: 1px solid var(--border); padding: 6px 10px;
-            border-radius: 8px; font-size: 0.8rem; min-width: 56px; text-align: center;
-            color: var(--fg-muted);
+            background: var(--bg-input); border: 1px solid var(--border); padding: 6px 8px;
+            border-radius: 8px; font-size: 0.75rem; min-width: 52px; text-align: center;
+            color: var(--fg-muted); font-variant-numeric: tabular-nums;
         }
 
         /* ===== Layout ===== */
@@ -240,7 +250,13 @@
             background-image:
                 linear-gradient(var(--grid-line) 1px, transparent 1px),
                 linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-            background-size: 20px 20px;
+            background-size: 37.795px 37.795px;   /* 10 mm; updateTransform() rescales it */
+        }
+        /* What one grid square means — small, out of the way, never in the pointer's path. */
+        .grid-hint {
+            position: absolute; left: 12px; bottom: 10px; z-index: 1;
+            font-size: 0.6875rem; color: var(--fg-faint); pointer-events: none;
+            font-variant-numeric: tabular-nums;
         }
         #svg-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: grab; }
         #svg-container:active { cursor: grabbing; }
@@ -394,18 +410,25 @@
             Open ZIP File
         </label>
         <button class="example-btn" onclick="loadExample()" title="Load Arduino Uno example project">Try Example</button>
-        <div class="zoom-controls">
-            <button class="zoom-btn" id="zoom-out" title="Zoom Out">-</button>
-            <span class="zoom-level" id="zoom-level">100%</span>
-            <button class="zoom-btn" id="zoom-in" title="Zoom In">+</button>
-            <button class="zoom-btn" id="zoom-fit" title="Fit to View">&#8644;</button>
-        </div>
+        <span class="app-version" id="app-version" title="Delta Gerber version">__APP_VERSION__</span>
         <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" onclick="toggleTheme()">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="4" id="theme-icon-sun-parts"/>
                 <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" id="theme-icon-rays"/>
             </svg>
         </button>
+        <a class="theme-toggle" href="https://github.com/Delta-Proto/delta-gerber" target="_blank"
+           rel="noopener" title="Delta Gerber on GitHub" aria-label="Delta Gerber on GitHub">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+                    0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01
+                    1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95
+                    0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0
+                    1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87
+                    3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16
+                    8c0-4.42-3.58-8-8-8z"/>
+            </svg>
+        </a>
     </header>
 
     <div class="main-container">
@@ -489,6 +512,13 @@
                 </button>
             </div>
             <div class="viewer-container" id="viewer-container">
+                <div class="zoom-controls">
+                    <button class="zoom-btn" id="zoom-out" title="Zoom Out">-</button>
+                    <span class="zoom-level" id="zoom-level">100%</span>
+                    <button class="zoom-btn" id="zoom-in" title="Zoom In">+</button>
+                    <button class="zoom-btn" id="zoom-fit" title="Fit to View">&#8644;</button>
+                </div>
+                <div class="grid-hint" id="grid-hint">Grid 10 &times; 10 mm</div>
                 <div class="drop-zone" id="drop-zone">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
@@ -570,6 +600,10 @@
         let realisticBottomSvg = null;
         let currentView = 'layers';
         let scale = 1, panX = 0, panY = 0, isPanning = false, startX, startY;
+        /** CSS pixels per millimetre at 100% — the SVG is sized in mm, and CSS puts 96 dpi on it. */
+        const PX_PER_MM = 96 / 25.4;
+        /** Backdrop grid pitch in millimetres, as announced by the hint in the viewer's corner. */
+        const GRID_MM = 10;
         let components = [];  // [{refdes, value, footprint, mountType, x, y, rotation, side}]
         let warnings = [];    // [{file, messages:[...]}]
         let pcbInfo = null;   // everything the library derives about the board — see /api/gerber/render
@@ -1348,6 +1382,17 @@
             }
         }
 
+        // ===== Version badge =====
+        // The server rewrites the placeholder as it serves the page; a host that serves this file
+        // straight from the jar's resources does not, and then there is nothing honest to show.
+        (function showVersion() {
+            const el = document.getElementById('app-version');
+            if (!el) return;
+            const v = el.textContent.trim();
+            if (!v || v.startsWith('__')) el.style.display = 'none';
+            else el.textContent = v.startsWith('v') ? v : 'v' + v;
+        })();
+
         // ===== Pan & Zoom =====
         svgContainer.addEventListener('mousedown', (e) => {
             if (e.button === 0) { isPanning = true; startX = e.clientX - panX; startY = e.clientY - panY; }
@@ -1392,8 +1437,7 @@
             const vb = svg.getAttribute('viewBox');
             if (!vb) return;
             const [,,w,h] = vb.split(' ').map(Number);
-            const pxPerMm = 3.78;
-            const sw = w * pxPerMm, sh = h * pxPerMm;
+            const sw = w * PX_PER_MM, sh = h * PX_PER_MM;
             const pad = 40;
             scale = Math.min((rect.width - pad*2) / sw, (rect.height - pad*2) / sh, 10);
             panX = (rect.width - sw * scale) / 2;
@@ -1404,6 +1448,23 @@
         function updateTransform() {
             svgContent.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
             zoomLevel.textContent = Math.round(scale * 100) + '%';
+            updateGrid();
+        }
+
+        /**
+         * Keep the backdrop grid on the board's own scale: one square is 10 mm of PCB, wherever
+         * the view is panned or zoomed to. The rendered SVG is sized in millimetres, so a
+         * millimetre is PX_PER_MM CSS pixels before the pan/zoom transform and PX_PER_MM * scale
+         * after it; the pan offset is in the same coordinates the grid's background-position uses,
+         * both measured from the viewer's top-left, so the grid tracks the artwork exactly.
+         *
+         * The lines are painted by the container rather than inside the transformed element on
+         * purpose — scaled with the content they would thicken and blur as you zoom in.
+         */
+        function updateGrid() {
+            const cell = GRID_MM * PX_PER_MM * scale;
+            viewerContainer.style.backgroundSize = `${cell}px ${cell}px`;
+            viewerContainer.style.backgroundPosition = `${panX}px ${panY}px`;
         }
 
         // ===== Centroid table =====

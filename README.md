@@ -150,6 +150,8 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
 ### Web Viewer
 - Interactive pan/zoom with mouse wheel and drag
 - Three visualization modes: All Layers, Board Top, Board Bottom
+- 10 × 10 mm backdrop grid that pans and zooms with the board, so it reads as a scale
+- Zoom controls in the viewer's corner, and the running version in the header
 - PNG Top/Bottom export of the realistic view
 - STEP export of the board outline, with an editable board thickness (default 1.6 mm)
 - Warnings tab listing per-file parse warnings (disabled when there are none)

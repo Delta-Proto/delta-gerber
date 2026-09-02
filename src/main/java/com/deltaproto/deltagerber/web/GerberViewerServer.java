@@ -1008,11 +1008,40 @@ public class GerberViewerServer {
 
     private static String indexHtmlCache;
 
+    /** Placeholder the viewer's HTML carries where the running version belongs. */
+    private static final String VERSION_PLACEHOLDER = "__APP_VERSION__";
+
+    private static final String VERSION = readVersion();
+
+    /**
+     * The library's version, as Maven filtered it into {@code version.properties} at build time,
+     * or {@code null} when that file is missing or unfiltered — running straight from an IDE's
+     * output directory, say. The viewer shows it in its header and hides the badge when it is
+     * {@code null}, which is the honest answer: better no version than a wrong one.
+     */
+    public static String getVersion() {
+        return VERSION;
+    }
+
+    private static String readVersion() {
+        try (InputStream is = GerberViewerServer.class.getResourceAsStream("/version.properties")) {
+            if (is == null) return null;
+            Properties properties = new Properties();
+            properties.load(is);
+            String version = properties.getProperty("version", "").trim();
+            return version.isEmpty() || version.startsWith("${") ? null : version;
+        } catch (IOException e) {
+            log.warn("Failed to read version.properties from classpath", e);
+            return null;
+        }
+    }
+
     public static String getIndexHtml() {
         if (indexHtmlCache != null) return indexHtmlCache;
         try (InputStream is = GerberViewerServer.class.getResourceAsStream("/web/index.html")) {
             if (is != null) {
-                indexHtmlCache = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                indexHtmlCache = new String(is.readAllBytes(), StandardCharsets.UTF_8)
+                    .replace(VERSION_PLACEHOLDER, VERSION == null ? "" : VERSION);
                 return indexHtmlCache;
             }
         } catch (IOException e) {
