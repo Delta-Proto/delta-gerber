@@ -42,6 +42,30 @@ Central. Put them under `excluded/` (gitignored) and have the test skip when the
   with a 0.05 mm aperture inks 32.05 mm but *is* 32 mm. (KiCad's `.gbrjob` reports the inked
   figure, so expect our size to be one aperture-width smaller than what a job file declares.)
 
+## Drill/Gerber origin mismatch
+
+Altium (and others) let the Gerber and NC-drill exports reference different origins, and nothing in
+the drill file records the difference. `align.DrillGerberAlignment` recovers it exactly — every
+plated hole is concentric with its copper pad, so the `(pad - hole)` vectors collapse to one
+translation — and never approximately: no support, no fix.
+
+**Misalignment is judged by hole-on-pad support, never by bounding boxes.** A displaced drill only
+clears the board's bounding box when the shift exceeds the board's own size, so on a large board a
+badly-placed drill still overlaps it and a box test sees nothing wrong (issue #5). Boxes are only a
+cheap *trigger*: a correctly placed hole is always inside the board, so a drill whose bounds are
+**contained** in the Gerber bounds is dismissed with no pad index and no correlation — which is what
+keeps a healthy set free. Anything poking outside is then counted properly against the pads. The bar
+to actually move a drill is raised for one that still overlaps the board (90% of holes, at least 8)
+versus one hanging entirely clear of it (50%, at least 3), and a shift must always seat strictly more
+holes than leaving the drill alone would — so an NPTH-only file, which matches no pad at any offset,
+is never moved.
+
+A drill *set* goes through `analyzeAll`/`alignedAll`, not one file at a time. EDA tools split the
+drill program — Altium writes round holes and slots separately — and a slot-only file carries no hole
+centres to correlate, so it can never recover its own offset. All files in one export share an
+origin, so the best-supported sibling's offset is handed to the ones that came up empty, provided the
+shift lands them on the board. `Result.isInherited()` says an offset arrived that way.
+
 ## Board finish colors
 
 `MultiLayerSVGRenderer.renderRealistic` (and every PNG path built on it) colors the board from

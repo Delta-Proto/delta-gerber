@@ -120,9 +120,11 @@ public final class ViaInPadDetector {
     }
 
     /**
-     * As {@link #detect}, but first aligns each drill into the Gerber frame using the copper pads —
-     * for the case where the drill was exported on a different origin than the Gerbers. When the
-     * drill already overlaps the board this is a no-op, so it is safe to call unconditionally.
+     * As {@link #detect}, but first aligns the drills into the Gerber frame using the copper pads —
+     * for the case where they were exported on a different origin than the Gerbers. The drills are
+     * resolved as a set, so a file carrying no hole centres of its own (a slot-only drill file) takes
+     * the offset its siblings recovered. When the drills already sit on the board this is a no-op, so
+     * it is safe to call unconditionally.
      *
      * @param copperLayers copper layers whose flashes anchor the drill/Gerber alignment; may be empty
      */
@@ -147,11 +149,8 @@ public final class ViaInPadDetector {
                 padCenters.addAll(DrillGerberAlignment.flashCenters(copper));
             }
         }
-        List<DrillDocument> aligned = new ArrayList<>(drills.size());
-        for (DrillDocument drill : drills) {
-            aligned.add(DrillGerberAlignment.aligned(drill, bounds, padCenters));
-        }
-        return detect(topPaste, bottomPaste, aligned);
+        return detect(topPaste, bottomPaste,
+            DrillGerberAlignment.alignedAll(new ArrayList<>(drills), bounds, padCenters));
     }
 
     // ------------------------------------------------------------------------

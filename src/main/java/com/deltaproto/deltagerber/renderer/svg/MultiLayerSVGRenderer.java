@@ -273,9 +273,8 @@ public class MultiLayerSVGRenderer {
 
     /**
      * Return a layer list in which every drill layer exported on a different origin than the Gerbers
-     * (its holes fall entirely off the board) is replaced by a copy whose coordinates are baked onto
-     * the board, via {@link DrillGerberAlignment}. Gerber layers and correctly-placed drills are
-     * returned unchanged.
+     * is replaced by a copy whose coordinates are baked onto the board, via
+     * {@link DrillGerberAlignment}. Gerber layers and correctly-placed drills are returned unchanged.
      * <p>
      * This is an opt-in step — {@link #render} stays pure and never calls it — so callers (the web
      * viewer, or any library user assembling a multi-layer view) apply it once before rendering. It
@@ -284,9 +283,12 @@ public class MultiLayerSVGRenderer {
      * board but the offset could not be recovered exactly (in which case it is left in place — never
      * moved approximately).
      * <p>
-     * A healthy set pays almost nothing: if no drill is off the board the pad collection and
-     * correlation are skipped entirely. Both drill and Gerber coordinates are millimetres
-     * (normalised at parse time), so no unit handling is required.
+     * The drill layers are resolved as a <em>set</em>, so a file that carries no hole centres of its
+     * own — Altium writes slots to a separate file — takes the offset recovered from its siblings.
+     * <p>
+     * A healthy set pays almost nothing: if every drill's bounds sit inside the board the pad
+     * collection and correlation are skipped entirely. Both drill and Gerber coordinates are
+     * millimetres (normalised at parse time), so no unit handling is required.
      */
     public static List<Layer> alignDrillLayers(List<Layer> layers) {
         if (layers == null || layers.isEmpty()) {
@@ -308,22 +310,25 @@ public class MultiLayerSVGRenderer {
             return layers;
         }
 
-        // Fast path for the common (healthy) case: if every drill already overlaps the board there is
-        // nothing to do, so skip the potentially large pad collection and correlation entirely.
-        boolean anyOffBoard = false;
+        // Fast path for the common (healthy) case: a correctly placed hole is always inside the
+        // board, so if every drill's bounds fit within the Gerber bounds there is nothing to do and
+        // the potentially large pad collection is skipped entirely. Note this is containment, not
+        // overlap — a drill displaced by less than the board's own size still overlaps it, which is
+        // exactly the case a bounding-box test cannot see (issue #5).
+        boolean anySuspect = false;
         for (Layer d : drills) {
             BoundingBox b = d.getBoundingBox();
-            if (b != null && b.isValid() && !boxesOverlap(b, gerberBounds)) {
-                anyOffBoard = true;
+            if (b != null && b.isValid() && !boxContains(gerberBounds, b)) {
+                anySuspect = true;
                 break;
             }
         }
-        if (!anyOffBoard) {
+        if (!anySuspect) {
             return layers;
         }
 
-        // At least one drill is off the board — gather copper pad centres (concentric with plated
-        // holes), falling back to all flashes when layer roles are unclassified.
+        // At least one drill may be off the board — gather copper pad centres (concentric with
+        // plated holes), falling back to all flashes when layer roles are unclassified.
         List<double[]> copperPads = new ArrayList<>();
         List<double[]> anyPads = new ArrayList<>();
         for (Layer layer : layers) {
@@ -338,14 +343,23 @@ public class MultiLayerSVGRenderer {
         }
         List<double[]> pads = !copperPads.isEmpty() ? copperPads : anyPads;
 
+        // Resolve the drills together, so a slot-only file can take a sibling's offset.
+        List<DrillDocument> drillDocs = new ArrayList<>(drills.size());
+        for (Layer d : drills) {
+            drillDocs.add(d.getDrillDoc());
+        }
+        List<DrillGerberAlignment.Result> results =
+            DrillGerberAlignment.analyzeAll(drillDocs, gerberBounds, pads);
+
         List<Layer> out = new ArrayList<>(layers.size());
+        int drillIndex = 0;
         for (Layer layer : layers) {
             if (!layer.isDrill()) {
                 out.add(layer);
                 continue;
             }
             DrillDocument doc = layer.getDrillDoc();
-            DrillGerberAlignment.Result r = DrillGerberAlignment.analyze(doc, gerberBounds, pads);
+            DrillGerberAlignment.Result r = results.get(drillIndex++);
             if (r.isResolved()) {
                 // Fix-once: baked corrected coordinates + reversible originOffset stamp. The warning
                 // (with match counts) is recorded on the corrected copy, leaving the caller's doc
@@ -366,9 +380,10 @@ public class MultiLayerSVGRenderer {
         return out;
     }
 
-    private static boolean boxesOverlap(BoundingBox a, BoundingBox b) {
-        return a.getMinX() <= b.getMaxX() && a.getMaxX() >= b.getMinX()
-            && a.getMinY() <= b.getMaxY() && a.getMaxY() >= b.getMinY();
+    /** True when {@code outer} wholly contains {@code inner}. */
+    private static boolean boxContains(BoundingBox outer, BoundingBox inner) {
+        return inner.getMinX() >= outer.getMinX() && inner.getMaxX() <= outer.getMaxX()
+            && inner.getMinY() >= outer.getMinY() && inner.getMaxY() <= outer.getMaxY();
     }
 
     /**

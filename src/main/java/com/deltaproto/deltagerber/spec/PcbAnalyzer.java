@@ -504,11 +504,10 @@ public class PcbAnalyzer {
             if ((topPaste.isEmpty() && bottomPaste.isEmpty()) || drills.isEmpty()) {
                 return null;
             }
-            List<DrillDocument> aligned = new ArrayList<>(drills.size());
-            for (DrillDocument drill : drills) {
-                aligned.add(DrillGerberAlignment.aligned(drill, copperBounds, copperFlashCenters));
-            }
-            return ViaInPadDetector.detect(topPaste, bottomPaste, aligned);
+            // Resolved as a set: a drill file with no hole centres of its own (Altium writes slots
+            // separately) takes the offset its siblings recovered.
+            return ViaInPadDetector.detect(topPaste, bottomPaste,
+                DrillGerberAlignment.alignedAll(drills, copperBounds, copperFlashCenters));
         }
     }
 }
