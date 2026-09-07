@@ -1527,6 +1527,28 @@
             return `Yes${n} — needs filled & capped vias (IPC-4761 Type VII)`;
         }
 
+        // How the files write their numbers — "4:3, leading zeros suppressed". A group has no single
+        // format either because nothing stated one or because the files disagree, and those read
+        // very differently to whoever has to quote the board, so they are never both an em-dash.
+        function formatOf(single, all) {
+            if (single) return single.text;
+            if (!all || all.length === 0) return null;
+            return 'Mixed — ' + all.map(formatDigits).join(', ') + ' (see Layers)';
+        }
+
+        /** The compact form, as the layer table shows it: "4:6 mm". */
+        const formatDigits = f => f.digits + ' ' + (f.unit === 'INCH' ? 'inch' : 'mm');
+
+        // The drill program is expected to be stated in the same terms as the artwork; a unit
+        // mismatch between the two is what a fabricator asks you to fix.
+        function formatsAligned(i) {
+            if (i.formatConsistent === null || i.formatConsistent === undefined) return null;
+            if (i.formatConsistent) return 'Yes';
+            const g = i.gerberFormat, d = i.drillFormat;
+            if (g && d && g.unit !== d.unit) return 'No — the drill file is in different units';
+            return 'No — the files do not agree on one format';
+        }
+
         function refreshPcbInfoPanel() {
             const el = document.getElementById('pcbinfo-content');
             if (!pcbInfo) { el.innerHTML = '<div class="pcbinfo-intro">No PCB information.</div>'; return; }
@@ -1562,6 +1584,9 @@
                 infoRow('Project', i.projectId),
                 infoRow('Created', i.creationDate),
                 infoRow('Part', i.part),
+                infoRow('Gerber format', formatOf(i.gerberFormat, i.gerberFormats)),
+                infoRow('Drill format', formatOf(i.drillFormat, i.drillFormats)),
+                infoRow('Formats aligned', formatsAligned(i)),
             ];
 
             // A layer is a function, a side, and — for inner copper alone — a stack-up index.
@@ -1581,6 +1606,8 @@
                     ${cell(lb ? fixed(lb.height, 3) : null)}
                     ${cell(fixed(l.minTrackUm, 1))}
                     ${cell(fixed(l.minDrillMm, 3))}
+                    ${l.format ? `<td>${escapeHtml(formatDigits(l.format))}</td>`
+                               : '<td class="absent">—</td>'}
                     <td>${l.hasGeometry === null || l.hasGeometry === undefined ? '—' : yesNo(l.hasGeometry)}</td>
                 </tr>`;
             }).join('');
@@ -1593,7 +1620,7 @@
                         <thead><tr>
                             <th>File</th><th>Function</th><th>Side</th><th>Layer #</th>
                             <th>Width (mm)</th><th>Height (mm)</th>
-                            <th>Min track (µm)</th><th>Min drill (mm)</th><th>Draws</th>
+                            <th>Min track (µm)</th><th>Min drill (mm)</th><th>Format</th><th>Draws</th>
                         </tr></thead>
                         <tbody>${rows}</tbody>
                     </table></div></div>`;

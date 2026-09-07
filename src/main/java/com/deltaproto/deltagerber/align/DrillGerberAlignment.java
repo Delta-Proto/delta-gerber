@@ -684,6 +684,11 @@ public final class DrillGerberAlignment {
         out.setIntegerDigits(src.getIntegerDigits());
         out.setDecimalDigits(src.getDecimalDigits());
         out.setLeadingZeros(src.isLeadingZeros());
+        // The shifted copy is the same export, so it still reports the same format — including
+        // whether the file declared one, which is what a fabricator is told.
+        out.setSourceUnit(src.getSourceUnit());
+        out.setFormatDeclared(src.isFormatDeclared());
+        out.setDecimalPointCoordinates(src.hasDecimalPointCoordinates());
         out.setOriginOffset(src.getOriginOffsetX() + dx, src.getOriginOffsetY() + dy);
         for (Tool t : src.getTools().values()) {
             out.addTool(t);

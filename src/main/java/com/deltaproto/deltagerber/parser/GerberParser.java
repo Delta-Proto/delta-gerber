@@ -120,7 +120,10 @@ public class GerberParser {
         log.trace("Token processing took {}ms", System.currentTimeMillis() - parseStart);
 
         // All coordinates and dimensions have been normalized to mm during parsing.
-        // Set the document unit to MM so downstream code knows the data is in mm.
+        // Set the document unit to MM so downstream code knows the data is in mm. The unit the
+        // file itself used is kept separately, because the format spec it declared is stated in
+        // that unit and nothing else records it (GerberDocument#getFormatSpec).
+        document.setSourceUnit(unit);
         document.setUnit(Unit.MM);
 
         log.trace("Gerber parse complete in {}ms: {} objects, {} apertures",

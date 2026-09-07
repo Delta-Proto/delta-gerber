@@ -334,7 +334,8 @@ public class PcbAnalyzer {
                 .bounds(function == LayerFunction.OUTLINE
                         ? document.calculatePathBoundingBox()
                         : document.getBoundingBox())
-                .hasGeometry(!document.getObjects().isEmpty());
+                .hasGeometry(!document.getObjects().isEmpty())
+                .formatSpec(document.getFormatSpec());
         if (function.isCopper()) {
             layer.minTrackWidthUm(minTrackWidthUm(document, outlineMm));
         }
@@ -353,6 +354,12 @@ public class PcbAnalyzer {
                 .bounds(document.getBoundingBox())
                 .hasGeometry(!document.getOperations().isEmpty())
                 .minDrillDiameterMm(minDrillDiameterMm(document))
+                // A file that declared no format and drilled no hole states nothing: it is a tool
+                // report or a status log that the .txt extension made look like a drill, and its
+                // "format" would be the parser's defaults, disagreeing with the real drill file.
+                .formatSpec(document.isFormatDeclared() || !document.getOperations().isEmpty()
+                        ? document.getFormatSpec()
+                        : null)
                 .build();
     }
 

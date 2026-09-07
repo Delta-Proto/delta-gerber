@@ -10,6 +10,7 @@ import com.deltaproto.deltagerber.classify.LayerSide;
 import com.deltaproto.deltagerber.model.drill.DrillDocument;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.ComponentPlacement;
+import com.deltaproto.deltagerber.model.gerber.FormatSpec;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
 import com.deltaproto.deltagerber.parser.ExcellonParser;
 import com.deltaproto.deltagerber.parser.GerberParser;
@@ -528,6 +529,19 @@ public class GerberViewerServer {
                     firstAttribute(layers, GerberDocument::getCreationDate)));
             json.append(",\"part\":").append(escapeJson(firstAttribute(layers, GerberDocument::getPart)));
 
+            // How the files write their numbers — the "4:3, leading zeros suppressed" a fabricator
+            // asks for. null for either format means no file stated one, or the files disagree;
+            // formatConsistent is what tells those apart.
+            json.append(",\"gerberFormat\":");
+            appendFormat(json, spec.getGerberFormat());
+            json.append(",\"drillFormat\":");
+            appendFormat(json, spec.getDrillFormat());
+            json.append(",\"gerberFormats\":");
+            appendFormats(json, spec.getGerberFormats());
+            json.append(",\"drillFormats\":");
+            appendFormats(json, spec.getDrillFormats());
+            json.append(",\"formatConsistent\":").append(spec.isFormatConsistent());
+
             json.append(",\"layers\":[");
             boolean first = true;
             for (AnalyzedLayer layer : analyzed) {
@@ -544,9 +558,48 @@ public class GerberViewerServer {
                 json.append(",\"minTrackUm\":").append(number(layer.getMinTrackWidthUm(), 3));
                 json.append(",\"minDrillMm\":").append(number(layer.getMinDrillDiameterMm(), 4));
                 json.append(",\"hasGeometry\":").append(layer.getHasGeometry());
+                json.append(",\"format\":");
+                appendFormat(json, layer.getFormatSpec());
                 json.append("}");
             }
             json.append("]}");
+        }
+
+        /**
+         * A file's coordinate format, or {@code null} when it has none. Both the parts and the
+         * sentence are sent: the panel shows the sentence, and a caller reading this endpoint as an
+         * API should not have to parse it back apart.
+         */
+        private static void appendFormat(StringBuilder json, FormatSpec format) {
+            if (format == null) {
+                json.append("null");
+                return;
+            }
+            json.append("{\"digits\":").append(escapeJson(format.digits()));
+            json.append(",\"integerDigits\":").append(format.integerDigits());
+            json.append(",\"decimalDigits\":").append(format.decimalDigits());
+            json.append(",\"unit\":").append(escapeJson(format.unit().name()));
+            json.append(",\"zeroSuppression\":").append(escapeJson(format.zeroSuppression().name()));
+            json.append(",\"resolutionMm\":").append(number(format.resolutionMm(), 6));
+            json.append(",\"declared\":").append(format.declared());
+            json.append(",\"text\":").append(escapeJson(format.toString()));
+            json.append('}');
+        }
+
+        /**
+         * Every distinct format a group of files states. One entry is the healthy case; more says
+         * the set was assembled from more than one export, which is why the singular field above
+         * goes null and this one carries the detail.
+         */
+        private static void appendFormats(StringBuilder json, List<FormatSpec> formats) {
+            json.append('[');
+            for (int i = 0; i < formats.size(); i++) {
+                if (i > 0) {
+                    json.append(',');
+                }
+                appendFormat(json, formats.get(i));
+            }
+            json.append(']');
         }
 
         /** The first non-null value of {@code attribute} across the Gerber layers, or null. */

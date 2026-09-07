@@ -6,6 +6,7 @@ import com.deltaproto.deltagerber.dfm.ViaInPadGroup;
 import com.deltaproto.deltagerber.dfm.ViaInPadPolicy;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
+import com.deltaproto.deltagerber.model.gerber.FormatSpec;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -34,6 +35,20 @@ public final class BoardSpecification {
             LayerFunction.SOLDERMASK,
             LayerFunction.PASTE,
             LayerFunction.OUTLINE);
+
+    /**
+     * The layers whose coordinate format is the board's. Documentation is left out and so is a file
+     * nothing recognised: KiCad plots its drill map in a coarser format than the artwork it
+     * documents, and a fab drawing that disagrees with the board is not a mismatch anyone need fix.
+     */
+    private static final Set<LayerFunction> ARTWORK_LAYERS = EnumSet.of(
+            LayerFunction.COPPER,
+            LayerFunction.SILKSCREEN,
+            LayerFunction.SOLDERMASK,
+            LayerFunction.PASTE,
+            LayerFunction.OUTLINE,
+            LayerFunction.ROUT,
+            LayerFunction.SCORE);
 
     private final Double sizeXMm;
     private final Double sizeYMm;
@@ -362,6 +377,119 @@ public final class BoardSpecification {
      */
     public Boolean isStackEstimated() {
         return stack.getEntries().isEmpty() ? null : stack.isEstimated();
+    }
+
+    /**
+     * How the artwork writes its coordinates — digit format, zero suppression and the unit those
+     * digits are in, which is what a fabricator means by "4:3". The format every artwork layer
+     * that states one agrees on; {@code null} when none states one, and also when they disagree —
+     * a set with two exports mixed into it, which {@link #getGerberFormats()} shows and
+     * {@link #isFormatConsistent()} reports as {@code FALSE}.
+     *
+     * <p>The artwork is the copper, mask, silkscreen, paste, outline and routing layers. A drill
+     * map, a fab drawing or a file nothing recognised is documentation and does not count: KiCad
+     * plots its drill maps in 4:5 against 4:6 artwork, and that is not a mismatch to report. A set
+     * where <em>nothing</em> was recognised as artwork falls back to every non-drill file, since
+     * then the shortlist is the classifier's failure rather than the set's shape.
+     */
+    public FormatSpec getGerberFormat() {
+        List<FormatSpec> formats = getGerberFormats();
+        return formats.size() == 1 ? formats.get(0) : null;
+    }
+
+    /**
+     * As {@link #getGerberFormat()}, for the drill program. Excellon rarely declares its format, so
+     * this is often the one the parser assumed to read the file — {@link FormatSpec#declared()} is
+     * false then, and a fab reading the same file may well assume differently.
+     */
+    public FormatSpec getDrillFormat() {
+        List<FormatSpec> formats = getDrillFormats();
+        return formats.size() == 1 ? formats.get(0) : null;
+    }
+
+    /**
+     * Every distinct coordinate format the artwork layers state, in the order the files were given.
+     * One entry is the healthy case; more than one means the set was assembled from more than one
+     * export. Which layers count is set out in {@link #getGerberFormat()}. Empty when no artwork
+     * layer states a format — including at
+     * {@link AnalysisDepth#SPECIFICATION} depth, where a layer that cannot change the specification
+     * is never parsed.
+     */
+    public List<FormatSpec> getGerberFormats() {
+        return distinctFormats(false);
+    }
+
+    /** Every distinct coordinate format the drill files state. See {@link #getGerberFormats()}. */
+    public List<FormatSpec> getDrillFormats() {
+        return distinctFormats(true);
+    }
+
+    /**
+     * Whether the set states one coordinate format throughout: every artwork layer writing its
+     * numbers the same way, every drill file the same as every other, and the drill program in the
+     * same unit as the artwork. {@code null} when fewer than two files state a format, so there is
+     * nothing to compare.
+     *
+     * <p>Digits are compared within the artwork and within the drill program, but not between them:
+     * a drill file legitimately states fewer decimals than the artwork (KiCad writes 4:6 mm Gerbers
+     * against a 3:3 mm drill) and holes are placed on a coarser grid than traces anyway. A
+     * <em>unit</em> mismatch is the one that matters — an inch drill against metric artwork is what
+     * fabricators ask you to fix, and what a CAM operator can silently get wrong.
+     */
+    public Boolean isFormatConsistent() {
+        List<FormatSpec> artwork = formats(false);
+        List<FormatSpec> drill = formats(true);
+        if (artwork.size() + drill.size() < 2) {
+            return null;
+        }
+        if (!allAgree(artwork) || !allAgree(drill)) {
+            return false;
+        }
+        return artwork.isEmpty() || drill.isEmpty()
+                || artwork.get(0).unit() == drill.get(0).unit();
+    }
+
+    private static boolean allAgree(List<FormatSpec> formats) {
+        return formats.isEmpty() || formats.stream().allMatch(f -> f.sameFormatAs(formats.get(0)));
+    }
+
+    /**
+     * The stated formats of the set's drill files, or of its artwork.
+     *
+     * <p>When nothing was recognised as artwork every non-drill file is read instead: a set of
+     * files named {@code top.gbr}, {@code l2.gbr} and so on classifies as fab drawings throughout,
+     * and one format from the wrong shortlist beats no answer at all. It only degrades to the
+     * unfiltered reading, never to a wrong one.
+     */
+    private List<FormatSpec> formats(boolean drill) {
+        if (drill) {
+            return statedFormats(l -> l.getFunction().isDrill());
+        }
+        List<FormatSpec> artwork = statedFormats(l -> ARTWORK_LAYERS.contains(l.getFunction()));
+        return artwork.isEmpty() ? statedFormats(l -> !l.getFunction().isDrill()) : artwork;
+    }
+
+    private List<FormatSpec> statedFormats(java.util.function.Predicate<AnalyzedLayer> include) {
+        return layers.stream()
+                .filter(include)
+                .map(AnalyzedLayer::getFormatSpec)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+    }
+
+    /**
+     * As {@link #formats}, with files that write their numbers the same way collapsed to one entry.
+     * Not {@code distinct()}: two files agree on a format whether or not both
+     * {@linkplain FormatSpec#declared() declared} it.
+     */
+    private List<FormatSpec> distinctFormats(boolean drill) {
+        List<FormatSpec> distinct = new java.util.ArrayList<>();
+        for (FormatSpec format : formats(drill)) {
+            if (distinct.stream().noneMatch(format::sameFormatAs)) {
+                distinct.add(format);
+            }
+        }
+        return List.copyOf(distinct);
     }
 
     /** Every analysed file, in the order given. */

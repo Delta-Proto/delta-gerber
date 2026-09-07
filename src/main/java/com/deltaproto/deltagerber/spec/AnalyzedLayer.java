@@ -4,6 +4,7 @@ import com.deltaproto.deltagerber.classify.LayerClassification;
 import com.deltaproto.deltagerber.classify.LayerFunction;
 import com.deltaproto.deltagerber.classify.LayerSide;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
+import com.deltaproto.deltagerber.model.gerber.FormatSpec;
 
 import java.util.List;
 
@@ -26,6 +27,7 @@ public final class AnalyzedLayer {
     private final Double minTrackWidthUm;
     private final Double minDrillDiameterMm;
     private final Boolean hasGeometry;
+    private final FormatSpec formatSpec;
     private final List<String> warnings;
 
     private AnalyzedLayer(Builder builder) {
@@ -35,6 +37,7 @@ public final class AnalyzedLayer {
         this.minTrackWidthUm = builder.minTrackWidthUm;
         this.minDrillDiameterMm = builder.minDrillDiameterMm;
         this.hasGeometry = builder.hasGeometry;
+        this.formatSpec = builder.formatSpec;
         this.warnings = List.copyOf(builder.warnings);
     }
 
@@ -100,6 +103,16 @@ public final class AnalyzedLayer {
         return hasGeometry;
     }
 
+    /**
+     * How this file writes its coordinates — digits, zero suppression and the unit they are in.
+     * Null when the file was not parsed (see {@link AnalysisDepth#SPECIFICATION}) or carried no
+     * format at all. See {@link BoardSpecification#isFormatConsistent()} for what a set makes of
+     * them together.
+     */
+    public FormatSpec getFormatSpec() {
+        return formatSpec;
+    }
+
     /** Non-fatal problems found while parsing this file. */
     public List<String> getWarnings() {
         return warnings;
@@ -117,6 +130,7 @@ public final class AnalyzedLayer {
         private Double minTrackWidthUm;
         private Double minDrillDiameterMm;
         private Boolean hasGeometry;
+        private FormatSpec formatSpec;
         private List<String> warnings = List.of();
 
         private Builder(String fileName) {
@@ -158,6 +172,11 @@ public final class AnalyzedLayer {
 
         public Builder hasGeometry(Boolean hasGeometry) {
             this.hasGeometry = hasGeometry;
+            return this;
+        }
+
+        public Builder formatSpec(FormatSpec formatSpec) {
+            this.formatSpec = formatSpec;
             return this;
         }
 

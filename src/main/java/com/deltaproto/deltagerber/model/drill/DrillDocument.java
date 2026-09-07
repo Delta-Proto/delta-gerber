@@ -1,6 +1,7 @@
 package com.deltaproto.deltagerber.model.drill;
 
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
+import com.deltaproto.deltagerber.model.gerber.FormatSpec;
 import com.deltaproto.deltagerber.model.gerber.Unit;
 
 import java.util.ArrayList;
@@ -15,10 +16,13 @@ public class DrillDocument {
 
     private String fileName;
     private Unit unit = Unit.MM;
+    private Unit sourceUnit = Unit.MM;
     private CoordinateMode coordinateMode = CoordinateMode.ABSOLUTE;
     private int integerDigits = 2;
     private int decimalDigits = 4;
     private boolean leadingZeros = true;
+    private boolean formatDeclared = false;
+    private boolean decimalPointCoordinates = false;
 
     // Translation (mm) already baked into this document's coordinates to bring them into the
     // Gerber/board frame, set when DrillGerberAlignment corrects an origin mismatch. Zero for a
@@ -167,6 +171,61 @@ public class DrillDocument {
 
     public void setLeadingZeros(boolean leadingZeros) {
         this.leadingZeros = leadingZeros;
+    }
+
+    /**
+     * The unit the file's own numbers were written in ({@code INCH}/{@code METRIC}, {@code M72}/
+     * {@code M71}) — not {@link #getUnit()}, which is {@link Unit#MM} on every parsed document
+     * because that is what the coordinates have been converted to. Kept only so
+     * {@link #getFormatSpec()} can say what the digits meant.
+     */
+    public Unit getSourceUnit() {
+        return sourceUnit;
+    }
+
+    public void setSourceUnit(Unit sourceUnit) {
+        this.sourceUnit = sourceUnit;
+    }
+
+    /**
+     * Whether the file stated its digit format itself — a {@code ;FILE_FORMAT=} comment or a
+     * standalone {@code 2.4}. Excellon does not require it, so it is often false and the digits are
+     * then the parser's convention for the unit (2:4 inch, 3:3 metric).
+     */
+    public boolean isFormatDeclared() {
+        return formatDeclared;
+    }
+
+    public void setFormatDeclared(boolean formatDeclared) {
+        this.formatDeclared = formatDeclared;
+    }
+
+    /**
+     * Whether the coordinates carry their own decimal point, as KiCad and others write them. Then
+     * nothing is zero-suppressed and the digit counts describe nothing — the numbers are read as
+     * written.
+     */
+    public boolean hasDecimalPointCoordinates() {
+        return decimalPointCoordinates;
+    }
+
+    public void setDecimalPointCoordinates(boolean decimalPointCoordinates) {
+        this.decimalPointCoordinates = decimalPointCoordinates;
+    }
+
+    /**
+     * How this file wrote its coordinates — digits, zero suppression and the unit they were in.
+     * Never null: unlike Gerber's mandatory {@code %FS%}, an Excellon file may declare nothing at
+     * all, and the format is then the one the parser assumed to read it, flagged as
+     * {@linkplain FormatSpec#declared() undeclared}.
+     */
+    public FormatSpec getFormatSpec() {
+        FormatSpec.ZeroSuppression zeros = decimalPointCoordinates
+                ? FormatSpec.ZeroSuppression.NONE
+                // Excellon LZ keeps the leading zeros and drops the trailing ones — the opposite of
+                // what Gerber's L means. See FormatSpec.
+                : leadingZeros ? FormatSpec.ZeroSuppression.TRAILING : FormatSpec.ZeroSuppression.LEADING;
+        return new FormatSpec(sourceUnit, integerDigits, decimalDigits, zeros, formatDeclared);
     }
 
     /** Millimetres added to the X coordinates to bring them into the Gerber frame (0 if none). */

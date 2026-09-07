@@ -106,7 +106,10 @@ public class ExcellonParser {
             parseLine(line);
         }
 
-        // All coordinates and tool diameters have been normalized to mm during parsing
+        // All coordinates and tool diameters have been normalized to mm during parsing. The unit
+        // the file itself used is kept separately: the digit format it declared is stated in that
+        // unit, and nothing else records it (DrillDocument#getFormatSpec).
+        document.setSourceUnit(document.getUnit());
         document.setUnit(Unit.MM);
 
         log.trace("Excellon parse complete in {}ms: {} operations, {} tools",
@@ -125,6 +128,7 @@ public class ExcellonParser {
             if (fileFormatMatcher.find()) {
                 document.setIntegerDigits(Integer.parseInt(fileFormatMatcher.group(1)));
                 document.setDecimalDigits(Integer.parseInt(fileFormatMatcher.group(2)));
+                document.setFormatDeclared(true);
                 explicitFormatSet = true;
                 log.trace("Explicit FILE_FORMAT set to {}:{}", fileFormatMatcher.group(1), fileFormatMatcher.group(2));
             }
@@ -271,6 +275,7 @@ public class ExcellonParser {
         if (formatMatcher.find()) {
             document.setIntegerDigits(Integer.parseInt(formatMatcher.group(1)));
             document.setDecimalDigits(Integer.parseInt(formatMatcher.group(2)));
+            document.setFormatDeclared(true);
             return true;
         }
 
@@ -520,6 +525,9 @@ public class ExcellonParser {
         try {
             // If the value contains a decimal point, parse directly
             if (value.contains(".")) {
+                // Then the header's digit format governs nothing — worth reporting, since it is
+                // the one Excellon file that cannot be misread whatever the fab assumes.
+                document.setDecimalPointCoordinates(true);
                 parsed = Double.parseDouble(value);
             } else {
                 // Otherwise, use the document's format settings

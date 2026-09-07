@@ -19,6 +19,7 @@ public class GerberDocument {
     private String fileName;
     private CoordinateFormat coordinateFormat;
     private Unit unit = Unit.MM;
+    private Unit sourceUnit = Unit.MM;
     private ImagePolarity imagePolarity = ImagePolarity.POSITIVE;
 
     private final Map<String, FileAttribute> fileAttributes = new HashMap<>();
@@ -273,6 +274,39 @@ public class GerberDocument {
 
     public void setUnit(Unit unit) {
         this.unit = unit;
+    }
+
+    /**
+     * The unit the file's own numbers were written in, from {@code %MO%} — not
+     * {@link #getUnit()}, which is {@link Unit#MM} on every parsed document because that is what
+     * the coordinates have been converted to. Kept only so {@link #getFormatSpec()} can say what
+     * the digits meant; defaults to the millimetres the parser assumes when a file omits
+     * {@code %MO%} entirely.
+     */
+    public Unit getSourceUnit() {
+        return sourceUnit;
+    }
+
+    public void setSourceUnit(Unit sourceUnit) {
+        this.sourceUnit = sourceUnit;
+    }
+
+    /**
+     * How this file wrote its coordinates — digits, zero suppression and the unit they were in.
+     * {@code null} when the file carried no {@code %FS%} at all, which leaves the numbers
+     * uninterpretable and is already reported as a {@linkplain #getWarnings() warning}.
+     */
+    public FormatSpec getFormatSpec() {
+        if (coordinateFormat == null) {
+            return null;
+        }
+        return new FormatSpec(sourceUnit,
+                coordinateFormat.getIntegerDigits(),
+                coordinateFormat.getDecimalDigits(),
+                coordinateFormat.isLeadingZeroOmitted()
+                        ? FormatSpec.ZeroSuppression.LEADING
+                        : FormatSpec.ZeroSuppression.TRAILING,
+                true);
     }
 
     public Map<String, FileAttribute> getFileAttributes() {

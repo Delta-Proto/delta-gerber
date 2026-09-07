@@ -5,6 +5,7 @@ import com.deltaproto.deltagerber.classify.LayerFunction;
 import com.deltaproto.deltagerber.classify.LayerSide;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
+import com.deltaproto.deltagerber.model.gerber.Unit;
 import com.deltaproto.deltagerber.parser.ExcellonParser;
 import com.deltaproto.deltagerber.parser.GerberParser;
 
@@ -541,6 +542,142 @@ class PcbAnalyzerTest {
                     AnalysisDepth.SPECIFICATION);
             assertEquals(Boolean.TRUE, spec.hasViaInPad());
             assertEquals(1, spec.getViaInPadCount());
+        }
+    }
+
+    /**
+     * What the files say about their own numbers. The set-level question is not "which format" but
+     * "one format?" — a fabricator wants the drill program stated in the same terms as the artwork.
+     */
+    @Nested
+    @DisplayName("Coordinate format")
+    class CoordinateFormat {
+
+        /** A metric drill, stated in the same 3:3 the artwork's 4:6 is a finer grid of. */
+        private static final String METRIC_DRILL = String.join("\n",
+                "M48", "METRIC,TZ", ";FILE_FORMAT=3:3", "T1C0.300", "%", "T1",
+                "X005000Y005000", "M30");
+
+        /** The same holes, exported on the inch grid — 2:4, and out of step with metric artwork. */
+        private static final String INCH_DRILL = String.join("\n",
+                "M48", "INCH,LZ", "T1C0.0118", "%", "T1",
+                "X0019685Y0019685", "M30");
+
+        @Test
+        @DisplayName("A set exported in one format reports it, and calls itself consistent")
+        void oneFormatThroughout() {
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-Edge_Cuts.gbr", EDGE_CUTS),
+                    PcbFile.of("board-F_Cu.gbr", F_CU),
+                    PcbFile.of("board-PTH.drl", METRIC_DRILL)));
+
+            assertEquals("4:6", spec.getGerberFormat().digits());
+            assertEquals(Unit.MM, spec.getGerberFormat().unit());
+            assertEquals("3:3", spec.getDrillFormat().digits());
+            assertEquals(Boolean.TRUE, spec.isFormatConsistent(),
+                    "a coarser drill grid is normal; the unit is what has to agree");
+        }
+
+        @Test
+        @DisplayName("An inch drill against metric artwork is not consistent")
+        void drillInAnotherUnit() {
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-F_Cu.gbr", F_CU),
+                    PcbFile.of("board-PTH.drl", INCH_DRILL)));
+
+            assertEquals(Unit.MM, spec.getGerberFormat().unit());
+            assertEquals(Unit.INCH, spec.getDrillFormat().unit());
+            assertEquals(Boolean.FALSE, spec.isFormatConsistent());
+        }
+
+        @Test
+        @DisplayName("Artwork from two exports has no single format, and every one is listed")
+        void mixedArtwork() {
+            String inchCopper = String.join("\n",
+                    "%FSLAX24Y24*%", "%MOIN*%", "%ADD11C,0.0100*%", "D11*",
+                    "X1000Y1000D02*", "X2000Y2000D01*", "M02*");
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-F_Cu.gbr", F_CU),
+                    PcbFile.of("board-B_Cu.gbr", inchCopper)));
+
+            assertNull(spec.getGerberFormat(), "two answers is no answer");
+            assertEquals(2, spec.getGerberFormats().size(), "and both are on the record");
+            assertEquals(Boolean.FALSE, spec.isFormatConsistent());
+        }
+
+        @Test
+        @DisplayName("Files that write their numbers the same way collapse to one format")
+        void agreeingArtworkIsOneFormat() {
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-Edge_Cuts.gbr", EDGE_CUTS),
+                    PcbFile.of("board-F_Cu.gbr", F_CU)));
+
+            assertEquals(1, spec.getGerberFormats().size());
+            assertTrue(spec.getDrillFormats().isEmpty(), "no drill file, no drill format");
+        }
+
+        @Test
+        @DisplayName("One file alone leaves consistency unanswered")
+        void nothingToCompare() {
+            BoardSpecification spec = new PcbAnalyzer().analyze(
+                    List.of(PcbFile.of("board-F_Cu.gbr", F_CU)));
+
+            assertNotNull(spec.getGerberFormat());
+            assertNull(spec.isFormatConsistent(), "nothing to disagree with");
+        }
+
+        /**
+         * KiCad plots its drill map in 4:5 while the board it documents is 4:6. Counting the map
+         * would report every KiCad set as self-inconsistent over a drawing nobody fabricates.
+         */
+        @Test
+        @DisplayName("A drill map is documentation, and does not decide the board's format")
+        void documentationDoesNotCount() {
+            String drillMap = String.join("\n",
+                    "%FSLAX45Y45*%", "%MOMM*%", "%ADD11C,0.1000*%", "D11*",
+                    "X100000Y100000D03*", "M02*");
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-Edge_Cuts.gbr", EDGE_CUTS),
+                    PcbFile.of("board-F_Cu.gbr", F_CU),
+                    PcbFile.of("board-PTH-drl_map.gbr", drillMap)));
+
+            assertEquals(LayerFunction.FAB_DRAWING,
+                    spec.getLayers().get(2).getFunction(), "the map is a drawing");
+            assertEquals("4:5", spec.getLayers().get(2).getFormatSpec().digits(),
+                    "its own format is still on the record");
+            assertEquals("4:6", spec.getGerberFormat().digits(), "but the board is the artwork's");
+            assertEquals(Boolean.TRUE, spec.isFormatConsistent());
+        }
+
+        /**
+         * Altium writes its NC drill report as a {@code .Txt} beside the drill files, and the
+         * extension makes it look like one. It drills nothing and declares nothing, so its
+         * "format" would be the parser's bare defaults — and would disagree with the real file.
+         */
+        @Test
+        @DisplayName("A report that declares no format and drills no hole states none")
+        void aReportIsNotADrillProgram() {
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-F_Cu.gbr", F_CU),
+                    PcbFile.of("board-Plated.TXT", METRIC_DRILL),
+                    PcbFile.of("Status Report.Txt", "Output: NC Drill Files\nFiles Generated : 2\n")));
+
+            assertNull(spec.getLayers().get(2).getFormatSpec());
+            assertEquals("3:3", spec.getDrillFormat().digits(), "one drill file, one format");
+            assertEquals(Boolean.TRUE, spec.isFormatConsistent());
+        }
+
+        @Test
+        @DisplayName("The format survives a spec rebuilt from persisted measurements")
+        void survivesPersistence() {
+            BoardSpecification analysed = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board-F_Cu.gbr", F_CU),
+                    PcbFile.of("board-PTH.drl", METRIC_DRILL)));
+
+            BoardSpecification rebuilt = BoardSpecification.from(analysed.getLayers());
+            assertEquals("4:6", rebuilt.getGerberFormat().digits());
+            assertEquals("3:3", rebuilt.getDrillFormat().digits());
+            assertEquals(Boolean.TRUE, rebuilt.isFormatConsistent());
         }
     }
 

@@ -138,6 +138,9 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
   `MaterialStackup` or from an **IPC-2581** file's `Stackup` (`Ipc2581StackupParser`, streamed and
   stopped at `</Stackup>` so a 158 MB file costs milliseconds), and otherwise estimated from the
   layers the set does have
+- **Coordinate format reporting** (`spec.getGerberFormat()` / `getDrillFormat()`) — the "4:3,
+  leading zeros suppressed" a fabricator asks for, per file and for the set, plus
+  `isFormatConsistent()`: whether the drill program was exported in the same terms as the artwork
 - Drill/Gerber origin auto-alignment (`DrillGerberAlignment`) recovers an exact offset when the NC
   drill was exported on a different origin than the copper (e.g. some Altium flows), so holes and
   pads share one coordinate space before any analysis
@@ -154,6 +157,8 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
 - Zoom controls in the viewer's corner, and the running version in the header
 - PNG Top/Bottom export of the realistic view
 - STEP export of the board outline, with an editable board thickness (default 1.6 mm)
+- PCB info tab: board size, layer count, processes, tolerances, via-in-pad, and the coordinate
+  format each file was exported in
 - Warnings tab listing per-file parse warnings (disabled when there are none)
 - Layer type auto-detection from filename and content analysis
 - Layer type dropdowns for manual override
@@ -396,6 +401,56 @@ boolean needsViaFill = vip.requiresFilledAndCapped();  // the process verdict �
 > Cost note: at `AnalysisDepth.SPECIFICATION` the analyzer skips parsing layers that can't change
 > the spec (a large silkscreen, for instance) but still parses the small paste layer when a drill
 > is present, so via-in-pad is reported at both depths.
+
+### Coordinate Format
+
+Fabricators ask which format the files were exported in — "4:3", "2:4", leading or trailing zeros —
+and expect the drill program to be stated in the same terms as the artwork. Every parsed document
+reports its own, and the specification reduces the set to one answer.
+
+```java
+import com.deltaproto.deltagerber.model.gerber.FormatSpec;
+
+BoardSpecification spec = new PcbAnalyzer().analyze(files);
+
+FormatSpec gerber = spec.getGerberFormat();   // 4:6 mm, leading zeros suppressed
+FormatSpec drill  = spec.getDrillFormat();    // 3:3 mm, leading zeros suppressed
+
+gerber.digits();          // "4:6" — integer digits : decimal digits
+gerber.unit();            // Unit.MM — the file's own unit, not the mm everything is normalised to
+gerber.zeroSuppression(); // LEADING, TRAILING, or NONE for coordinates with a decimal point
+gerber.declared();        // false when the file stated no format and this is the assumption
+gerber.resolutionMm();    // 1.0E-6 — the smallest step the coordinates can express
+
+Boolean aligned = spec.isFormatConsistent();  // null when fewer than two files state a format
+```
+
+`declared()` matters for drill files: Excellon requires no format at all, so a file that states
+none is read on convention (2:4 for inch, 3:3 for metric) — and a fabricator's CAM is free to
+assume differently, which is exactly how a board comes back with the holes in the wrong place.
+
+Only the artwork — copper, mask, silkscreen, paste, outline and routing — decides the set's format.
+A drill map or fab drawing is documentation (KiCad plots its maps in 4:5 against 4:6 artwork), and a
+drill file that declares no format and drills no hole states none at all, which keeps an NC drill
+*report* named `.Txt` from disagreeing with the drill program it describes.
+
+`isFormatConsistent()` compares digits within the artwork and within the drill program, but not
+between them: a drill file legitimately states a coarser grid than the artwork (KiCad writes 4:6 mm
+Gerbers against a 3:3 mm drill). A **unit** mismatch is the one that matters. When a set was
+assembled from two exports the artwork has no single format, `getGerberFormat()` is `null`, and
+`getGerberFormats()` lists every format found — `AnalyzedLayer.getFormatSpec()` says which file is
+the odd one out.
+
+> Never print the format's own letter: Gerber's `FSL` *omits* leading zeros while Excellon's `LZ`
+> *keeps* them and omits the trailing ones. `ZeroSuppression` names what is missing instead, so
+> both formats share one vocabulary.
+
+Single documents answer too, without the analyzer:
+
+```java
+FormatSpec fs = new GerberParser().parse(content).getFormatSpec();   // null if the file has no %FS%
+FormatSpec ds = new ExcellonParser().parse(content).getFormatSpec(); // never null
+```
 
 ### Physical Stack-up
 

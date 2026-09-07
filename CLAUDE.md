@@ -31,7 +31,9 @@ Central. Put them under `excluded/` (gitignored) and have the test skip when the
   `ExcellonParser` (drill hits, slots, tool diameters), `GerberParser` (operation coordinates,
   aperture sizes), and `Ipc356Parser` (netlist test points, conductors, hole diameters — from the
   file's `CUST` 0.0001 inch or `SI` 0.001 mm grid). The file's native unit (inch/mm) is consumed
-  during parsing and not retained.
+  during parsing; on a Gerber or drill document it survives only as `getSourceUnit()`, because the
+  format a file declares means nothing without the unit its digits are in (see *Coordinate
+  format*).
 - After parsing, `getUnit()` returns `Unit.MM` on `DrillDocument`, `GerberDocument`, and
   `Ipc356Document`, so all parsed geometry can be treated as mm with no conversion — drill holes,
   Gerber flashes, and netlist test points share one coordinate space (this is what lets
@@ -41,6 +43,41 @@ Central. Put them under `excluded/` (gitignored) and have the test skip when the
   outline measures to the centreline, because that is where the router cuts: a 32 mm board drawn
   with a 0.05 mm aperture inks 32.05 mm but *is* 32 mm. (KiCad's `.gbrjob` reports the inked
   figure, so expect our size to be one aperture-width smaller than what a job file declares.)
+
+## Coordinate format
+
+`model.gerber.FormatSpec` is what a file says about its own numbers: digits before and after the
+implied decimal point, which zeros are left out, and the unit those digits are in — the "4:3,
+leading zeros suppressed" a fabricator asks for. `GerberDocument.getFormatSpec()` reads it from
+`%FS%` plus `%MO%` and is null only when the file carries no `%FS%` at all (its coordinates were
+unreadable anyway). `DrillDocument.getFormatSpec()` is **never** null: Excellon requires none of
+it, so the format is often the one the parser assumed to read the file (2:4 inch, 3:3 metric), and
+`declared()` is the only thing that says so. A coordinate carrying its own decimal point suppresses
+nothing — `ZeroSuppression.NONE`.
+
+**Never report the format's own letter.** Gerber's `FSL` *omits* the leading zeros; Excellon's `LZ`
+*keeps* them and omits the trailing ones. Same letter, opposite meaning, and a set mixes both.
+`ZeroSuppression` names what is missing instead, so the two formats land in one vocabulary.
+
+Two files' worth of judgement decide *whose* format counts. Only the **artwork** — copper, mask,
+silkscreen, paste, outline, routing — speaks for the board: KiCad plots its drill map in 4:5 against
+4:6 artwork, so counting documentation reports every KiCad set as disagreeing with itself over a
+drawing nobody fabricates. A set where nothing was recognised as artwork falls back to every
+non-drill file, since the empty shortlist is then the classifier's failure, not the set's shape (one
+real set here has 20 files all classified `FAB_DRAWING`). And a drill file that declares no format
+*and* drills no hole states nothing at all — Altium writes its NC drill report as a `.Txt` beside
+the drill files, the extension makes it look like one, and its "format" would be the parser's bare
+defaults disagreeing with the real program.
+
+At set level the question is agreement, not the value. `BoardSpecification.getGerberFormat()` and
+`getDrillFormat()` are the format the artwork / the drill files agree on, null when they do not —
+`getGerberFormats()` then lists what was actually found, and `AnalyzedLayer.getFormatSpec()` says
+which file differs. `isFormatConsistent()` judges the set: digits are compared within the artwork
+and within the drill program but never between them, since a drill legitimately states a coarser
+grid than the artwork (KiCad writes 4:6 mm Gerbers against a 3:3 mm drill), while a **unit**
+mismatch is the one fabricators ask you to fix. Unlike via-in-pad this survives
+`BoardSpecification.from(layers)` — the format is a per-file measurement and rides on
+`AnalyzedLayer`.
 
 ## Drill/Gerber origin mismatch
 
