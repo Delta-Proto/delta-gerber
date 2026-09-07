@@ -257,6 +257,80 @@ public class DrillGerberAlignmentTest {
             """);
     }
 
+    /**
+     * The non-plated file of the same export, displaced by the same (120, 90) mm as its plated
+     * sibling — but its holes are 16 mm to the right of four of the pads, so a translation 16 mm
+     * off the truth seats every one of them on copper. Nothing is concentric with a pad in an NPTH
+     * file, which is exactly why pad support is noise for it and a coincidence can outvote the
+     * real origin.
+     */
+    private static final double[][] NPTH = {
+        {192, 112}, {165, 37}, {137, 88}, {114, 14}   // = a pad + (16, 0), and never a pad itself
+    };
+    private static final double NPTH_DECOY_X = 16;
+
+    private DrillDocument displacedNpth() {
+        StringBuilder sb = new StringBuilder("M48\nMETRIC\nT1C3.2\n%\nT1\n");
+        for (double[] h : NPTH) {
+            sb.append(String.format(Locale.US, "X%.3fY%.3f\n", h[0] + SHIFT_X, h[1] + SHIFT_Y));
+        }
+        return drillParser.parse(sb.append("M30\n").toString());
+    }
+
+    @Test
+    void aDrillFileDoesNotWanderOffToItsOwnOriginWhenASiblingKnowsBetter() {
+        GerberDocument board = largeBoardWithPads();
+        BoundingBox bounds = board.getBoundingBox();
+        List<double[]> pads = DrillGerberAlignment.flashCenters(board);
+        DrillDocument rounds = displacedRoundHoles();
+        DrillDocument npth = displacedNpth();
+
+        // Setup: judged on its own the NPTH file confidently recovers the *wrong* origin — the
+        // decoy seats 4 of its 4 holes on pads, where the truth seats none.
+        Result alone = DrillGerberAlignment.analyze(npth, bounds, pads);
+        assertEquals(Status.MISALIGNED_RESOLVED, alone.getStatus());
+        assertEquals(-SHIFT_X - NPTH_DECOY_X, alone.getOffsetX(), 1e-6,
+            "setup: alone it falls for the decoy");
+        assertEquals(NPTH.length, alone.getMatchedHoles());
+
+        // As a set it defers: one export has one origin, and the plated file matched twelve holes
+        // to the decoy's four.
+        List<Result> results = DrillGerberAlignment.analyzeAll(List.of(rounds, npth), bounds, pads);
+        Result plated = results.get(0);
+        Result nonPlated = results.get(1);
+        assertFalse(plated.isInherited(), "the plated file established the origin");
+        assertEquals(-SHIFT_X, plated.getOffsetX(), 1e-6);
+        assertEquals(Status.MISALIGNED_RESOLVED, nonPlated.getStatus());
+        assertTrue(nonPlated.isInherited(), "the non-plated file was overruled by its sibling");
+        assertEquals(-SHIFT_X, nonPlated.getOffsetX(), 1e-6);
+        assertEquals(-SHIFT_Y, nonPlated.getOffsetY(), 1e-6);
+
+        // ...which puts its holes where the drill drawing says they are, not 16 mm away.
+        List<DrillDocument> aligned =
+            DrillGerberAlignment.alignedAll(List.of(rounds, npth), bounds, pads);
+        for (int i = 0; i < NPTH.length; i++) {
+            DrillHit h = (DrillHit) aligned.get(1).getOperations().get(i);
+            assertEquals(NPTH[i][0], h.getX(), 1e-6);
+            assertEquals(NPTH[i][1], h.getY(), 1e-6);
+        }
+    }
+
+    @Test
+    void siblingsThatAgreeOnTheOriginKeepTheirOwnAnswer() {
+        GerberDocument board = largeBoardWithPads();
+        BoundingBox bounds = board.getBoundingBox();
+        List<double[]> pads = DrillGerberAlignment.flashCenters(board);
+
+        List<Result> results = DrillGerberAlignment.analyzeAll(
+            List.of(displacedRoundHoles(), displacedRoundHoles()), bounds, pads);
+
+        for (Result r : results) {
+            assertEquals(-SHIFT_X, r.getOffsetX(), 1e-6);
+            assertFalse(r.isInherited(), "each recovered the same origin on its own evidence");
+            assertEquals(PADS.length, r.getMatchedHoles());
+        }
+    }
+
     /** Four mounting holes on the board, none of them on a pad — an NPTH file, correctly placed. */
     private DrillDocument npthMountingHoles() {
         return drillParser.parse("""

@@ -51,7 +51,7 @@ public class OutlineWithTextRealisticTest {
         g.append("G04 synthetic mechanical layer with text + duplicated profile*\n");
         g.append("%FSLAX44Y44*%\n%MOMM*%\nG01*\n%ADD10C,0.1000*%\nD10*\n");
         // Board edge: 60 x 40 mm rectangle, emitted TWICE (tools often duplicate the
-        // profile; under evenodd a doubled loop would cancel itself without de-dup).
+        // profile; a doubled loop must not cancel itself, nor count as nested in its own copy).
         g.append(rect(0, 0, 60, 40));
         g.append(rect(0, 0, 60, 40));
         // Two small text-like glyphs floating ABOVE the board (outside it), also doubled.
@@ -100,7 +100,7 @@ public class OutlineWithTextRealisticTest {
         assertFalse(fill.contains(30.0, -2.0), "below the board edge must be empty");
     }
 
-    /** Render realistically and parse the board-outline clip path into an even-odd Path2D. */
+    /** Render realistically and parse the board-outline clip path into a non-zero Path2D. */
     private static Path2D clipFill(String gerber) throws Exception {
         GerberDocument doc = new GerberParser().parse(gerber);
         List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>();
@@ -110,11 +110,11 @@ public class OutlineWithTextRealisticTest {
         Matcher m = Pattern.compile(
             "<clipPath id=\"board-outline\">\\s*<path d=\"([^\"]*)\"([^/]*)/>").matcher(svg);
         assertTrue(m.find(), "realistic SVG should define a board-outline clipPath");
-        assertTrue(m.group(2).contains("clip-rule=\"evenodd\""),
-            "clip path must use clip-rule=evenodd, was: " + m.group(2));
+        assertTrue(m.group(2).contains("clip-rule=\"nonzero\""),
+            "clip path must use clip-rule=nonzero, was: " + m.group(2));
 
         Path2D fill = parseLinePath(m.group(1));
-        fill.setWindingRule(Path2D.WIND_EVEN_ODD);
+        fill.setWindingRule(Path2D.WIND_NON_ZERO);
         return fill;
     }
 

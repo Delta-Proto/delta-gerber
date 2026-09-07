@@ -60,11 +60,19 @@ versus one hanging entirely clear of it (50%, at least 3), and a shift must alwa
 holes than leaving the drill alone would — so an NPTH-only file, which matches no pad at any offset,
 is never moved.
 
-A drill *set* goes through `analyzeAll`/`alignedAll`, not one file at a time. EDA tools split the
-drill program — Altium writes round holes and slots separately — and a slot-only file carries no hole
-centres to correlate, so it can never recover its own offset. All files in one export share an
-origin, so the best-supported sibling's offset is handed to the ones that came up empty, provided the
-shift lands them on the board. `Result.isInherited()` says an offset arrived that way.
+A drill *set* goes through `analyzeAll`/`alignedAll`, not one file at a time, and **the set agrees on
+one origin**. EDA tools split the drill program — Altium writes round holes and slots separately —
+and a slot-only file carries no hole centres to correlate, so it can never recover its own offset.
+All files in one export share an origin, so the best-supported offset becomes the set's answer and
+every other misplaced file takes it, provided the shift lands it on the board.
+
+That covers the file that found *nothing* and the file that found something *else*. A non-plated
+file is the usual second case: its holes are not concentric with copper pads at all, so pad support
+is noise for it, and a handful of coincidental matches can beat the truth on its own evidence
+(issue #13 — an NPTH file resolved an origin 12 mm from its plated sibling's, which matched 2022 of
+2034 holes; the misplaced mounting hole then showed up as a mask-opened pad with no hole in it).
+Support is the only thing that can rank two answers, so the better-supported one wins outright.
+`Result.isInherited()` says an offset came from a sibling, either way.
 
 ## Board finish colors
 
@@ -84,13 +92,48 @@ back to "mask setter also assigns silk" — call order would then decide the leg
 ## Board outline, and the STEP export
 
 `MultiLayerSVGRenderer.resolveBoardOutline(layers)` is the **one** place the board edge is decided,
-and it returns a `renderer.svg.BoardOutline` — the path *plus* the fill rule it must be read under,
-because the two sources do not mean the same thing by a loop. A profile layer is chained by
-`extractOutlinePath` and its extra loops are genuine cut-outs, which only subtract under
-**even-odd**; a set with no profile gets `OutlineDeriver`'s copper silhouette, whose one loop per
-disjoint board piece must be unioned — **nonzero**. Both the realistic view's clip path and
+and it returns a `renderer.svg.BoardOutline` — the path plus whether it came from a profile layer or
+was derived. A profile layer is chained into loops by `extractOutlineLoops` and those loops are
+resolved into material by `renderer.svg.OutlineResolver`; a set with no profile gets
+`OutlineDeriver`'s copper silhouette instead. Both the realistic view's clip path and
 `renderer.step.StepExporter` go through it, so what renders is what gets extruded. Don't re-derive
 an outline in a new caller; add a consumer of `BoardOutline`.
+
+**The fill rule is always `nonzero`, and that is not a detail.** Cut-outs used to arrive as extra
+loops for an even-odd rule to subtract, which is right only while loops *nest*. Loops that merely
+**overlap** cancel under it, and one feature drawn as several overlapping rectangles is routine —
+Altium writes an L- or C-shaped routed slot that way, and every overlap came back as board (issue
+#13); so does a profile emitted twice, which cancels the board away entirely. `OutlineResolver`
+settles the topology geometrically instead — identical loops collapse, loops at even nesting depth
+union into material, odd ones subtract — and hands over material already wound so nonzero is the
+whole story. Enclosure needs 60% of a loop inside the other, not all of it, because an edge notch is
+drawn straddling the outline and is still a cut-out.
+
+**An open chain is a route, not a loop.** A chain that never meets its own start bounds nothing, so
+it contributes the width of the aperture that drew it swept along it — a 1 mm slot, not the polygon
+you get by joining its ends (which is what turned a C-shaped slot into a filled wedge). The one
+exception is a chain spanning most of the layer: that is the board edge with a piece missing, and
+closing it is the only reading that yields a board at all.
+
+**A set routinely ships more than one profile layer** — a quarter of the real sets in `excluded/`
+carry two or three, because the fabrication guidance itself is split between "put the edge on the
+keep-out layer" and "put it on a mechanical layer", so tools emit both. When they do, the edge and
+its cut-outs can land on *different* files: Altium writes the panel edge to `.GKO` and the routed
+slots to `.GM`, and reading only the first one found is what rendered a panel with no cut-outs.
+All of them are considered. The board is the **tightest outer hull** that holds as much copper as
+any candidate does — outer hull, not material, because judging on material rewards a layer for
+punching holes, and a fab drawing that boxes every component would win on being "tighter" while
+riddling the board. From the losers only **regions** are taken, and only where they fall on land the
+winner still calls material: a G36 region states an area outright, a closed run of strokes on a
+mechanical layer is as likely to be a component box (one set here has 178), and a region landing in
+a hole the winner already cut is the same slot said twice — which, left in, reads as an island of
+material and fills the slot back in.
+
+**A nested loop full of copper is not a cut-out.** Nothing is routed over a hole, so copper inside a
+loop means it is a second outline of a board that is already there — the individual board keep-outs
+an Altium panel draws inside the panel edge, or the same profile repeated on another mechanical
+file. Those stay material. This is the one judgement that needs the copper layers, so a set without
+copper falls back to nesting alone, exactly as before.
 
 `StepExporter` extrudes that outline into an ISO 10303-21 (AP214) B-rep: bottom face at z=0, top at
 the thickness, one planar wall per polygon edge, X/Y left in the Gerber frame's millimetres so the
@@ -100,8 +143,9 @@ the loops are nested — one `Area.subtract` for the whole drill program. It is 
 clipped to the board first: a mouse bite is a hole that straddles the routed edge, and subtracting
 it unclipped is what scallops the edge. Loop nesting is resolved by **parity** —
 a loop enclosed by an even number of others is material and becomes its own `MANIFOLD_SOLID_BREP`,
-an odd one is a cut-out in the innermost loop enclosing it — which is right for even-odd cut-outs
-and harmless for a derived silhouette, whose loops never nest. Enclosure is decided by a *vote* of
+an odd one is a cut-out in the innermost loop enclosing it — which agrees with the material
+`OutlineResolver` hands over and is harmless for a derived silhouette, whose loops never nest.
+Enclosure is decided by a *vote* of
 the inner loop's vertices, not one representative point: board geometry is grid-aligned and loops
 share coordinates constantly, so any single test point lands on the other loop's boundary often
 enough to matter, and a crossing test answers arbitrarily there.

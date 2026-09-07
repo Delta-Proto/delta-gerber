@@ -21,6 +21,7 @@ import javax.imageio.ImageIO;
 import java.awt.Graphics2D;
 import java.awt.Color;
 import java.awt.RenderingHints;
+import java.awt.geom.Area;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -586,6 +587,12 @@ public class MultiLayerSVGRenderer {
     // board itself and its smaller neighbours are holes/slots, so it is kept.
     private static final double FRAME_BOARD_MIN_FRACTION = 0.5;
 
+    // An unclosed chain covering at least this fraction of the profile layer's overall extent is
+    // the board edge with a piece missing, and is closed anyway — there is no board otherwise.
+    // Anything smaller that failed to close is a route (a slot) or a stroked note, and neither
+    // bounds an area: they contribute the width of their own aperture instead.
+    private static final double OPEN_CHAIN_CLOSE_FRACTION = 0.5;
+
     // Coincidence tolerance for collapsing duplicate (re-emitted) profile segments.
     // Far tighter than the chain tolerance so genuinely distinct short segments survive.
     private static final double DEDUPE_TOLERANCE_MM = 0.001;
@@ -638,11 +645,26 @@ public class MultiLayerSVGRenderer {
      * Resolve the board edge from a layer set — the one place the choice between the two
      * sources is made.
      *
-     * <p>A dedicated profile layer wins: its draws, arcs and regions are chained into closed
-     * loops by {@link #extractOutlinePath}, cut-outs included, and the result is read under
-     * the even-odd rule. Without one, the edge is <em>derived</em> from the silhouette of the
-     * copper and soldermask ({@link OutlineDeriver}) — an approximation of the routed edge,
-     * outset by the clearance copper keeps from it, read under the nonzero rule.
+     * <p>A dedicated profile layer wins: its draws, arcs and regions are chained into loops by
+     * {@link #extractOutlineLoops} and resolved into material by {@link OutlineResolver}, cut-outs
+     * included. Without one, the edge is <em>derived</em> from the silhouette of the copper and
+     * soldermask ({@link OutlineDeriver}) — an approximation of the routed edge, outset by the
+     * clearance copper keeps from it.
+     *
+     * <p>A set routinely ships <b>more than one</b> layer that is a profile by name. A quarter of
+     * the real sets we have carry two or three: the fabrication guidance itself is split, some
+     * telling you to put the edge on the keep-out layer and some on a mechanical layer, so tools
+     * emit both — and when they do, the edge and its cut-outs can land on <em>different</em> files
+     * (Altium writes the panel edge to {@code .GKO} and the routed slots to {@code .GM}). Taking
+     * the first one found silently loses whatever the others carry, which is how a board renders
+     * with no cut-outs at all.
+     *
+     * <p>So all of them are considered, and {@link OutlineResolver#merge} picks between them: the
+     * board is the <b>tightest outer hull</b> that holds as much of the copper as any candidate
+     * does. Holding the copper is what disqualifies a note or a dimension detail; being tightest is
+     * what disqualifies the drawing sheet drawn around the board. The losers then contribute their
+     * regions, which is where a split profile keeps its cut-outs. Choosing and merging both need
+     * copper to judge by; a set with none falls back to the first profile layer alone.
      *
      * <p>Both {@link #renderRealistic} and
      * {@link com.deltaproto.deltagerber.renderer.step.StepExporter} go through here, so the
@@ -655,13 +677,14 @@ public class MultiLayerSVGRenderer {
     public BoardOutline resolveBoardOutline(List<Layer> layers) {
         if (layers == null || layers.isEmpty()) return BoardOutline.none();
 
-        Layer outlineLayer = null;
+        List<Layer> outlineLayers = new ArrayList<>();
         List<GerberDocument> silhouetteDocs = new ArrayList<>();
+        List<GerberDocument> copperDocs = new ArrayList<>();
         for (Layer layer : layers) {
             switch (layer.getLayerType()) {
                 case OUTLINE -> {
-                    if (outlineLayer == null && layer.isGerber() && layer.getGerberDoc() != null) {
-                        outlineLayer = layer;
+                    if (layer.isGerber() && layer.getGerberDoc() != null) {
+                        outlineLayers.add(layer);
                     }
                 }
                 // Everything the board is made of contributes to the silhouette: outer copper,
@@ -669,18 +692,19 @@ public class MultiLayerSVGRenderer {
                 case COPPER_TOP, COPPER_BOTTOM, COPPER_INNER, SOLDERMASK_TOP, SOLDERMASK_BOTTOM -> {
                     if (layer.isGerber() && layer.getGerberDoc() != null) {
                         silhouetteDocs.add(layer.getGerberDoc());
+                        if (layer.getLayerType() != LayerType.SOLDERMASK_TOP
+                            && layer.getLayerType() != LayerType.SOLDERMASK_BOTTOM) {
+                            copperDocs.add(layer.getGerberDoc());
+                        }
                     }
                 }
                 default -> { }
             }
         }
 
-        if (outlineLayer != null) {
-            String path = extractOutlinePath(outlineLayer.getGerberDoc(),
-                svgOptions.copy().setFlipY(flipY));
-            if (path != null && !path.isBlank()) {
-                return new BoardOutline(path, true);
-            }
+        String path = resolveProfilePath(outlineLayers, copperDocs);
+        if (path != null && !path.isBlank()) {
+            return new BoardOutline(path, true);
         }
         if (silhouetteDocs.isEmpty()) return BoardOutline.none();
         String derived = OutlineDeriver.deriveOutlineSvgPath(
@@ -688,6 +712,41 @@ public class MultiLayerSVGRenderer {
         return derived == null || derived.isBlank()
             ? BoardOutline.none()
             : new BoardOutline(derived, false);
+    }
+
+    /**
+     * The board edge as resolved material, from every profile layer in the set. Returns
+     * {@code null} when the set has no profile layer, or none of them described anything.
+     */
+    private String resolveProfilePath(List<Layer> outlineLayers, List<GerberDocument> copperDocs) {
+        if (outlineLayers.isEmpty()) return null;
+        SvgOptions options = svgOptions.copy().setFlipY(flipY);
+
+        List<List<OutlineResolver.Loop>> perLayer = new ArrayList<>();
+        for (Layer layer : outlineLayers) {
+            perLayer.add(extractOutlineLoops(layer.getGerberDoc(), options));
+        }
+
+        OutlineResolver.CopperProbe copper = OutlineResolver.CopperProbe.of(copperDocs);
+        List<OutlineResolver.Loop> loops = perLayer.get(0);
+        if (perLayer.size() > 1 && !copper.isEmpty()) {
+            List<OutlineResolver.Loop> merged = OutlineResolver.merge(perLayer, copper);
+            if (merged != null) loops = merged;
+        }
+
+        Area material = OutlineResolver.resolve(loops, copper);
+        if (material != null) {
+            String resolved = OutlineResolver.toSvgPath(material);
+            if (!resolved.isBlank()) return resolved;
+        }
+        // Everything cancelled, or the loops could not be read as shapes. Fall back to the raw
+        // subpaths so a board still renders rather than nothing at all.
+        StringBuilder raw = new StringBuilder();
+        for (OutlineResolver.Loop loop : loops) {
+            if (raw.length() > 0) raw.append(" ");
+            raw.append(loop.svgPath());
+        }
+        return raw.toString().trim();
     }
 
     /**
@@ -1099,10 +1158,11 @@ public class MultiLayerSVGRenderer {
     }
 
     /**
-     * Extract a filled SVG path from a board outline Gerber document.
-     * <p>
-     * Prefers Region objects (already filled paths). Falls back to chaining
-     * Draw/Arc endpoints into one or more closed subpaths.
+     * Read a board outline Gerber document as the loops it draws — regions as they stand, and
+     * draws/arcs chained end to end into as few subpaths as they will make. What those loops
+     * <em>mean</em> is {@link OutlineResolver}'s job, not this one: here they are collected and
+     * each is marked with whether it closed and how wide the aperture that drew it was, which is
+     * all the resolver needs to tell a cut-out from a route from the board edge itself.
      * <p>
      * Some EDA tools (notably Altium) emit board outlines as D02/D01 pairs with
      * segments written in mixed directions — end-to-start linear chaining breaks
@@ -1116,28 +1176,27 @@ public class MultiLayerSVGRenderer {
      * The tolerance is well below typical PCB feature sizes so it can't fuse
      * distinct outline features together.
      */
-    private String extractOutlinePath(GerberDocument outlineDoc, SvgOptions options) {
+    private List<OutlineResolver.Loop> extractOutlineLoops(GerberDocument outlineDoc,
+                                                           SvgOptions options) {
         List<GraphicsObject> objects = outlineDoc.getObjects();
+        List<OutlineResolver.Loop> loops = new ArrayList<>();
 
-        // Region contours (G36/G37) are already closed filled paths. Collect each
-        // contour as a standalone subpath. Two layouts occur in the wild:
+        // Region contours (G36/G37) are already closed filled paths. Each contour is one loop.
+        // Two layouts occur in the wild:
         //   1. The board profile is expressed *entirely* as regions (outer contour
         //      plus inner hole contours). With no stroked profile present these
         //      regions ARE the outline.
         //   2. The board profile is stroked (D02/D01 draws/arcs) and the regions
         //      are cutouts/holes punched inside it (e.g. Altium emits internal
         //      rounded-rectangle openings this way).
-        // We keep the regions separate from the stroked chain and emit the combined
-        // path under the evenodd fill rule (set on the clip path and mask base), so
-        // regions inside the stroked outline subtract as holes rather than being the
-        // only thing drawn. Returning regions alone (the previous behaviour) made the
-        // board clip to just the holes — inverting the realistic view.
-        List<String> regionSubpaths = new ArrayList<>();
+        // Which of the two it is is not decided here — OutlineResolver settles it from how the
+        // loops nest, so a region inside the stroked profile subtracts and a region that *is* the
+        // profile does not have to be recognised as such in advance.
         for (GraphicsObject obj : objects) {
             if (obj instanceof Region) {
                 Region region = (Region) obj;
                 for (Contour contour : region.getContours()) {
-                    regionSubpaths.add(contour.toSvgPath(options));
+                    loops.add(new OutlineResolver.Loop(contour.toSvgPath(options), true, 0, true));
                 }
             }
         }
@@ -1147,17 +1206,17 @@ public class MultiLayerSVGRenderer {
             if (obj instanceof Draw) {
                 Draw d = (Draw) obj;
                 segments.add(Segment.draw(d.getStartX(), d.getStartY(),
-                    d.getEndX(), d.getEndY()));
+                    d.getEndX(), d.getEndY(), apertureWidth(d.getAperture())));
             } else if (obj instanceof Arc) {
                 Arc a = (Arc) obj;
                 segments.add(Segment.arc(a.getStartX(), a.getStartY(),
                     a.getEndX(), a.getEndY(), a.getCenterX(), a.getCenterY(),
-                    a.getRadius(), a.isClockwise()));
+                    a.getRadius(), a.isClockwise(), apertureWidth(a.getAperture())));
             }
         }
         if (segments.isEmpty()) {
             // No stroked profile — the regions (if any) are the entire outline.
-            return String.join(" ", regionSubpaths).trim();
+            return loops;
         }
 
         double toleranceSq = OUTLINE_CHAIN_TOLERANCE_MM * OUTLINE_CHAIN_TOLERANCE_MM;
@@ -1194,56 +1253,57 @@ public class MultiLayerSVGRenderer {
         // component split then lets us keep the board and drop the decorative noise.
         List<List<Segment>> components = groupConnectedSegments(segments, toleranceSq);
 
+        List<Chain> chains = new ArrayList<>();
+        for (List<Segment> component : components) {
+            chainComponent(component, options, toleranceSq, chains);
+        }
         List<String> subpathList = new ArrayList<>();
         List<double[]> subpathBoundsList = new ArrayList<>();  // [minX, minY, maxX, maxY]
         List<Boolean> subpathHasArcList = new ArrayList<>();
-        for (List<Segment> component : components) {
-            chainComponent(component, options, toleranceSq,
-                subpathList, subpathBoundsList, subpathHasArcList);
+        for (Chain c : chains) {
+            subpathList.add(c.path);
+            subpathBoundsList.add(c.bounds);
+            subpathHasArcList.add(c.hasArc);
         }
 
         // Drop the outer panel frame: a non-arc subpath whose bounding box equals the
         // overall bounds AND that encloses another comparably large subpath — the real
-        // board nested inside the frame. Keeping it would, under evenodd, turn the board
-        // into a ring. The size test is what separates a true frame (board fills most of
-        // it) from an ordinary board whose own edge defines the overall bounds and whose
-        // other subpaths are merely small holes/slots — that board must be kept.
+        // board nested inside the frame. Keeping it would turn the board into a ring. The
+        // size test is what separates a true frame (board fills most of it) from an ordinary
+        // board whose own edge defines the overall bounds and whose other subpaths are merely
+        // small holes/slots — that board must be kept.
         double bbTol = OUTLINE_CHAIN_TOLERANCE_MM;
-        // Keep every remaining component. The board edge, real internal cut-outs, and
-        // any small stroked text or dimension marks the layer carries all go into the
-        // clip. Stray marks render as harmless little filled features; keeping them is
-        // more robust than guessing what is decorative, and it can never drop a genuine
-        // but small board section (e.g. a second board on a panel).
-        StringBuilder path = new StringBuilder();
-        for (int i = 0; i < subpathList.size(); i++) {
-            double[] sb = subpathBoundsList.get(i);
-            boolean spansOverall = !subpathHasArcList.get(i)
+        // Keep every remaining component. The board edge, real internal cut-outs, and any small
+        // stroked text or dimension marks the layer carries all go through; keeping them is more
+        // robust than guessing what is decorative, and it can never drop a genuine but small board
+        // section (e.g. a second board on a panel). A stray mark that never closed contributes only
+        // the thin sweep of its own aperture, so carrying it costs almost nothing.
+        double overallArea = (allMaxX - allMinX) * (allMaxY - allMinY);
+        for (int i = 0; i < chains.size(); i++) {
+            Chain c = chains.get(i);
+            double[] sb = c.bounds;
+            boolean spansOverall = !c.hasArc
                     && Math.abs(sb[0] - allMinX) <= bbTol
                     && Math.abs(sb[1] - allMinY) <= bbTol
                     && Math.abs(sb[2] - allMaxX) <= bbTol
                     && Math.abs(sb[3] - allMaxY) <= bbTol;
-            if (subpathList.size() > 1 && spansOverall && hasComparableInnerSubpath(
+            if (chains.size() > 1 && spansOverall && hasComparableInnerSubpath(
                     subpathBoundsList, i, FRAME_BOARD_MIN_FRACTION)) {
                 continue; // outer panel frame rectangle — skip
             }
-            if (path.length() > 0) path.append(" ");
-            path.append(subpathList.get(i));
+            // A chain that never met its own start is not a loop, and the area it appears to
+            // enclose is not a shape anyone drew. It is a route: what it removes is its own
+            // aperture's width along it, which is how Altium draws an L- or C-shaped slot. The
+            // exception is a chain that spans most of the layer — that is the board edge with a
+            // piece missing, and closing it is the only reading that yields a board at all.
+            boolean boardSized = overallArea > 0
+                && (sb[2] - sb[0]) * (sb[3] - sb[1]) >= OPEN_CHAIN_CLOSE_FRACTION * overallArea;
+            boolean closed = c.closed || boardSized;
+            loops.add(new OutlineResolver.Loop(
+                closed ? c.path + " Z" : c.path, closed, c.width, false));
         }
 
-        // Prepend region subpaths (holes/cutouts inside the stroked profile). Under
-        // the evenodd fill rule of the clip path / mask base they punch through the
-        // outline interior instead of being drawn as the only shape.
-        StringBuilder combined = new StringBuilder();
-        for (String regionSubpath : regionSubpaths) {
-            if (combined.length() > 0) combined.append(" ");
-            combined.append(regionSubpath);
-        }
-        if (path.length() > 0) {
-            if (combined.length() > 0) combined.append(" ");
-            combined.append(path);
-        }
-
-        return combined.toString().trim();
+        return loops;
     }
 
     private static double distSq(double ax, double ay, double bx, double by) {
@@ -1393,8 +1453,7 @@ public class MultiLayerSVGRenderer {
      * is missing still yields one whole loop instead of overlapping fragments.
      */
     private void chainComponent(List<Segment> pool, SvgOptions options, double toleranceSq,
-                                List<String> subpathList, List<double[]> subpathBoundsList,
-                                List<Boolean> subpathHasArcList) {
+                                List<Chain> out) {
         // Index-based so we can safely append near-half splits to the pool mid-iteration.
         for (int si = 0; si < pool.size(); si++) {
             Segment seed = pool.get(si);
@@ -1427,6 +1486,8 @@ public class MultiLayerSVGRenderer {
             //      we must prefer extending if an unused segment continues the chain
             //      at least as well as snapping back to the start would.
             boolean leftToleranceBall = false;
+            boolean closed = false;
+            double width = seed.width;
             while (true) {
                 Segment next = null;
                 boolean reverse = false;
@@ -1445,6 +1506,7 @@ public class MultiLayerSVGRenderer {
                 double headDistSq = distSq(headX, headY, loopStartX, loopStartY);
                 if (leftToleranceBall && headDistSq <= toleranceSq
                         && (next == null || bestSq >= headDistSq)) {
+                    closed = true;
                     break; // loop closed — no better continuation than snapping back
                 }
                 if (next == null) {
@@ -1471,7 +1533,7 @@ public class MultiLayerSVGRenderer {
                             nearX = tSeg.startX; nearY = tSeg.startY;
                         }
                         // Return the near half to the pool so it can be picked up later.
-                        pool.add(Segment.draw(headX, headY, nearX, nearY));
+                        pool.add(Segment.draw(headX, headY, nearX, nearY, tSeg.width));
                         subpath.append(String.format(Locale.US, " L %.6f %.6f", farX, farY));
                         headX = farX;
                         headY = farY;
@@ -1504,6 +1566,7 @@ public class MultiLayerSVGRenderer {
                         spMinX = Math.min(spMinX, bx); spMinY = Math.min(spMinY, by);
                         spMaxX = Math.max(spMaxX, bx); spMaxY = Math.max(spMaxY, by);
                         bridge.used = true;
+                        width = Math.max(width, bridge.width);
                         appendSegment(subpath, bridge, bridgeRev, options);
                         headX = bridgeRev ? bridge.startX : bridge.endX;
                         headY = bridgeRev ? bridge.startY : bridge.endY;
@@ -1519,6 +1582,7 @@ public class MultiLayerSVGRenderer {
                     break; // open loop — emit Z anyway to let SVG fill it
                 }
                 next.used = true;
+                width = Math.max(width, next.width);
                 appendSegment(subpath, next, reverse, options);
                 headX = reverse ? next.startX : next.endX;
                 headY = reverse ? next.startY : next.endY;
@@ -1530,11 +1594,32 @@ public class MultiLayerSVGRenderer {
                     leftToleranceBall = true;
                 }
             }
-            subpath.append(" Z");
+            // The chain also counts as closed when it simply ends where it began. The loop above
+            // only reports closure it had to *decide* — it holds out for a better continuation
+            // first, and it will not consider closing until the head has left the tolerance ball
+            // around the start at least once, which a circle drawn as one full arc (or as two
+            // complementary halves) never does. Those are closed loops all the same.
+            boolean loopClosed = closed
+                || distSq(headX, headY, loopStartX, loopStartY) <= toleranceSq;
+            out.add(new Chain(subpath.toString(),
+                new double[]{spMinX, spMinY, spMaxX, spMaxY}, spHasArc, loopClosed, width));
+        }
+    }
 
-            subpathList.add(subpath.toString());
-            subpathBoundsList.add(new double[]{spMinX, spMinY, spMaxX, spMaxY});
-            subpathHasArcList.add(spHasArc);
+    /** One connected component of the profile layer, chained as far as it goes. */
+    private static final class Chain {
+        final String path;          // subpath without a closing Z
+        final double[] bounds;      // [minX, minY, maxX, maxY]
+        final boolean hasArc;
+        final boolean closed;       // whether the chain met its own start
+        final double width;         // widest aperture in the component
+
+        Chain(String path, double[] bounds, boolean hasArc, boolean closed, double width) {
+            this.path = path;
+            this.bounds = bounds;
+            this.hasArc = hasArc;
+            this.closed = closed;
+            this.width = width;
         }
     }
 
@@ -1582,26 +1667,36 @@ public class MultiLayerSVGRenderer {
         final double startX, startY, endX, endY;
         final double centerX, centerY, radius;
         final boolean clockwise;
+        /** Width of the aperture that drew it — the cut width, if this turns out to be a route. */
+        final double width;
         boolean used;
 
         private Segment(boolean isArc, double sx, double sy, double ex, double ey,
-                        double cx, double cy, double r, boolean cw) {
+                        double cx, double cy, double r, boolean cw, double width) {
             this.isArc = isArc;
             this.startX = sx; this.startY = sy;
             this.endX = ex;   this.endY = ey;
             this.centerX = cx; this.centerY = cy;
             this.radius = r;
             this.clockwise = cw;
+            this.width = width;
         }
 
-        static Segment draw(double sx, double sy, double ex, double ey) {
-            return new Segment(false, sx, sy, ex, ey, 0, 0, 0, false);
+        static Segment draw(double sx, double sy, double ex, double ey, double width) {
+            return new Segment(false, sx, sy, ex, ey, 0, 0, 0, false, width);
         }
 
         static Segment arc(double sx, double sy, double ex, double ey,
-                           double cx, double cy, double r, boolean cw) {
-            return new Segment(true, sx, sy, ex, ey, cx, cy, r, cw);
+                           double cx, double cy, double r, boolean cw, double width) {
+            return new Segment(true, sx, sy, ex, ey, cx, cy, r, cw, width);
         }
+    }
+
+    /** Width of the aperture an outline stroke was drawn with, or 0 when it has none. */
+    private static double apertureWidth(Aperture aperture) {
+        if (aperture == null) return 0;
+        BoundingBox b = aperture.getBoundingBox();
+        return b.isValid() ? Math.min(b.getWidth(), b.getHeight()) : 0;
     }
 
     private void renderDrillContent(StringBuilder svg, DrillDocument doc) {

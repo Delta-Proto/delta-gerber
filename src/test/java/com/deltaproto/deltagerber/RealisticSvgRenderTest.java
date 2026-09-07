@@ -7,6 +7,8 @@ import com.deltaproto.deltagerber.parser.GerberParser;
 import com.deltaproto.deltagerber.renderer.svg.LayerType;
 import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
 import com.deltaproto.deltagerber.renderer.svg.SoldermaskColor;
+import org.apache.batik.parser.AWTPathProducer;
+import org.apache.batik.parser.PathParser;
 import org.junit.jupiter.api.*;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -15,6 +17,8 @@ import org.xml.sax.InputSource;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
+import java.awt.Shape;
+import java.awt.geom.Path2D;
 import java.io.StringReader;
 import java.nio.file.*;
 import java.util.*;
@@ -488,8 +492,7 @@ public class RealisticSvgRenderTest {
 
         // The inner 12-segment polygon is only ~10% of the outer rectangle's area, so
         // the outer rectangle is the board and the inner loop is a cut-out, not a panel
-        // frame. Both subpaths are retained and, under the evenodd clip rule, render as
-        // a rectangle with a circular hole.
+        // frame. Both subpaths are retained and render as a rectangle with a circular hole.
         //
         // This test still exercises bidirectional chaining: the inner circle uses
         // alternating forward/reverse segments (half emitted in each direction), so
@@ -501,10 +504,11 @@ public class RealisticSvgRenderTest {
         assertEquals(2, closeCount,
             "Expected 2 close commands, got " + closeCount);
 
-        // The clip path must subtract the cut-out via the evenodd rule.
+        // The clip path must subtract the cut-out: it is wound against the board edge, which is
+        // what the nonzero rule reads as a hole.
         assertTrue(clipPath.getElementsByTagName("path").item(0) != null);
-        assertEquals("evenodd", pathEl.getAttribute("clip-rule"),
-            "Clip path must use clip-rule=evenodd so the cut-out subtracts");
+        assertEquals("nonzero", pathEl.getAttribute("clip-rule"),
+            "Clip path must use clip-rule=nonzero — the outline arrives already resolved");
 
         // The inner polygon subpath must have all 12 segments (no orphaned M..L..Z pairs).
         String[] subpaths = d.split("(?=M )");
@@ -544,17 +548,37 @@ public class RealisticSvgRenderTest {
 
         Files.writeString(OUTPUT_DIR.resolve("realistic-rounding-gaps.svg"), svg);
 
-        // Rectangle with 4 rounded corners → exactly 1 closed subpath with 4 arcs and 4 lines
+        // Rectangle with 4 rounded corners → exactly 1 closed subpath. The gaps must be bridged
+        // into one loop rather than leaving four edges and four corners as separate fragments.
         int moveCount = countOccurrences(d, "M ");
         int closeCount = countOccurrences(d, "Z");
-        int arcCount = countOccurrences(d, "A ");
-        int lineCount = countOccurrences(d, "L ");
         assertEquals(1, moveCount,
             "Expected exactly 1 subpath despite rounding-error gaps, got " + moveCount
             + ". Path: " + d);
         assertEquals(1, closeCount, "Expected 1 close command");
-        assertEquals(4, arcCount, "Expected 4 rounded corners, got " + arcCount);
-        assertEquals(4, lineCount, "Expected 4 straight edges, got " + lineCount);
+
+        // And the corners are round, which is the part the arcs carry: the board is a 10..90 x
+        // 10..50 mm rectangle with a 5 mm corner radius, so its bounding corner is off the board
+        // while everything the radius keeps is on it. Asserted on the shape rather than on the
+        // path's commands — the resolved outline is serialised as curves, and how many of them
+        // an arc takes is Java2D's business.
+        Shape board = clipShape(d);
+        assertTrue(board.contains(50.0, 30.0), "the middle of the board must be board");
+        assertTrue(board.contains(15.0, 15.0), "the corner arc's centre must be board");
+        assertTrue(board.contains(11.0, 30.0), "just inside the left edge must be board");
+        assertTrue(board.contains(50.0, 10.5), "just inside the bottom edge must be board");
+        assertFalse(board.contains(10.2, 10.2), "the rounded-off corner must not be board");
+        assertFalse(board.contains(89.8, 49.8), "the rounded-off corner must not be board");
+    }
+
+    /** The clip path as an AWT shape, wound the way the renderer's {@code clip-rule} says. */
+    private static Shape clipShape(String d) throws Exception {
+        AWTPathProducer producer = new AWTPathProducer();
+        producer.setWindingRule(Path2D.WIND_NON_ZERO);
+        PathParser parser = new PathParser();
+        parser.setPathHandler(producer);
+        parser.parse(d);
+        return producer.getShape();
     }
 
     @Test
@@ -712,16 +736,22 @@ public class RealisticSvgRenderTest {
 
         Files.writeString(OUTPUT_DIR.resolve("realistic-short-segments.svg"), svg);
 
-        // Expect exactly one closed subpath with every L segment chained in.
+        // Expect exactly one closed subpath: the failure this guards against is 40 degenerate
+        // M..L..Z slivers, one per segment.
         int moveCount = countOccurrences(d, "M ");
         int closeCount = countOccurrences(d, "Z");
-        int lineCount = countOccurrences(d, "L ");
         assertEquals(1, moveCount,
             "Short-segment outline must chain into a single subpath, got " + moveCount
             + ". Path prefix: " + d.substring(0, Math.min(160, d.length())));
         assertEquals(1, closeCount, "Expected exactly 1 close command");
-        // 40 short segments around the perimeter
-        assertEquals(40, lineCount, "Expected all 40 segments chained in, got " + lineCount);
+
+        // ...and it is the intended 0.5 mm square at (10, 10), not a sliver. The segment count is
+        // not asserted: 40 collinear segments per perimeter describe the same square as 4 do, and
+        // resolving the outline is free to say so.
+        Shape board = clipShape(d);
+        assertTrue(board.contains(10.25, 10.25), "the middle of the square must be board");
+        assertFalse(board.contains(10.75, 10.25), "beyond the right edge must be empty");
+        assertFalse(board.contains(10.25, 9.75), "below the bottom edge must be empty");
     }
 
     /**

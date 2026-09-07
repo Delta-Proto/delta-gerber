@@ -308,16 +308,18 @@ public class StepExporter {
      * Flatten the outline path — less what the set drills — into closed polygons.
      *
      * <p>The path is SVG, so Batik parses it — it is already on the classpath for rasterizing,
-     * and its arc handling is the same one the browser applies to the realistic view. The
-     * winding rule the shape is built under decides nothing here (the nesting pass below
-     * re-derives which loops are cut-outs), but it is set from the outline anyway so the shape
-     * means what the renderer means by it.
+     * and its arc handling is the same one the browser applies to the realistic view. The winding
+     * rule the shape is built under decides nothing here (the nesting pass below re-derives which
+     * loops are cut-outs), but it is set from the outline anyway so the shape means what the
+     * renderer means by it — and it matters once the drill program is subtracted below, which is
+     * a boolean and does read the rule.
      */
     private List<Loop> flatten(BoardOutline outline, Area holes) {
         Shape shape;
         try {
             shape = AWTPathProducer.createShape(new StringReader(outline.getSvgPath()),
-                outline.isFromProfileLayer() ? PathIterator.WIND_EVEN_ODD : PathIterator.WIND_NON_ZERO);
+                "evenodd".equals(outline.getFillRule())
+                    ? PathIterator.WIND_EVEN_ODD : PathIterator.WIND_NON_ZERO);
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to read board outline path", e);
         }

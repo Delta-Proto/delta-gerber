@@ -4,12 +4,19 @@ package com.deltaproto.deltagerber.renderer.svg;
  * The board edge, however it was arrived at.
  *
  * <p>A set either ships a profile layer or it does not, and the two answers are not
- * interchangeable — they differ in what a closed loop <em>means</em>. A real profile carries
- * genuine internal cut-outs, emitted as extra loops that only subtract under the
- * <b>even-odd</b> rule; a silhouette derived from the copper has no cut-outs at all (see
- * {@link OutlineDeriver}) and its one loop per disjoint board piece must be unioned, which is
- * the <b>nonzero</b> rule. Every consumer of the outline needs both halves, so they travel
- * together rather than being re-derived from a bare path string.
+ * interchangeable: a real profile carries genuine internal cut-outs, while a silhouette derived
+ * from the copper has none at all (see {@link OutlineDeriver}) and is only ever the outer edge of
+ * each disjoint board piece. Consumers care about the difference — a cut-out is a hole to punch,
+ * a derived edge is an approximation — so which one this is travels with the path rather than
+ * being guessed from it.
+ *
+ * <p>What does <em>not</em> vary is how the loops are read. A profile's cut-outs used to arrive as
+ * extra loops to be subtracted by an even-odd fill rule, which is right only while they nest;
+ * loops that merely overlap cancel under it, and one feature drawn as two overlapping rectangles
+ * — routine in Altium exports — came out with its overlap filled back in. Nesting is now resolved
+ * before the path is built ({@link OutlineResolver}), so what arrives here is already material:
+ * outer loops and their holes, wound so that <b>nonzero</b> is the whole story, whichever source
+ * it came from.
  *
  * <p>The path is in raw Gerber coordinates: millimetres, Y up, unflipped. The realistic
  * renderer drops it straight into a clip path (its viewport group carries the Y flip);
@@ -50,12 +57,13 @@ public final class BoardOutline {
     }
 
     /**
-     * The fill rule the path's loops must be interpreted under: {@code evenodd} for a profile
-     * layer, whose inner loops are cut-outs, {@code nonzero} for a derived silhouette, whose
-     * loops are separate board pieces to union.
+     * The fill rule the path's loops must be interpreted under. Always {@code nonzero}: both
+     * sources hand over already-resolved material, wound so that outer loops fill and holes
+     * clear. It stays a method, rather than becoming a constant at every call site, because it
+     * is a property of the path and reads as one.
      */
     public String getFillRule() {
-        return fromProfileLayer ? "evenodd" : "nonzero";
+        return "nonzero";
     }
 
     /** True when no board edge was resolved and there is nothing to clip or extrude. */

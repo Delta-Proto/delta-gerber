@@ -128,13 +128,19 @@ public class CircularOutlineRealisticTest {
     }
 
     @Test
-    void fullCircleIsEmittedAsTwoHalfArcs() throws Exception {
+    void fullCircleIsEmittedWhole() throws Exception {
         String d = boardClipPath(HEADER + OUTER_CIRCLE + "M02*\n");
 
-        // Two "A" commands by way of the antipode, not one that ends where it started.
-        assertEquals(2, countArcCommands(d), "full circle should be split in two: " + d);
-        assertTrue(d.contains("-20.000000"),
-            "the antipodal point of the split should appear in the path: " + d);
+        // A full circle is a trap in SVG: as a single "A" command ending where it started it
+        // draws nothing at all, so it used to be split at the antipode into two arcs. The
+        // resolved outline is serialised as curves rather than arc commands, which cannot take
+        // the degenerate form — but the circle still has to come out whole, as one closed
+        // subpath that reaches both antipodes.
+        assertEquals(0, countArcCommands(d), "no arc commands survive resolution: " + d);
+        assertTrue(d.contains("C "), "the circle should be emitted as curves: " + d);
+        assertEquals(1, d.split("M ", -1).length - 1, "one closed subpath: " + d);
+        assertTrue(d.contains("-20.000000") && d.contains(" 20.000000"),
+            "both antipodes of the circle should appear in the path: " + d);
     }
 
     /** Render the profile alone and pull the board-outline clip path out of the SVG. */
@@ -154,12 +160,13 @@ public class CircularOutlineRealisticTest {
     }
 
     /**
-     * The clip path as an AWT shape, wound even-odd to match the {@code clip-rule} the
-     * renderer sets, so nested subpaths read as holes.
+     * The clip path as an AWT shape, wound non-zero to match the {@code clip-rule} the renderer
+     * sets. The outline arrives already resolved into material, so a cut-out is a loop wound
+     * against its parent and reads as a hole under this rule.
      */
     private static Shape boardClipShape(String outlineGerber) throws Exception {
         AWTPathProducer producer = new AWTPathProducer();
-        producer.setWindingRule(Path2D.WIND_EVEN_ODD);
+        producer.setWindingRule(Path2D.WIND_NON_ZERO);
         PathParser parser = new PathParser();
         parser.setPathHandler(producer);
         parser.parse(boardClipPath(outlineGerber));

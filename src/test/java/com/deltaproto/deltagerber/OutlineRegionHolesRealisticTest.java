@@ -86,11 +86,11 @@ public class OutlineRegionHolesRealisticTest {
         String pathAttrs = m.group(2);
 
         // A clipPath child is governed by clip-rule, NOT fill-rule (SVG ignores
-        // fill-rule here). It must be evenodd so the regions clip away as holes
-        // rather than — under the default nonzero winding — letting the grey FR4
-        // substrate fill them.
-        assertTrue(pathAttrs.contains("clip-rule=\"evenodd\""),
-            "board-outline clip path must use clip-rule=evenodd, was: " + pathAttrs);
+        // fill-rule here). The outline arrives already resolved into material, with each
+        // window wound against the edge that contains it, so nonzero clips them away as
+        // holes rather than letting the grey FR4 substrate fill them.
+        assertTrue(pathAttrs.contains("clip-rule=\"nonzero\""),
+            "board-outline clip path must use clip-rule=nonzero, was: " + pathAttrs);
 
         // It must contain the stroked edge AND both windows: three subpaths. The
         // pre-fix renderer dropped the stroked edge and kept only the windows.
@@ -103,7 +103,7 @@ public class OutlineRegionHolesRealisticTest {
         // Strongest check: evaluate the fill. Coordinates are emitted unflipped for a
         // lines-only path, so we can read them straight into AWT geometry.
         Path2D fill = parseLinePath(d);
-        fill.setWindingRule(Path2D.WIND_EVEN_ODD);
+        fill.setWindingRule(Path2D.WIND_NON_ZERO);
 
         // Board interior, clear of both windows -> filled (board present).
         assertTrue(fill.contains(20.0, 15.0), "board interior should be filled");

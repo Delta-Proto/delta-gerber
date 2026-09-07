@@ -49,8 +49,9 @@ import java.util.Map;
  * <p>A drill <em>set</em> should go through {@link #analyzeAll} / {@link #alignedAll} rather than
  * analysing each file alone. EDA tools split the drill program across files — Altium writes round
  * holes and slots separately — and a file of nothing but slots carries no hole centres to correlate,
- * so it can never recover its own offset. All files in one export share an origin, so the offset
- * recovered from the round holes is handed to its siblings.
+ * so it can never recover its own offset. All files in one export share an origin, so the set
+ * settles on one answer — the best-supported offset — and every misplaced file takes it, whether it
+ * found nothing itself or found something weaker.
  */
 public final class DrillGerberAlignment {
 
@@ -126,9 +127,11 @@ public final class DrillGerberAlignment {
         public boolean isResolved() { return status == Status.MISALIGNED_RESOLVED; }
 
         /**
-         * True when this drill could not recover its own offset and took the one another drill in
-         * the same set recovered — see {@link DrillGerberAlignment#analyzeAll}. Always false for a
-         * result produced by the single-document {@link DrillGerberAlignment#analyze}.
+         * True when this drill's offset came from a sibling in the same set rather than from its
+         * own holes — either because it had no evidence of its own, or because the evidence it had
+         * was outweighed by a better-supported sibling's. See
+         * {@link DrillGerberAlignment#analyzeAll}. Always false for a result produced by the
+         * single-document {@link DrillGerberAlignment#analyze}.
          */
         public boolean isInherited() { return inherited; }
 
@@ -140,8 +143,8 @@ public final class DrillGerberAlignment {
 
         /**
          * Number of holes that matched a copper pad under the recovered offset. Zero for an
-         * {@linkplain #isInherited() inherited} offset — that drill matched nothing itself, which
-         * is why it needed a sibling's answer.
+         * {@linkplain #isInherited() inherited} offset — that drill did not establish this offset
+         * itself, which is why it took a sibling's answer.
          */
         public int getMatchedHoles() { return matchedHoles; }
 
@@ -159,10 +162,13 @@ public final class DrillGerberAlignment {
                     if (inherited) {
                         return String.format(Locale.US,
                             "Drill holes were exported on a different coordinate origin than the "
-                            + "Gerber files, placing them off the board. This file carries no hole "
-                            + "centres to match against the copper pads (a slot-only drill file, for "
-                            + "example), so it has been re-aligned using the offset recovered from "
-                            + "another drill file in the same set (shifted %+.3f, %+.3f mm).",
+                            + "Gerber files, placing them off the board. This file could not "
+                            + "establish the origin from its own holes — it carries no hole centres "
+                            + "to match against the copper pads (a slot-only drill file), or the "
+                            + "few it matched were outweighed by a sibling's — so it has been "
+                            + "re-aligned using the offset recovered from another drill file in the "
+                            + "same set, which every file of one export shares (shifted %+.3f, "
+                            + "%+.3f mm).",
                             offsetX, offsetY)
                             + ORIGIN_EXPLANATION;
                     }
@@ -228,11 +234,18 @@ public final class DrillGerberAlignment {
      * Analyse a whole drill set against one Gerber reference, resolving the files together.
      * Returns one {@link Result} per input, in order.
      *
-     * <p>Each file is first judged on its own. Then any file that is off the board but could not
-     * recover its own offset takes the offset of the best-supported sibling that did, provided that
-     * shift actually lands it on the board. This is what rescues a slot-only drill file: it has no
-     * hole centres to correlate, but it was exported from the same origin as the round-hole file
-     * next to it, so the one offset serves both.
+     * <p>Each file is first judged on its own. Then the set is made to <em>agree</em>: the offset
+     * with the strongest hole-to-pad support becomes the set's answer, and every other misplaced
+     * file takes it, provided that shift actually lands it on the board. This rescues a slot-only
+     * drill file — it has no hole centres to correlate, but it was exported from the same origin as
+     * the round-hole file next to it, so the one offset serves both.
+     *
+     * <p>It also overrules a file that recovered a <em>different</em> offset than its siblings.
+     * One export has one origin, so two answers cannot both be right, and the file most likely to
+     * be wrong is the one with the least evidence. A non-plated file is the usual victim: its holes
+     * are not concentric with copper pads at all, so pad support is noise for it, and a handful of
+     * coincidental matches can outvote the truth on its own. Judged alone it walks off on its own
+     * offset; judged as a set it defers to the plated file that matched thousands of holes.
      *
      * <p>The pad index is built once for the set, so analysing several drills together also costs
      * less than analysing them one at a time.
@@ -267,8 +280,10 @@ public final class DrillGerberAlignment {
             }
         }
 
-        // Set-level rescue: hand the best-supported recovered offset to the files that could not
-        // find one themselves.
+        // Set-level agreement: the best-supported recovered offset is the set's offset. It goes to
+        // the files that could not find one themselves, and it overrules the ones that found a
+        // different one on weaker evidence — the export has a single origin, so the answers must
+        // match, and support is the only thing that can rank them.
         Result donor = null;
         for (Result r : out) {
             if (r.isResolved() && !r.isInherited()
@@ -281,7 +296,12 @@ public final class DrillGerberAlignment {
         }
         for (int i = 0; i < out.size(); i++) {
             Result r = out.get(i);
-            if (r.getStatus() != Status.MISALIGNED_UNRESOLVED) {
+            if (r == donor || r.getStatus() == Status.ALIGNED) {
+                continue;
+            }
+            // Its own answer stands only while it agrees with the set's, or is better supported
+            // than the set's (it would then be the donor).
+            if (r.isResolved() && sameOffset(r, donor)) {
                 continue;
             }
             DrillDocument drill = drills.get(i);
@@ -394,6 +414,16 @@ public final class DrillGerberAlignment {
      * already seated → aligned; otherwise recover a translation that seats it, or report the
      * mismatch unresolved.
      */
+    /**
+     * Whether two recovered offsets name the same origin. Both are averaged over their matched
+     * pairs, so the same physical origin lands well inside the tolerance a hole is called seated
+     * on its pad with; anything further apart is a genuine disagreement.
+     */
+    private static boolean sameOffset(Result a, Result b) {
+        return Math.abs(a.getOffsetX() - b.getOffsetX()) <= MATCH_TOL_MM
+            && Math.abs(a.getOffsetY() - b.getOffsetY()) <= MATCH_TOL_MM;
+    }
+
     private static Result examine(DrillDocument drill, BoundingBox gerberBounds,
                                   List<double[]> pads, PadIndex index, int total) {
         // A drill hanging entirely off the board is unambiguously misplaced; one that merely pokes
