@@ -53,6 +53,11 @@ public class Draw extends GraphicsObject {
         return aperture;
     }
 
+    /** Factor the {@code %LS%} scale in force applied to the aperture's size; 1 when none. */
+    public double getStrokeScale() {
+        return strokeScale;
+    }
+
     @Override
     public BoundingBox getBoundingBox() {
         BoundingBox bounds = new BoundingBox();

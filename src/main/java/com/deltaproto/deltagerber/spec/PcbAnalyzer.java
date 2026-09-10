@@ -7,7 +7,10 @@ import com.deltaproto.deltagerber.classify.LayerFunction;
 import com.deltaproto.deltagerber.classify.LayerSide;
 import com.deltaproto.deltagerber.dfm.AnnularRingDetector;
 import com.deltaproto.deltagerber.dfm.AnnularRingResult;
+import com.deltaproto.deltagerber.dfm.ClearanceDetector;
+import com.deltaproto.deltagerber.dfm.ConductorWidthDetector;
 import com.deltaproto.deltagerber.dfm.CopperLayer;
+import com.deltaproto.deltagerber.dfm.geometry.CopperGeometry;
 import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.model.drill.DrillDocument;
@@ -346,11 +349,70 @@ public class PcbAnalyzer {
                 .formatSpec(document.getFormatSpec());
         if (function.isCopper()) {
             layer.minTrackWidthUm(minTrackWidthUm(document, outlineMm));
+            measureCopperGeometry(layer, fileName, document, outlineMm);
         }
         if (function.isDrill()) {
             layer.minDrillDiameterMm(minDrillDiameterMm(document));      // Gerber X2 drill file
         }
         return layer.build();
+    }
+
+    /**
+     * The two figures that come from the copper's geometry rather than its aperture table: the
+     * tightest gap between nets ({@link ClearanceDetector}) and the narrowest copper
+     * ({@link ConductorWidthDetector}). Both run on one {@link CopperGeometry} built while the
+     * document is still in memory, and cost well under a second on the largest board in the corpus.
+     * A failure inside them is logged and leaves the figures unmeasured; it never fails the analysis.
+     */
+    private static void measureCopperGeometry(AnalyzedLayer.Builder layer, String fileName,
+                                              GerberDocument document, BoundingBox outlineMm) {
+        try {
+            CopperGeometry geometry = CopperGeometry.of(document, strokeFilter(document, outlineMm));
+            layer.clearance(ClearanceDetector.detect(geometry, fileName, ClearanceDetector.DEFAULT_CUTOFF_MM));
+            layer.conductorWidth(ConductorWidthDetector.detect(geometry, fileName,
+                    ConductorWidthDetector.DEFAULT_CUTOFF_MM));
+        } catch (RuntimeException e) {
+            log.warn("copper geometry of {} not measured: {}", fileName, e.toString());
+        }
+    }
+
+    /**
+     * The box a stroke must lie inside to count as the board's copper — the outline shrunk by
+     * {@link #OUTLINE_SHRINK_MM} — or null when there is no outline or it evidently is not this
+     * layer's (fewer than {@link #MIN_INSIDE_FRACTION} of the strokes inside it). The same rule
+     * {@link #minTrackWidthUm} applies, so the geometric figures skip the same edge trace.
+     */
+    static BoundingBox strokeFilter(GerberDocument document, BoundingBox outlineMm) {
+        if (outlineMm == null) {
+            return null;
+        }
+        int total = 0;
+        int inside = 0;
+        for (GraphicsObject object : document.getObjects()) {
+            double startX, startY, endX, endY;
+            if (object instanceof Draw draw) {
+                startX = draw.getStartX();
+                startY = draw.getStartY();
+                endX = draw.getEndX();
+                endY = draw.getEndY();
+            } else if (object instanceof Arc arc) {
+                startX = arc.getStartX();
+                startY = arc.getStartY();
+                endX = arc.getEndX();
+                endY = arc.getEndY();
+            } else {
+                continue;
+            }
+            total++;
+            if (isInside(startX, startY, outlineMm) && isInside(endX, endY, outlineMm)) {
+                inside++;
+            }
+        }
+        if (total > 0 && inside < total * MIN_INSIDE_FRACTION) {
+            return null;
+        }
+        return new BoundingBox(outlineMm.getMinX() + OUTLINE_SHRINK_MM, outlineMm.getMinY() + OUTLINE_SHRINK_MM,
+                outlineMm.getMaxX() - OUTLINE_SHRINK_MM, outlineMm.getMaxY() - OUTLINE_SHRINK_MM);
     }
 
     /** Measure an Excellon document that has already been parsed. */

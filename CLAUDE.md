@@ -371,3 +371,44 @@ cannot change it (silkscreen above all) are then classified but never parsed. Pa
 costs memory proportional to what it draws — a 27 MB silkscreen needs ~1 GB of heap to build and
 contributes nothing once the set has an outline. `FULL` (the default) measures every layer, and is
 what you want if you are going to keep the per-layer bounds to align rendered SVGs.
+
+## Clearance and conductor width (issues #9 and #11)
+
+`dfm.ClearanceDetector` (tightest gap between two nets on a layer) and `dfm.ConductorWidthDetector`
+(narrowest copper on a layer, from the outline rather than the aperture table) answer the two
+questions a fabricator's capability table asks that `minTrackWidthUm` cannot. Both run on
+**exact geometry, never a raster and never a union**: `dfm.geometry.CopperGeometry` turns each
+object into a `Capsule` (a segment swept by a disc — a round stroke, a round or obround pad, exact)
+or a `PolygonShape` (regions, other pads, macros; arcs flattened at a 0.5 µm sagitta), and a
+uniform `EdgeGrid` over every boundary makes each query cost its neighbourhood. A distance is one
+`Capsule.distance`. The whole backplane runs in well under a second per layer in ~20 MB.
+
+**Nets are geometric, and clears are the hard part.** `dfm.geometry.CopperNets` joins two objects
+when they share a point that survives every clear drawn after the earlier of the two — decided
+with *witness points* (boundary crossings, nudged-inside samples, and the points where a later
+clear's boundary crosses one object inside the other), never a boolean. That last kind is what
+connects a thermal spoke: the spoke starts inside the antipad, where the plane no longer exists,
+and the only place they provably meet is on the antipad's edge. Subtracting a plane's 1 600
+antipads with `java.awt.geom.Area` was measured at 15 s and quadratic; a plane is never
+subtracted from. A `.N` name never joins copper — KiCad hands a knockout-text region the net of
+whatever it wrote before, and unioning by name folded a signal net into ground — a component is
+named for the majority of its objects, and two components the file names alike are simply not
+measured against each other (a via and its pad on another layer are not a clearance).
+
+**A reported gap is a real gap; the rules can only miss one.** A gap measured to a clear's edge
+is credited to whatever copper survives just across it (`copperAt`); a gap measured to a dark edge
+a later clear erased is dropped. Gaps beyond `DEFAULT_CUTOFF_MM` (1 mm) are not measured, so a
+null minimum means "at least the cutoff".
+
+**Width has two sources and a pad is neither.** Strokes are their aperture, whatever its shape.
+A region's neck is the nearest facing edge of the same region (or of a clear cut into it) whose
+connector runs through copper — and every false neck the corpus produced is a rule here: a
+rectangle's corner (edges must face within 60° and the connector leave at 30° or steeper), an
+apex rounded into micro-edges (edges joined by less boundary than the gap are a corner), KiCad's
+sub-micrometre zigzags (edges under 2 µm are nobody's side), Altium's teardrop tails lying on
+their pads (both ends must have bare laminate just outside), and a pour tapering to a point
+(widths along an edge agree to a quarter, and the copper carries on for at least the width to
+either side). The NDc top layer is the reference: a copper logo whose strokes neck to 30 µm and
+whose eye sits 25 µm from its head, while every other layer reads 0.1 mm — the disagreement the
+issue asks for. The results ride on `AnalyzedLayer` (`getClearance()`, `getConductorWidth()`,
+and the two summary numbers) and survive `BoardSpecification.from(layers)` as numbers.

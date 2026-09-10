@@ -89,6 +89,28 @@ class NdcBoardSpecificationTest {
     }
 
     @Test
+    @DisplayName("Two nets come within 0.025 mm on the top layer: the eye of the copper logo")
+    void minClearance() {
+        // The top layer carries artwork drawn as regions, and the pupil of the figure sits
+        // 25 µm from the outline of its head — two pieces of copper that nothing joins. Every
+        // other copper layer keeps its nets 0.098 mm or more apart.
+        assertEquals(0.0253, spec.getMinClearanceMm(), 5e-4);
+        assertEquals(0.0253, layer("NDc.GTL").getMinClearanceMm(), 5e-4);
+        assertEquals(0.0983, layer("NDc.G2").getMinClearanceMm(), 5e-4);
+        assertTrue(layer("NDc.GBL").getMinClearanceMm() > 0.099);
+    }
+
+    @Test
+    @DisplayName("The copper necks to 0.030 mm in the logo, though the narrowest track is 0.100 mm")
+    void minConductorWidth() {
+        // Exactly the disagreement issue #11 is about: the aperture table says 0.1 mm, the
+        // artwork regions on the top layer go down to 30 µm.
+        assertEquals(29.6, spec.getMinConductorWidthUm(), 0.5);
+        assertEquals(100.0, layer("NDc.G2").getMinConductorWidthUm(), 1e-6);
+        assertEquals(29.6, layer("NDc.GTL").getMinConductorWidthUm(), 0.5);
+    }
+
+    @Test
     @DisplayName("The smallest drill is 0.150 mm")
     void minDrillDiameter() {
         assertEquals(0.150, spec.getMinDrillDiameterMm(), 1e-6);

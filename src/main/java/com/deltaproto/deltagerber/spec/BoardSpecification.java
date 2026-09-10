@@ -1,5 +1,6 @@
 package com.deltaproto.deltagerber.spec;
 
+import com.deltaproto.deltagerber.Beta;
 import com.deltaproto.deltagerber.classify.LayerFunction;
 import com.deltaproto.deltagerber.classify.LayerSide;
 import com.deltaproto.deltagerber.dfm.AnnularRing;
@@ -62,6 +63,8 @@ public final class BoardSpecification {
     private final BoardSide stencilSide;
     private final Double minTrackWidthUm;
     private final Double minDrillDiameterMm;
+    private final Double minClearanceMm;
+    private final Double minConductorWidthUm;
     private final boolean hasDrill;
     private final boolean hasCopper;
     private final boolean hasOutline;
@@ -73,6 +76,7 @@ public final class BoardSpecification {
     private BoardSpecification(Double sizeXMm, Double sizeYMm, BoundingBox bounds, Integer copperLayerCount,
                                BoardSide solderMaskSide, BoardSide silkscreenSide, BoardSide stencilSide,
                                Double minTrackWidthUm, Double minDrillDiameterMm,
+                               Double minClearanceMm, Double minConductorWidthUm,
                                boolean hasDrill, boolean hasCopper, boolean hasOutline,
                                ViaInPadResult viaInPad, AnnularRingResult annularRing,
                                BoardStack stack, List<AnalyzedLayer> layers) {
@@ -85,6 +89,8 @@ public final class BoardSpecification {
         this.stencilSide = stencilSide;
         this.minTrackWidthUm = minTrackWidthUm;
         this.minDrillDiameterMm = minDrillDiameterMm;
+        this.minClearanceMm = minClearanceMm;
+        this.minConductorWidthUm = minConductorWidthUm;
         this.hasDrill = hasDrill;
         this.hasCopper = hasCopper;
         this.hasOutline = hasOutline;
@@ -161,6 +167,8 @@ public final class BoardSpecification {
                 empty ? null : sideOf(safe, LayerFunction.PASTE, true),
                 min(safe, AnalyzedLayer::getMinTrackWidthUm),
                 min(safe, AnalyzedLayer::getMinDrillDiameterMm),
+                min(safe, AnalyzedLayer::getMinClearanceMm),
+                min(safe, AnalyzedLayer::getMinConductorWidthUm),
                 safe.stream().anyMatch(l -> l.getFunction().isDrill()),
                 safe.stream().anyMatch(l -> l.getFunction().isCopper()),
                 safe.stream().anyMatch(l -> l.getFunction() == LayerFunction.OUTLINE),
@@ -269,6 +277,36 @@ public final class BoardSpecification {
     /** Smallest drill across all drill layers, in millimetres; null when no drill was measured. */
     public Double getMinDrillDiameterMm() {
         return minDrillDiameterMm;
+    }
+
+    /**
+     * Tightest gap between two nets on any copper layer, in millimetres, measured from the geometry
+     * — the minimum spacing a fabricator's capability table is checked against. Null when no copper
+     * layer was measured, or when no two nets on any layer come within
+     * {@link com.deltaproto.deltagerber.dfm.ClearanceDetector#DEFAULT_CUTOFF_MM} of each other.
+     * Per layer, with the nets and the place, on {@link AnalyzedLayer#getClearance()}.
+     *
+     * <p><b>Beta.</b> Measured and tested, but not yet checked against an independent DFM tool on
+     * real boards; treat as advisory until the {@link Beta} mark comes off.
+     */
+    @Beta("not yet validated against an external DFM tool")
+    public Double getMinClearanceMm() {
+        return minClearanceMm;
+    }
+
+    /**
+     * Narrowest copper on any layer, in micrometres, measured from the geometry: strokes of any
+     * aperture shape and the necks of pours. {@link #getMinTrackWidthUm()} is the quote-form figure
+     * read from the aperture table; this is what the copper actually does, and a board that quotes
+     * as 150 µm but necks to 100 µm in a pour is what the difference is for. Null when no copper
+     * layer was measured. Detail on {@link AnalyzedLayer#getConductorWidth()}.
+     *
+     * <p><b>Beta.</b> Measured and tested, but not yet checked against an independent DFM tool on
+     * real boards; treat as advisory until the {@link Beta} mark comes off.
+     */
+    @Beta("not yet validated against an external DFM tool")
+    public Double getMinConductorWidthUm() {
+        return minConductorWidthUm;
     }
 
     /** True when the set contains an NC drill file. */
@@ -565,8 +603,8 @@ public final class BoardSpecification {
     @Override
     public String toString() {
         return String.format("BoardSpecification[%s x %s mm, %s copper layers, %s mm thick, "
-                        + "minTrack=%sum, minDrill=%smm]",
+                        + "minTrack=%sum, minDrill=%smm, minClearance=%smm, minConductor=%sum]",
                 sizeXMm, sizeYMm, copperLayerCount, getBoardThicknessMm(), minTrackWidthUm,
-                minDrillDiameterMm);
+                minDrillDiameterMm, minClearanceMm, minConductorWidthUm);
     }
 }

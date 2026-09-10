@@ -358,6 +358,11 @@
 
         .pcbinfo-table-wrap { overflow-x: auto; }
         .pcbinfo-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; white-space: nowrap; }
+        .beta {
+            display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 3px;
+            font-size: 10px; font-weight: 600; letter-spacing: 0.04em; vertical-align: middle;
+            background: #b45309; color: #fff;
+        }
         .pcbinfo-table thead th {
             background: var(--bg-card); border-bottom: 1px solid var(--border);
             padding: 8px 12px; text-align: left; font-weight: 600; color: var(--fg-muted);
@@ -1504,8 +1509,8 @@
             return `<span class="pcbinfo-val">${escapeHtml(value)}${suffix}</span>`;
         }
 
-        function infoRow(key, value, unit) {
-            return `<div class="pcbinfo-item"><span class="pcbinfo-key">${escapeHtml(key)}</span>${infoValue(value, unit)}</div>`;
+        function infoRow(key, value, unit, badge) {
+            return `<div class="pcbinfo-item"><span class="pcbinfo-key">${escapeHtml(key)}${badge || ''}</span>${infoValue(value, unit)}</div>`;
         }
 
         function infoSection(title, rows, wide) {
@@ -1519,6 +1524,38 @@
 
         // Via in pad — a drilled hole inside an SMD pad — forces a filled & capped via process
         // (IPC-4761 Type VII). null means the set had no paste or no drill to judge from.
+        // Clearance and conductor width are measured on the copper's geometry, not read from the
+        // aperture table like the track width — so they carry a place: the layer, the nets and the
+        // coordinate of the tightest gap, which is what a designer goes and looks at.
+        // The server says which figures are still beta: measured and tested, but not yet checked
+        // against an independent DFM tool. The badge travels with the number so nobody quotes off it.
+        function beta(i, field) {
+            return (i.betaFigures || []).includes(field)
+                ? ' <span class="beta" title="Beta: not yet validated against an external DFM tool">BETA</span>'
+                : '';
+        }
+
+        function clearance(i) {
+            if (i.minClearanceMm === null || i.minClearanceMm === undefined) {
+                return i.hasCopper ? '≥ 1 mm' : null;
+            }
+            const at = i.minClearanceAt;
+            let text = Number(i.minClearanceMm).toFixed(4) + ' mm';
+            if (at) text += ` (${at.netA} – ${at.netB} on ${at.layer} at ${fixed(at.x, 2)}, ${fixed(at.y, 2)})`;
+            return text;
+        }
+
+        function conductorWidth(i) {
+            if (i.minConductorUm === null || i.minConductorUm === undefined) return null;
+            const at = i.minConductorAt;
+            let text = Number(i.minConductorUm).toFixed(1) + ' µm';
+            if (at) {
+                const kind = at.kind === 'REGION_NECK' ? 'a neck in a pour' : 'a stroke';
+                text += ` (${kind} on ${at.layer} at ${fixed(at.x, 2)}, ${fixed(at.y, 2)})`;
+            }
+            return text;
+        }
+
         function viaInPad(i) {
             if (i.hasViaInPad === null || i.hasViaInPad === undefined) return null;
             if (!i.hasViaInPad) return 'No';
@@ -1575,6 +1612,8 @@
                 infoRow('Board height', fixed(i.sizeY, 3), 'mm'),
                 infoRow('Copper layers', i.copperLayers),
                 infoRow('Min track width', fixed(i.minTrackUm, 1), 'µm'),
+                infoRow('Min conductor width', conductorWidth(i), null, beta(i, 'minConductorUm')),
+                infoRow('Min clearance', clearance(i), null, beta(i, 'minClearanceMm')),
                 infoRow('Min drill diameter', fixed(i.minDrillMm, 3), 'mm'),
                 infoRow('Soldermask', side(i.solderMaskSide)),
                 infoRow('Silkscreen', side(i.silkscreenSide)),
@@ -1621,6 +1660,8 @@
                     ${cell(lb ? fixed(lb.width, 3) : null)}
                     ${cell(lb ? fixed(lb.height, 3) : null)}
                     ${cell(fixed(l.minTrackUm, 1))}
+                    ${cell(fixed(l.minConductorUm, 1))}
+                    ${cell(fixed(l.minClearanceMm, 4))}
                     ${cell(fixed(l.minDrillMm, 3))}
                     ${l.format ? `<td>${escapeHtml(formatDigits(l.format))}</td>`
                                : '<td class="absent">—</td>'}
@@ -1636,7 +1677,9 @@
                         <thead><tr>
                             <th>File</th><th>Function</th><th>Side</th><th>Layer #</th>
                             <th>Width (mm)</th><th>Height (mm)</th>
-                            <th>Min track (µm)</th><th>Min drill (mm)</th><th>Format</th><th>Draws</th>
+                            <th>Min track (µm)</th><th>Min conductor (µm) <span class="beta">BETA</span></th>
+                            <th>Min clearance (mm) <span class="beta">BETA</span></th>
+                            <th>Min drill (mm)</th><th>Format</th><th>Draws</th>
                         </tr></thead>
                         <tbody>${rows}</tbody>
                     </table></div></div>`;

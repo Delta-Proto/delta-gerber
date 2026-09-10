@@ -138,6 +138,17 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
   `getAnnularRingViolations()`, or standalone via `dfm.AnnularRingDetector`. Non-plated holes are
   exempt (they need no ring), a hole that breaks out of its pad is told apart from a tight one, and
   a plated hole with no pad at all is reported separately rather than as a ring of zero
+- **Minimum clearance** (`spec.getMinClearanceMm()`, **beta**) — the tightest gap between copper of
+  *different nets* on any layer, measured on the geometry: nets are found by connectivity (with
+  clear-polarity antipads honoured, so a pad in an antipad is a different net from its plane and a
+  thermal spoke joins it back), then every boundary is measured against its neighbours within
+  1 mm. Per layer, with the two nets, the objects and the coordinate, on
+  `AnalyzedLayer.getClearance()`; standalone via `dfm.ClearanceDetector`
+- **Minimum conductor width** (`spec.getMinConductorWidthUm()`, **beta**) — how narrow the copper actually
+  gets, from the outline rather than the aperture table: strokes of any aperture shape and the
+  necks of pours (a plane split by a slot, the web between two antipads). Kept beside
+  `getMinTrackWidthUm()` on purpose: a board that *quotes* as 100 µm but necks to 30 µm in a pour
+  is what the difference is for. Standalone via `dfm.ConductorWidthDetector`
 - **Physical stack-up** (`spec.getStack()`) — the board top to bottom as a list of `StackEntry`:
   copper, dielectric, mask, legend and paste, each with its thickness in picometres, plus the
   finished **board thickness** (`spec.getBoardThicknessPm()`). Read from a `.gbrjob`'s
@@ -296,7 +307,28 @@ BoardSpecification spec = new PcbAnalyzer().analyze(files);
 Boolean viaInPad = spec.hasViaInPad();                    // a hole sits in a pad at all
 Boolean needsFill = spec.requiresFilledAndCappedVias();   // ... and it has to be plugged
 int     count    = spec.getViaInPadCount();
+
+Double minTrackUm     = spec.getMinTrackWidthUm();        // quote-form figure: the aperture table
+Double minConductorUm = spec.getMinConductorWidthUm();    // what the copper actually does
+Double minClearanceMm = spec.getMinClearanceMm();         // tightest gap between two nets
+
+// Where, and between what — per copper layer:
+for (AnalyzedLayer layer : spec.getLayers()) {
+    ClearanceResult clearance = layer.getClearance();     // null on non-copper layers
+    if (clearance != null && clearance.getMin() != null) {
+        Clearance c = clearance.getMin();                 // distance, x/y, netA/netB, the two objects
+        System.out.println(layer.getFileName() + ": " + c);
+    }
+}
 ```
+
+Both geometric figures are marked `@Beta`: they are measured and tested, but not yet validated
+against an independent DFM tool on real boards, so treat them as advisory rather than as grounds
+for a quote or a rejection until that mark comes off. They are exact (round apertures are measured
+as circles; arcs are flattened to half a micrometre) and cost well under a second per layer on a 350 × 540 mm backplane. A `null`
+clearance means no two nets come within `ClearanceDetector.DEFAULT_CUTOFF_MM` (1 mm) of each
+other, not that nothing was measured; run `ClearanceDetector.detect(geometry, name, cutoff)`
+yourself for a wider look.
 
 Both are **nullable** `Boolean`s on purpose:
 

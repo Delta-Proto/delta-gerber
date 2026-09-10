@@ -21,6 +21,10 @@ import com.deltaproto.deltagerber.renderer.svg.SoldermaskColor;
 import com.deltaproto.deltagerber.renderer.step.StepExporter;
 import com.deltaproto.deltagerber.dfm.AnnularRingDetector;
 import com.deltaproto.deltagerber.dfm.AnnularRingResult;
+import com.deltaproto.deltagerber.dfm.Clearance;
+import com.deltaproto.deltagerber.dfm.ClearanceResult;
+import com.deltaproto.deltagerber.dfm.ConductorWidth;
+import com.deltaproto.deltagerber.dfm.ConductorWidthResult;
 import com.deltaproto.deltagerber.dfm.CopperLayer;
 import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
 import com.deltaproto.deltagerber.dfm.ViaInPadGroup;
@@ -447,6 +451,51 @@ public class GerberViewerServer {
             return union.isValid() ? union : null;
         }
 
+        /** Where the board's tightest gap is and between which nets — the layer that holds the minimum. */
+        private static void appendTightestClearance(StringBuilder json, BoardSpecification spec) {
+            json.append(",\"minClearanceAt\":");
+            Clearance best = null;
+            String layerName = null;
+            for (AnalyzedLayer layer : spec.getLayers()) {
+                ClearanceResult r = layer.getClearance();
+                if (r != null && r.getMin() != null && (best == null || r.getMin().distanceMm() < best.distanceMm())) {
+                    best = r.getMin();
+                    layerName = layer.getFileName();
+                }
+            }
+            if (best == null) {
+                json.append("null");
+                return;
+            }
+            json.append("{\"layer\":").append(escapeJson(layerName))
+                    .append(",\"netA\":").append(escapeJson(best.netA()))
+                    .append(",\"netB\":").append(escapeJson(best.netB()))
+                    .append(",\"x\":").append(number(best.xMm(), 3))
+                    .append(",\"y\":").append(number(best.yMm(), 3)).append('}');
+        }
+
+        /** Where the board's narrowest copper is and what kind of copper it is. */
+        private static void appendNarrowestConductor(StringBuilder json, BoardSpecification spec) {
+            json.append(",\"minConductorAt\":");
+            ConductorWidth best = null;
+            String layerName = null;
+            for (AnalyzedLayer layer : spec.getLayers()) {
+                ConductorWidthResult r = layer.getConductorWidth();
+                if (r != null && r.getMin() != null && (best == null || r.getMin().widthMm() < best.widthMm())) {
+                    best = r.getMin();
+                    layerName = layer.getFileName();
+                }
+            }
+            if (best == null) {
+                json.append("null");
+                return;
+            }
+            json.append("{\"layer\":").append(escapeJson(layerName))
+                    .append(",\"kind\":").append(escapeJson(best.kind().name()))
+                    .append(",\"x\":").append(number(best.xMm(), 3))
+                    .append(",\"y\":").append(number(best.yMm(), 3)).append('}');
+        }
+
         private static void appendPcbInfo(StringBuilder json, List<MultiLayerSVGRenderer.Layer> layers,
                                           Map<String, LayerClassification> classifications) {
             BoundingBox outline = outlineBounds(layers, classifications);
@@ -494,6 +543,12 @@ public class GerberViewerServer {
             json.append(",\"stencilSide\":").append(escapeJson(name(spec.getStencilSide())));
             json.append(",\"minTrackUm\":").append(number(spec.getMinTrackWidthUm(), 3));
             json.append(",\"minDrillMm\":").append(number(spec.getMinDrillDiameterMm(), 4));
+            json.append(",\"minClearanceMm\":").append(number(spec.getMinClearanceMm(), 4));
+            json.append(",\"minConductorUm\":").append(number(spec.getMinConductorWidthUm(), 3));
+            appendTightestClearance(json, spec);
+            appendNarrowestConductor(json, spec);
+            // Which figures are still beta — measured and tested, not yet validated externally.
+            json.append(",\"betaFigures\":[\"minClearanceMm\",\"minClearanceAt\",\"minConductorUm\",\"minConductorAt\"]");
             json.append(",\"hasCopper\":").append(spec.hasCopper());
             json.append(",\"hasDrill\":").append(spec.hasDrill());
             json.append(",\"hasOutline\":").append(spec.hasOutline());
@@ -581,6 +636,8 @@ public class GerberViewerServer {
                 appendBounds(json, layer.getBounds());
                 json.append(",\"minTrackUm\":").append(number(layer.getMinTrackWidthUm(), 3));
                 json.append(",\"minDrillMm\":").append(number(layer.getMinDrillDiameterMm(), 4));
+                json.append(",\"minClearanceMm\":").append(number(layer.getMinClearanceMm(), 4));
+                json.append(",\"minConductorUm\":").append(number(layer.getMinConductorWidthUm(), 3));
                 json.append(",\"hasGeometry\":").append(layer.getHasGeometry());
                 json.append(",\"format\":");
                 appendFormat(json, layer.getFormatSpec());

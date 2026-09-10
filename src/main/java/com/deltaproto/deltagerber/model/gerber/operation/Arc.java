@@ -48,6 +48,9 @@ public class Arc extends GraphicsObject {
     public boolean isClockwise() { return clockwise; }
     public Aperture getAperture() { return aperture; }
 
+    /** Factor the {@code %LS%} scale in force applied to the aperture's size; 1 when none. */
+    public double getStrokeScale() { return strokeScale; }
+
     public double getRadius() {
         double dx = startX - centerX;
         double dy = startY - centerY;

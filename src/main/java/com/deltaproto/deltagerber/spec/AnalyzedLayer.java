@@ -1,6 +1,9 @@
 package com.deltaproto.deltagerber.spec;
 
+import com.deltaproto.deltagerber.Beta;
 import com.deltaproto.deltagerber.classify.LayerClassification;
+import com.deltaproto.deltagerber.dfm.ClearanceResult;
+import com.deltaproto.deltagerber.dfm.ConductorWidthResult;
 import com.deltaproto.deltagerber.classify.LayerFunction;
 import com.deltaproto.deltagerber.classify.LayerSide;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
@@ -26,6 +29,10 @@ public final class AnalyzedLayer {
     private final BoundingBox bounds;
     private final Double minTrackWidthUm;
     private final Double minDrillDiameterMm;
+    private final Double minClearanceMm;
+    private final Double minConductorWidthUm;
+    private final ClearanceResult clearance;
+    private final ConductorWidthResult conductorWidth;
     private final Boolean hasGeometry;
     private final FormatSpec formatSpec;
     private final List<String> warnings;
@@ -36,6 +43,10 @@ public final class AnalyzedLayer {
         this.bounds = builder.bounds;
         this.minTrackWidthUm = builder.minTrackWidthUm;
         this.minDrillDiameterMm = builder.minDrillDiameterMm;
+        this.minClearanceMm = builder.minClearanceMm;
+        this.minConductorWidthUm = builder.minConductorWidthUm;
+        this.clearance = builder.clearance;
+        this.conductorWidth = builder.conductorWidth;
         this.hasGeometry = builder.hasGeometry;
         this.formatSpec = builder.formatSpec;
         this.warnings = List.copyOf(builder.warnings);
@@ -96,6 +107,39 @@ public final class AnalyzedLayer {
     }
 
     /**
+     * Tightest gap between two nets on this copper layer in millimetres, measured from the geometry
+     * ({@link ClearanceResult}); null when not measured, or when no two nets come within the check's
+     * cutoff of each other.
+     */
+    @Beta("not yet validated against an external DFM tool")
+    public Double getMinClearanceMm() {
+        return minClearanceMm;
+    }
+
+    /**
+     * Narrowest copper on this layer in micrometres, measured from the geometry
+     * ({@link ConductorWidthResult}) — strokes of any aperture shape and the necks of pours. Not the
+     * same as {@link #getMinTrackWidthUm()}, which reads the aperture table; where the two disagree
+     * the copper necks somewhere.
+     */
+    @Beta("not yet validated against an external DFM tool")
+    public Double getMinConductorWidthUm() {
+        return minConductorWidthUm;
+    }
+
+    /** The clearance check in full, or null when it did not run (persisted layers, non-copper). */
+    @Beta("not yet validated against an external DFM tool")
+    public ClearanceResult getClearance() {
+        return clearance;
+    }
+
+    /** The conductor-width measurement in full, or null when it did not run. */
+    @Beta("not yet validated against an external DFM tool")
+    public ConductorWidthResult getConductorWidth() {
+        return conductorWidth;
+    }
+
+    /**
      * Whether the file draws anything at all. A paste layer that exists but is empty needs no
      * stencil, and an outline layer that is empty is not an outline; null when not determined.
      */
@@ -129,6 +173,10 @@ public final class AnalyzedLayer {
         private BoundingBox bounds;
         private Double minTrackWidthUm;
         private Double minDrillDiameterMm;
+        private Double minClearanceMm;
+        private Double minConductorWidthUm;
+        private ClearanceResult clearance;
+        private ConductorWidthResult conductorWidth;
         private Boolean hasGeometry;
         private FormatSpec formatSpec;
         private List<String> warnings = List.of();
@@ -167,6 +215,33 @@ public final class AnalyzedLayer {
 
         public Builder minDrillDiameterMm(Double minDrillDiameterMm) {
             this.minDrillDiameterMm = minDrillDiameterMm;
+            return this;
+        }
+
+        /** The summary figure alone — for a layer re-created from persisted measurements. */
+        public Builder minClearanceMm(Double minClearanceMm) {
+            this.minClearanceMm = minClearanceMm;
+            return this;
+        }
+
+        /** The summary figure alone — for a layer re-created from persisted measurements. */
+        public Builder minConductorWidthUm(Double minConductorWidthUm) {
+            this.minConductorWidthUm = minConductorWidthUm;
+            return this;
+        }
+
+        /** The clearance check; also sets {@link #minClearanceMm} from it. */
+        public Builder clearance(ClearanceResult clearance) {
+            this.clearance = clearance;
+            this.minClearanceMm = clearance == null ? null : clearance.getMinMm();
+            return this;
+        }
+
+        /** The conductor-width measurement; also sets {@link #minConductorWidthUm} from it. */
+        public Builder conductorWidth(ConductorWidthResult conductorWidth) {
+            this.conductorWidth = conductorWidth;
+            Double mm = conductorWidth == null ? null : conductorWidth.getMinMm();
+            this.minConductorWidthUm = mm == null ? null : mm * 1000.0;
             return this;
         }
 
