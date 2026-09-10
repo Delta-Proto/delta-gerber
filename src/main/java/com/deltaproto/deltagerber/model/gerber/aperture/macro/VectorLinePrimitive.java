@@ -4,6 +4,8 @@ import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
 import java.util.Locale;
 import java.util.Map;
+import java.awt.Shape;
+import java.awt.geom.Path2D;
 
 /**
  * Vector line primitive (code 20).
@@ -132,6 +134,48 @@ public class VectorLinePrimitive implements MacroPrimitive {
             bbox.extend(cornersX[i], cornersY[i]);
         }
         return bbox;
+    }
+
+    @Override
+    public Shape toShape(Map<Integer, Double> variables, double unitFactor) {
+        double w = width.evaluate(variables) * unitFactor;
+        double sx = startX.evaluate(variables) * unitFactor;
+        double sy = startY.evaluate(variables) * unitFactor;
+        double ex = endX.evaluate(variables) * unitFactor;
+        double ey = endY.evaluate(variables) * unitFactor;
+        double rot = rotation.evaluate(variables);
+
+        double dx = ex - sx;
+        double dy = ey - sy;
+        double len = Math.sqrt(dx * dx + dy * dy);
+        if (len == 0 || w <= 0) {
+            return null;
+        }
+
+        double px = -dy / len;
+        double py = dx / len;
+        double hw = w / 2;
+        double[] cornersX = {sx + px * hw, ex + px * hw, ex - px * hw, sx - px * hw};
+        double[] cornersY = {sy + py * hw, ey + py * hw, ey - py * hw, sy - py * hw};
+
+        if (rot != 0) {
+            double radians = Math.toRadians(rot);
+            double cos = Math.cos(radians);
+            double sin = Math.sin(radians);
+            for (int i = 0; i < 4; i++) {
+                double newX = cornersX[i] * cos - cornersY[i] * sin;
+                cornersY[i] = cornersX[i] * sin + cornersY[i] * cos;
+                cornersX[i] = newX;
+            }
+        }
+
+        Path2D.Double path = new Path2D.Double(Path2D.WIND_NON_ZERO, 5);
+        path.moveTo(cornersX[0], cornersY[0]);
+        for (int i = 1; i < 4; i++) {
+            path.lineTo(cornersX[i], cornersY[i]);
+        }
+        path.closePath();
+        return path;
     }
 
     @Override

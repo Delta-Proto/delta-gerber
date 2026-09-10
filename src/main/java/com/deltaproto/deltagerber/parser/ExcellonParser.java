@@ -32,6 +32,9 @@ public class ExcellonParser {
     private final List<Tool> holesizeTools = new ArrayList<>();
     private int holesizeToolIndex = 0;
     private boolean holesizeMetric = false;
+    // Plating stated by the last ;TYPE= comment; null until a file says. Tools defined after it
+    // take it, so one file can hold plated and non-plated tools — which Altium's do.
+    private Boolean currentPlating = null;
 
     private enum InterpolationMode {
         LINEAR,      // G01
@@ -65,6 +68,10 @@ public class ExcellonParser {
         "Holesize\\s+(\\d+)\\.\\s*=\\s*([\\d.]+).*?(PLATED|NON_PLATED)\\s+(MM|INCH)\\s+Quantity\\s*=\\s*(\\d+)");
 
     // Format specification patterns
+    // ;TYPE=PLATED / ;TYPE=NON_PLATED, the only place Excellon states plating.
+    private static final Pattern TYPE_COMMENT = Pattern.compile(
+        "^TYPE\\s*=\\s*(NON[_\\- ]?PLATED|PLATED)", Pattern.CASE_INSENSITIVE);
+
     private static final Pattern FORMAT_METRIC = Pattern.compile("^METRIC[,\\s]*(LZ|TZ)?");
     private static final Pattern FORMAT_INCH = Pattern.compile("^INCH[,\\s]*(LZ|TZ)?");
     private static final Pattern FORMAT_FMAT = Pattern.compile("^FMAT,?(\\d)");
@@ -132,6 +139,12 @@ public class ExcellonParser {
                 explicitFormatSet = true;
                 log.trace("Explicit FILE_FORMAT set to {}:{}", fileFormatMatcher.group(1), fileFormatMatcher.group(2));
             }
+            // Plating for the tools that follow (;TYPE=PLATED / ;TYPE=NON_PLATED)
+            Matcher typeMatcher = TYPE_COMMENT.matcher(comment);
+            if (typeMatcher.find()) {
+                currentPlating = !typeMatcher.group(1).toUpperCase().startsWith("NON");
+                log.trace("Tools that follow are {}", currentPlating ? "plated" : "non-plated");
+            }
             // Check for Holesize comment (Cadence Allegro format)
             Matcher holesizeMatcher = HOLESIZE_COMMENT.matcher(comment);
             if (holesizeMatcher.find()) {
@@ -144,6 +157,7 @@ public class ExcellonParser {
                     holesizeMetric = true;
                 }
                 Tool tool = new Tool(toolNum, diameter);
+                tool.setPlated(currentPlating);
                 document.addTool(tool);
                 holesizeTools.add(tool);
                 log.trace("Holesize tool T{}: {}mm", toolNum, diameter);
@@ -195,6 +209,7 @@ public class ExcellonParser {
             int toolNum = Integer.parseInt(toolDefMatcher.group(1));
             double rawDia = safeParseDouble(toolDefMatcher.group(2), 0, "tool T" + toolNum + " diameter");
             Tool tool = new Tool(toolNum, document.getUnit().toMm(rawDia));
+            tool.setPlated(currentPlating);
             document.addTool(tool);
             return;
         }

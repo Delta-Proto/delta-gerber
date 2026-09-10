@@ -2,6 +2,9 @@ package com.deltaproto.deltagerber.spec;
 
 import com.deltaproto.deltagerber.classify.LayerFunction;
 import com.deltaproto.deltagerber.classify.LayerSide;
+import com.deltaproto.deltagerber.dfm.AnnularRing;
+import com.deltaproto.deltagerber.dfm.AnnularRingPolicy;
+import com.deltaproto.deltagerber.dfm.AnnularRingResult;
 import com.deltaproto.deltagerber.dfm.ViaInPadGroup;
 import com.deltaproto.deltagerber.dfm.ViaInPadPolicy;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
@@ -63,6 +66,7 @@ public final class BoardSpecification {
     private final boolean hasCopper;
     private final boolean hasOutline;
     private final ViaInPadResult viaInPad;
+    private final AnnularRingResult annularRing;
     private final BoardStack stack;
     private final List<AnalyzedLayer> layers;
 
@@ -70,8 +74,8 @@ public final class BoardSpecification {
                                BoardSide solderMaskSide, BoardSide silkscreenSide, BoardSide stencilSide,
                                Double minTrackWidthUm, Double minDrillDiameterMm,
                                boolean hasDrill, boolean hasCopper, boolean hasOutline,
-                               ViaInPadResult viaInPad, BoardStack stack,
-                               List<AnalyzedLayer> layers) {
+                               ViaInPadResult viaInPad, AnnularRingResult annularRing,
+                               BoardStack stack, List<AnalyzedLayer> layers) {
         this.sizeXMm = sizeXMm;
         this.sizeYMm = sizeYMm;
         this.bounds = bounds;
@@ -85,6 +89,7 @@ public final class BoardSpecification {
         this.hasCopper = hasCopper;
         this.hasOutline = hasOutline;
         this.viaInPad = viaInPad;
+        this.annularRing = annularRing;
         this.stack = stack;
         this.layers = layers;
     }
@@ -101,7 +106,7 @@ public final class BoardSpecification {
      * {@link #from(List, ViaInPadResult, BoardStack)}.
      */
     public static BoardSpecification from(List<AnalyzedLayer> layers) {
-        return from(layers, null, null);
+        return from(layers, null, null, null);
     }
 
     /**
@@ -110,7 +115,7 @@ public final class BoardSpecification {
      * a stored result). A {@code null} result leaves via-in-pad {@linkplain #hasViaInPad() unknown}.
      */
     public static BoardSpecification from(List<AnalyzedLayer> layers, ViaInPadResult viaInPad) {
-        return from(layers, viaInPad, null);
+        return from(layers, viaInPad, null, null);
     }
 
     /**
@@ -127,6 +132,17 @@ public final class BoardSpecification {
      */
     public static BoardSpecification from(List<AnalyzedLayer> layers, ViaInPadResult viaInPad,
                                           BoardStack stack) {
+        return from(layers, viaInPad, stack, null);
+    }
+
+    /**
+     * As {@link #from(List, ViaInPadResult, BoardStack)}, with the annular rings the caller measured
+     * separately ({@link PcbAnalyzer} runs the check during analysis). Like via-in-pad it correlates
+     * two layers and cannot be re-derived from per-layer measurements, so a {@code null} result
+     * leaves {@link #getMinAnnularRingMm()} unknown.
+     */
+    public static BoardSpecification from(List<AnalyzedLayer> layers, ViaInPadResult viaInPad,
+                                          BoardStack stack, AnnularRingResult annularRing) {
         List<AnalyzedLayer> safe = layers == null ? List.of() : List.copyOf(layers);
         BoardStack given = stack == null ? BoardStack.empty() : stack;
         BoardStack resolvedStack = given.getEntries().isEmpty()
@@ -148,7 +164,7 @@ public final class BoardSpecification {
                 safe.stream().anyMatch(l -> l.getFunction().isDrill()),
                 safe.stream().anyMatch(l -> l.getFunction().isCopper()),
                 safe.stream().anyMatch(l -> l.getFunction() == LayerFunction.OUTLINE),
-                viaInPad, resolvedStack, safe);
+                viaInPad, annularRing, resolvedStack, safe);
     }
 
     /**
@@ -331,6 +347,55 @@ public final class BoardSpecification {
      */
     public ViaInPadResult getViaInPad() {
         return viaInPad;
+    }
+
+    /**
+     * The board's tightest <em>annular ring</em> in millimetres — the copper left between the wall
+     * of a drilled hole and the edge of its pad, at its worst on the whole board. This is the
+     * "min annular ring" line on a fabricator's capability table.
+     *
+     * <p>{@code null} when it could not be determined: the set has no copper, no drill, or was
+     * re-derived from persisted layer measurements without re-running the check (the ring is a
+     * relationship between the drill program and the copper, not a per-layer measurement). Also
+     * {@code null} when nothing could be measured — every hole is non-plated, or none found a pad.
+     *
+     * <p>Negative means a hole breaks out of its pad. Non-plated holes are not measured at all:
+     * they have no barrel to connect, so they need no ring. See {@link #getAnnularRing()} for the
+     * per-hole and per-layer detail.
+     */
+    public Double getMinAnnularRingMm() {
+        return annularRing == null ? null : annularRing.getMinRingMm();
+    }
+
+    /**
+     * Whether every measured hole clears {@link AnnularRingPolicy#DEFAULT} — 0.15 mm, the standard
+     * fabricator design rule. {@code null} when the ring was not determined (see
+     * {@link #getMinAnnularRingMm()}).
+     */
+    public Boolean isAnnularRingWithinPolicy() {
+        return isAnnularRingWithinPolicy(AnnularRingPolicy.DEFAULT);
+    }
+
+    /** As {@link #isAnnularRingWithinPolicy()}, judged by {@code policy}. */
+    public Boolean isAnnularRingWithinPolicy(AnnularRingPolicy policy) {
+        return annularRing == null ? null : annularRing.isWithinPolicy(policy);
+    }
+
+    /**
+     * The holes whose ring is under {@link AnnularRingPolicy#DEFAULT} on some layer — empty when
+     * there are none or the ring was not determined.
+     */
+    public List<AnnularRing> getAnnularRingViolations() {
+        return annularRing == null ? List.of() : annularRing.getViolations();
+    }
+
+    /**
+     * The full annular-ring result — every hole, its ring on every layer it has a pad on, and the
+     * holes that have no pad at all. {@code null} when the check was not run for this
+     * specification.
+     */
+    public AnnularRingResult getAnnularRing() {
+        return annularRing;
     }
 
     /**

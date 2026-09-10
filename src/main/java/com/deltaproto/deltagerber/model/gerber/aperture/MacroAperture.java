@@ -5,6 +5,8 @@ import com.deltaproto.deltagerber.model.gerber.aperture.macro.MacroPrimitive;
 import com.deltaproto.deltagerber.model.gerber.aperture.macro.MacroTemplate;
 import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
 
+import java.awt.Shape;
+import java.awt.geom.Area;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +54,31 @@ public class MacroAperture extends Aperture {
             bbox.extend(primBounds);
         }
         return bbox;
+    }
+
+    /**
+     * The area this aperture covers, as a Java2D shape in millimetres, centred on the flash point
+     * with Y up — the macro's primitives combined in the order the template declares them, an
+     * exposed one adding and an unexposed one clearing.
+     *
+     * <p>A macro is the one aperture whose outline cannot be written down as a few numbers, so
+     * everything that measures rather than draws — is this point inside the pad, how far is it from
+     * the pad's edge — has to build it. Empty when the macro exposes nothing.
+     */
+    public Shape getShape() {
+        Area area = new Area();
+        for (MacroPrimitive primitive : template.getPrimitives()) {
+            Shape shape = primitive.toShape(evaluatedVariables, unitFactor);
+            if (shape == null) {
+                continue;
+            }
+            if (primitive.isExposed(evaluatedVariables)) {
+                area.add(new Area(shape));
+            } else {
+                area.subtract(new Area(shape));
+            }
+        }
+        return area;
     }
 
     @Override

@@ -6,6 +6,8 @@ import com.deltaproto.deltagerber.renderer.svg.SvgPathUtils;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.awt.Shape;
+import java.awt.geom.Path2D;
 
 /**
  * Outline primitive (code 4).
@@ -107,6 +109,36 @@ public class OutlinePrimitive implements MacroPrimitive {
         }
 
         return bbox;
+    }
+
+    @Override
+    public Shape toShape(Map<Integer, Double> variables, double unitFactor) {
+        double rot = rotation.evaluate(variables);
+        int numPoints = Math.min(verticesX.size(), verticesY.size());
+        if (numPoints < 3) {
+            return null;
+        }
+        double cos = 1;
+        double sin = 0;
+        if (rot != 0) {
+            double radians = Math.toRadians(rot);
+            cos = Math.cos(radians);
+            sin = Math.sin(radians);
+        }
+        Path2D.Double path = new Path2D.Double(Path2D.WIND_NON_ZERO, numPoints + 1);
+        for (int i = 0; i < numPoints; i++) {
+            double x = verticesX.get(i).evaluate(variables) * unitFactor;
+            double y = verticesY.get(i).evaluate(variables) * unitFactor;
+            double rx = x * cos - y * sin;
+            double ry = x * sin + y * cos;
+            if (i == 0) {
+                path.moveTo(rx, ry);
+            } else {
+                path.lineTo(rx, ry);
+            }
+        }
+        path.closePath();   // the spec repeats the first vertex last; closing is a no-op then
+        return path;
     }
 
     @Override

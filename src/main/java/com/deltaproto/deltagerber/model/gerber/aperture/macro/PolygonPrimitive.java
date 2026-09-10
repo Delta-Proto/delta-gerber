@@ -4,6 +4,8 @@ import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
 import com.deltaproto.deltagerber.renderer.svg.SvgPathUtils;
 import java.util.Map;
+import java.awt.Shape;
+import java.awt.geom.Path2D;
 
 /**
  * Regular polygon primitive (code 5).
@@ -78,6 +80,33 @@ public class PolygonPrimitive implements MacroPrimitive {
         }
 
         return bbox;
+    }
+
+    @Override
+    public Shape toShape(Map<Integer, Double> variables, double unitFactor) {
+        int n = (int) vertexCount.evaluate(variables);
+        double d = diameter.evaluate(variables) * unitFactor;
+        if (n < 3 || d <= 0) {
+            return null;
+        }
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
+        double r = d / 2;
+        double startAngle = Math.toRadians(rotation.evaluate(variables));
+
+        Path2D.Double path = new Path2D.Double(Path2D.WIND_NON_ZERO, n + 1);
+        for (int i = 0; i < n; i++) {
+            double angle = startAngle + 2 * Math.PI * i / n;
+            double x = cx + r * Math.cos(angle);
+            double y = cy + r * Math.sin(angle);
+            if (i == 0) {
+                path.moveTo(x, y);
+            } else {
+                path.lineTo(x, y);
+            }
+        }
+        path.closePath();
+        return path;
     }
 
     @Override

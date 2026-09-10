@@ -5,16 +5,22 @@ import com.deltaproto.deltagerber.classify.LayerClassification;
 import com.deltaproto.deltagerber.classify.LayerClassifier;
 import com.deltaproto.deltagerber.classify.LayerFunction;
 import com.deltaproto.deltagerber.classify.LayerSide;
+import com.deltaproto.deltagerber.dfm.AnnularRingDetector;
+import com.deltaproto.deltagerber.dfm.AnnularRingResult;
+import com.deltaproto.deltagerber.dfm.CopperLayer;
 import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.model.drill.DrillDocument;
+import com.deltaproto.deltagerber.model.drill.DrillHit;
 import com.deltaproto.deltagerber.model.drill.Tool;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
+import com.deltaproto.deltagerber.model.gerber.Unit;
 import com.deltaproto.deltagerber.model.gerber.aperture.Aperture;
 import com.deltaproto.deltagerber.model.gerber.aperture.CircleAperture;
 import com.deltaproto.deltagerber.model.gerber.operation.Arc;
 import com.deltaproto.deltagerber.model.gerber.operation.Draw;
+import com.deltaproto.deltagerber.model.gerber.operation.Flash;
 import com.deltaproto.deltagerber.model.gerber.operation.GraphicsObject;
 import com.deltaproto.deltagerber.model.gerber.GerberJobDocument;
 import com.deltaproto.deltagerber.model.ipc2581.Ipc2581StackupDocument;
@@ -106,20 +112,21 @@ public class PcbAnalyzer {
         BoundingBox outline = outlineBounds(files, classifications);
         boolean usableOutline = outline != null && outline.getWidth() > 0 && outline.getHeight() > 0;
 
-        // Via-in-pad is a relationship between the paste layer and the drill, so those two are
-        // collected across the whole set (the paste's pads and the drill's holes) and correlated
-        // once at the end. It is only worth parsing the paste for this when the set actually has a
-        // drill to test against.
+        // Both DFM checks are relationships between two layers rather than measurements of one, so
+        // what they need is collected across the whole set as it is parsed — the paste's pads, the
+        // copper's pads and the drill's holes — and correlated once at the end. It is only worth
+        // parsing the paste for this when the set actually has a drill to test against.
         boolean setHasDrill = classifications.stream()
                 .anyMatch(c -> c != null && c.function().isDrill());
-        ViaInPadCollector viaInPad = new ViaInPadCollector();
+        DfmCollector dfm = new DfmCollector();
 
         List<AnalyzedLayer> layers = new ArrayList<>(files.size());
         for (int i = 0; i < files.size(); i++) {
             layers.add(measure(files.get(i), classifications.get(i), outline, usableOutline, depth,
-                    setHasDrill, viaInPad));
+                    setHasDrill, dfm));
         }
-        return BoardSpecification.from(layers, viaInPad.detect(), stackOf(files));
+        dfm.correlate();
+        return BoardSpecification.from(layers, dfm.viaInPad(), stackOf(files), dfm.annularRing());
     }
 
     /**
@@ -281,7 +288,7 @@ public class PcbAnalyzer {
     /** Parse one file, take its measurements, and let the document go before the next one. */
     private AnalyzedLayer measure(PcbFile file, LayerClassification classification,
                                   BoundingBox outline, boolean usableOutline, AnalysisDepth depth,
-                                  boolean setHasDrill, ViaInPadCollector viaInPad) {
+                                  boolean setHasDrill, DfmCollector dfm) {
         String content = file.getContent();
         if (content == null || content.isBlank()) {
             return AnalyzedLayer.builder(file.getFileName()).classification(classification).build();
@@ -298,15 +305,16 @@ public class PcbAnalyzer {
         }
 
         try {
-            // Parse once, then both measure the layer and feed the via-in-pad correlation, so the
-            // paste/copper/drill documents are not parsed a second time for the DFM check.
+            // Parse once, then both measure the layer and feed the DFM correlations, so the
+            // paste/copper/drill documents are not parsed a second time for the checks.
             if (isExcellon(content, function)) {
                 DrillDocument doc = new ExcellonParser().parse(content);
-                viaInPad.addDrill(doc);
+                doc.setFileName(file.getFileName());
+                dfm.addDrill(doc, function);
                 return measure(file.getFileName(), doc, classification);
             }
             GerberDocument doc = new GerberParser().parse(content);
-            viaInPad.addGerber(function, classification == null ? LayerSide.NA : classification.side(), doc);
+            dfm.addGerber(file.getFileName(), classification, function, doc);
             return measure(file.getFileName(), doc, classification, outline);
         } catch (RuntimeException e) {
             log.warn("Could not parse {}: {}", file.getFileName(), e.toString());
@@ -469,33 +477,79 @@ public class PcbAnalyzer {
     }
 
     // ------------------------------------------------------------------------
-    // Via in pad
+    // DFM correlations
     // ------------------------------------------------------------------------
 
     /**
-     * Gathers the two ingredients of a via-in-pad check as the set is parsed — the paste pads and
-     * the drill holes — plus the copper flashes needed to align a drill that was exported on a
-     * different origin. The heavy copper documents are released after each is measured; only their
-     * flash centres (a few numbers each) and bounds are kept, so the DFM check does not defeat the
-     * one-file-at-a-time memory model.
+     * Gathers what the two-layer DFM checks need while the set is parsed once — the paste pads for
+     * via-in-pad, the copper pads for the annular ring, and the drill holes both are measured
+     * against — and correlates them when every file has been read.
+     *
+     * <p>The heavy documents are released as each layer is measured. What is kept from copper is
+     * only what can be a pad: every flash, and a stroke no longer than it is wide (several tools
+     * draw an oblong through-hole pad as a swept aperture, and nothing else that short is copper a
+     * hole sits in). Traces and pours — the bulk of a copper layer, and all of its memory — are
+     * dropped, so the checks do not defeat the one-file-at-a-time memory model.
      */
-    private static final class ViaInPadCollector {
+    private static final class DfmCollector {
+
+        /**
+         * How many times its own width a stroke may be and still be a pad. A pad drawn as a swept
+         * aperture is a stub — a 3:1 oval pad sweeps twice its width — while a trace runs for tens
+         * of times its width, so this separates the two without having to know which tool wrote the
+         * file.
+         */
+        private static final double MAX_PAD_STROKE_RATIO = 2.0;
+
         private final List<GerberDocument> topPaste = new ArrayList<>();
         private final List<GerberDocument> bottomPaste = new ArrayList<>();
         private final List<DrillDocument> drills = new ArrayList<>();
+        private final List<CopperLayer> copperPads = new ArrayList<>();
         private final List<double[]> copperFlashCenters = new ArrayList<>();
         private final BoundingBox copperBounds = new BoundingBox();
+        private ViaInPadResult viaInPad;
+        private AnnularRingResult annularRing;
 
-        void addDrill(DrillDocument doc) {
+        void addDrill(DrillDocument doc, LayerFunction function) {
+            // What the file is called says something about plating, and what it contains says more:
+            // Excellon states it per tool in a ;TYPE= comment, and one Altium file holds both kinds.
+            // So the classification only fills in the tools that stated nothing themselves.
+            Boolean stated = function == LayerFunction.DRILL_PLATED ? Boolean.TRUE
+                    : function == LayerFunction.DRILL_NONPLATED ? Boolean.FALSE : null;
+            if (stated != null) {
+                for (Tool tool : doc.getTools().values()) {
+                    if (tool.getPlated() == null) {
+                        tool.setPlated(stated);
+                    }
+                }
+            }
             drills.add(doc);
         }
 
-        void addGerber(LayerFunction function, LayerSide side, GerberDocument doc) {
+        void addGerber(String fileName, LayerClassification classification,
+                       LayerFunction function, GerberDocument doc) {
+            LayerSide side = classification == null ? LayerSide.NA : classification.side();
+            if (function.isDrill()) {
+                // KiCad and others can write the drill program as Gerber X2 instead of Excellon.
+                // It is still a drill program, and both checks want its holes.
+                addDrill(gerberDrill(fileName, doc), function);
+                return;
+            }
             if (function == LayerFunction.PASTE) {
                 // A sideless paste layer (rare) is assumed top; its pads still count either way.
                 (side == LayerSide.BOTTOM ? bottomPaste : topPaste).add(doc);
             } else if (function.isCopper()) {
-                copperFlashCenters.addAll(DrillGerberAlignment.flashCenters(doc));
+                List<GraphicsObject> pads = new ArrayList<>();
+                for (GraphicsObject obj : doc.getObjects()) {
+                    if (obj instanceof Flash flash) {
+                        pads.add(obj);
+                        copperFlashCenters.add(new double[]{flash.getX(), flash.getY()});
+                    } else if (isPadStroke(obj)) {
+                        pads.add(obj);
+                    }
+                }
+                copperPads.add(CopperLayer.of(fileName, side,
+                        classification == null ? null : classification.number(), pads));
                 BoundingBox b = doc.getBoundingBox();
                 if (b != null && b.isValid()) {
                     copperBounds.include(b);
@@ -504,17 +558,81 @@ public class PcbAnalyzer {
         }
 
         /**
-         * Correlate the collected pads and holes. Returns {@code null} — "not determined" — when the
-         * set lacks a paste layer or a drill, since via-in-pad cannot be judged without both.
+         * A Gerber X2 drill layer ({@code *-PTH-drl.gbr}) read as a drill program: each hole is a
+         * flashed circle whose aperture diameter is the tool that drills it. Anything else the
+         * layer draws is a slot, which neither check measures.
          */
-        ViaInPadResult detect() {
-            if ((topPaste.isEmpty() && bottomPaste.isEmpty()) || drills.isEmpty()) {
-                return null;
+        private static DrillDocument gerberDrill(String fileName, GerberDocument doc) {
+            DrillDocument out = new DrillDocument();
+            out.setFileName(fileName);
+            out.setUnit(Unit.MM);
+            Map<Double, Tool> tools = new LinkedHashMap<>();
+            for (GraphicsObject obj : doc.getObjects()) {
+                if (!(obj instanceof Flash flash)
+                        || !(flash.getAperture() instanceof CircleAperture circle)
+                        || circle.getDiameter() <= 0) {
+                    continue;
+                }
+                Tool tool = tools.get(circle.getDiameter());
+                if (tool == null) {
+                    tool = new Tool(tools.size() + 1, circle.getDiameter());
+                    tools.put(circle.getDiameter(), tool);
+                    out.addTool(tool);
+                }
+                out.addOperation(new DrillHit(tool, flash.getX(), flash.getY()));
             }
-            // Resolved as a set: a drill file with no hole centres of its own (Altium writes slots
-            // separately) takes the offset its siblings recovered.
-            return ViaInPadDetector.detect(topPaste, bottomPaste,
-                DrillGerberAlignment.alignedAll(drills, copperBounds, copperFlashCenters));
+            return out;
+        }
+
+        /** A stroke short enough to be a pad rather than a trace — see {@link #MAX_PAD_STROKE_RATIO}. */
+        private static boolean isPadStroke(GraphicsObject obj) {
+            double length;
+            Aperture aperture;
+            if (obj instanceof Draw draw) {
+                length = Math.hypot(draw.getEndX() - draw.getStartX(), draw.getEndY() - draw.getStartY());
+                aperture = draw.getAperture();
+            } else if (obj instanceof Arc arc) {
+                length = arc.getBoundingBox().getWidth() + arc.getBoundingBox().getHeight();
+                aperture = arc.getAperture();
+            } else {
+                return false;
+            }
+            if (aperture == null) {
+                return false;
+            }
+            BoundingBox ab = aperture.getBoundingBox();
+            double width = ab.isValid() ? Math.min(ab.getWidth(), ab.getHeight()) : 0;
+            return width > 0 && length <= MAX_PAD_STROKE_RATIO * width;
+        }
+
+        /**
+         * Correlate the collected pads and holes, once, after the last file has been read. The
+         * drills are aligned into the Gerber frame here and both checks share that one answer —
+         * resolved as a set, so a drill file with no hole centres of its own (Altium writes slots
+         * separately) takes the offset its siblings recovered.
+         */
+        void correlate() {
+            if (drills.isEmpty()) {
+                return;     // neither check can say anything without holes
+            }
+            List<DrillDocument> aligned =
+                DrillGerberAlignment.alignedAll(drills, copperBounds, copperFlashCenters);
+            if (!topPaste.isEmpty() || !bottomPaste.isEmpty()) {
+                viaInPad = ViaInPadDetector.detect(topPaste, bottomPaste, aligned);
+            }
+            if (!copperPads.isEmpty()) {
+                annularRing = AnnularRingDetector.detect(copperPads, aligned);
+            }
+        }
+
+        /** Via in pad, or {@code null} — "not determined" — when the set has no paste or no drill. */
+        ViaInPadResult viaInPad() {
+            return viaInPad;
+        }
+
+        /** Annular rings, or {@code null} — "not determined" — when the set has no copper or no drill. */
+        AnnularRingResult annularRing() {
+            return annularRing;
         }
     }
 }

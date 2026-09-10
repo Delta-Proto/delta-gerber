@@ -4,6 +4,11 @@ import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
 import com.deltaproto.deltagerber.renderer.svg.SvgPathUtils;
 import java.util.Map;
+import java.awt.Shape;
+import java.awt.geom.AffineTransform;
+import java.awt.geom.Area;
+import java.awt.geom.Ellipse2D;
+import java.awt.geom.Rectangle2D;
 
 /**
  * Moire primitive (code 6).
@@ -142,6 +147,47 @@ public class MoirePrimitive implements MacroPrimitive {
         double maxExtent = Math.max(od, crossLen);
         double r = maxExtent / 2;
         return new BoundingBox(cx - r, cy - r, cx + r, cy + r);
+    }
+
+    @Override
+    public Shape toShape(Map<Integer, Double> variables, double unitFactor) {
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
+        double od = outerDiameter.evaluate(variables) * unitFactor;
+        double thick = ringThickness.evaluate(variables) * unitFactor;
+        double gap = ringGap.evaluate(variables) * unitFactor;
+        int rings = (int) maxRings.evaluate(variables);
+        double crossThick = crosshairThickness.evaluate(variables) * unitFactor;
+        double crossLen = crosshairLength.evaluate(variables) * unitFactor;
+        double rot = rotation.evaluate(variables);
+
+        Area area = new Area();
+        double outerRadius = od / 2;
+        double pitch = thick + gap;
+        for (int i = 0; i < rings && outerRadius > 0; i++) {
+            Area ring = new Area(new Ellipse2D.Double(cx - outerRadius, cy - outerRadius,
+                2 * outerRadius, 2 * outerRadius));
+            double innerRadius = Math.max(0, outerRadius - thick);
+            if (innerRadius > 0) {
+                ring.subtract(new Area(new Ellipse2D.Double(cx - innerRadius, cy - innerRadius,
+                    2 * innerRadius, 2 * innerRadius)));
+            }
+            area.add(ring);
+            outerRadius -= pitch;
+        }
+        if (crossThick > 0 && crossLen > 0) {
+            area.add(new Area(new Rectangle2D.Double(cx - crossLen / 2, cy - crossThick / 2,
+                crossLen, crossThick)));
+            area.add(new Area(new Rectangle2D.Double(cx - crossThick / 2, cy - crossLen / 2,
+                crossThick, crossLen)));
+        }
+        if (area.isEmpty()) {
+            return null;
+        }
+        if (rot != 0) {
+            area.transform(AffineTransform.getRotateInstance(Math.toRadians(rot), cx, cy));
+        }
+        return area;
     }
 
     @Override

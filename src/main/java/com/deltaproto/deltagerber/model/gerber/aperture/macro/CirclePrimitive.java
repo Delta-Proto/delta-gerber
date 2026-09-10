@@ -5,6 +5,8 @@ import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
 import com.deltaproto.deltagerber.renderer.svg.SvgPathUtils;
 import java.util.Locale;
 import java.util.Map;
+import java.awt.Shape;
+import java.awt.geom.Ellipse2D;
 
 /**
  * Circle primitive (code 1).
@@ -75,6 +77,27 @@ public class CirclePrimitive implements MacroPrimitive {
 
         double r = d / 2;
         return new BoundingBox(cx - r, cy - r, cx + r, cy + r);
+    }
+
+    @Override
+    public Shape toShape(Map<Integer, Double> variables, double unitFactor) {
+        double d = diameter.evaluate(variables) * unitFactor;
+        if (d <= 0) {
+            return null;
+        }
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
+        double rot = rotation.evaluate(variables);
+        if (rot != 0) {
+            double radians = Math.toRadians(rot);
+            double cos = Math.cos(radians);
+            double sin = Math.sin(radians);
+            double newX = cx * cos - cy * sin;
+            cy = cx * sin + cy * cos;
+            cx = newX;
+        }
+        double r = d / 2;
+        return new Ellipse2D.Double(cx - r, cy - r, d, d);
     }
 
     @Override

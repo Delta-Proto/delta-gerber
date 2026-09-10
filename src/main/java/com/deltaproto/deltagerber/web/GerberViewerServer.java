@@ -19,6 +19,9 @@ import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
 import com.deltaproto.deltagerber.renderer.svg.SilkscreenColor;
 import com.deltaproto.deltagerber.renderer.svg.SoldermaskColor;
 import com.deltaproto.deltagerber.renderer.step.StepExporter;
+import com.deltaproto.deltagerber.dfm.AnnularRingDetector;
+import com.deltaproto.deltagerber.dfm.AnnularRingResult;
+import com.deltaproto.deltagerber.dfm.CopperLayer;
 import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
 import com.deltaproto.deltagerber.dfm.ViaInPadGroup;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
@@ -451,6 +454,7 @@ public class GerberViewerServer {
             List<AnalyzedLayer> analyzed = new ArrayList<>();
             List<GerberDocument> topPaste = new ArrayList<>();
             List<GerberDocument> bottomPaste = new ArrayList<>();
+            List<CopperLayer> copper = new ArrayList<>();
             List<DrillDocument> drills = new ArrayList<>();
             for (MultiLayerSVGRenderer.Layer layer : layers) {
                 LayerClassification c = classifications.get(layer.getName());
@@ -464,6 +468,9 @@ public class GerberViewerServer {
                     } else if (layer.getLayerType() == LayerType.PASTE_BOTTOM) {
                         bottomPaste.add(layer.getGerberDoc());
                     }
+                    if (c != null && c.function().isCopper()) {
+                        copper.add(CopperLayer.of(layer.getName(), c, layer.getGerberDoc()));
+                    }
                 }
             }
             // Drills here are already aligned into the Gerber frame (alignDrillLayers ran before
@@ -471,7 +478,10 @@ public class GerberViewerServer {
             ViaInPadResult viaInPad = (topPaste.isEmpty() && bottomPaste.isEmpty()) || drills.isEmpty()
                     ? null
                     : ViaInPadDetector.detect(topPaste, bottomPaste, drills);
-            BoardSpecification spec = BoardSpecification.from(analyzed, viaInPad);
+            AnnularRingResult annularRing = copper.isEmpty() || drills.isEmpty()
+                    ? null
+                    : AnnularRingDetector.detect(copper, drills);
+            BoardSpecification spec = BoardSpecification.from(analyzed, viaInPad, null, annularRing);
 
             json.append(",\"pcbInfo\":{");
             json.append("\"sizeX\":").append(number(spec.getSizeXMm(), 4));
@@ -519,6 +529,20 @@ public class GerberViewerServer {
                 json.append('}');
             }
             json.append(']');
+
+            // Annular ring: the copper between a drilled hole and the edge of its pad, at its
+            // worst on the board. null means the set had no copper or no drill to judge from.
+            // Non-plated holes are not measured; a plated hole with no pad at all is counted
+            // separately, since that is a missing pad rather than a thin ring.
+            json.append(",\"minAnnularRingMm\":").append(number(spec.getMinAnnularRingMm(), 4));
+            json.append(",\"annularRingWithinPolicy\":").append(spec.isAnnularRingWithinPolicy());
+            json.append(",\"annularRingViolations\":").append(spec.getAnnularRingViolations().size());
+            json.append(",\"annularRingBreakout\":")
+                    .append(annularRing == null ? "null" : String.valueOf(annularRing.hasBreakout()));
+            json.append(",\"annularRingMeasured\":")
+                    .append(annularRing == null ? "null" : String.valueOf(annularRing.getRings().size()));
+            json.append(",\"platedHolesWithoutPad\":").append(annularRing == null
+                    ? "null" : String.valueOf(annularRing.getPlatedHolesWithoutPad().size()));
 
             // Gerber X2 file attributes: what the CAD tool told us about the job itself.
             json.append(",\"generationSoftware\":").append(escapeJson(

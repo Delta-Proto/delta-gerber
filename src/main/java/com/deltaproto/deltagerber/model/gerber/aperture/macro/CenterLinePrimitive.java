@@ -4,6 +4,8 @@ import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
 import java.util.Locale;
 import java.util.Map;
+import java.awt.Shape;
+import java.awt.geom.Path2D;
 
 /**
  * Center line primitive (code 21).
@@ -104,6 +106,42 @@ public class CenterLinePrimitive implements MacroPrimitive {
             bbox.extend(cornersX[i], cornersY[i]);
         }
         return bbox;
+    }
+
+    @Override
+    public Shape toShape(Map<Integer, Double> variables, double unitFactor) {
+        double w = width.evaluate(variables) * unitFactor;
+        double h = height.evaluate(variables) * unitFactor;
+        if (w <= 0 || h <= 0) {
+            return null;
+        }
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
+        double rot = rotation.evaluate(variables);
+
+        double hw = w / 2;
+        double hh = h / 2;
+        double[] cornersX = {cx - hw, cx + hw, cx + hw, cx - hw};
+        double[] cornersY = {cy - hh, cy - hh, cy + hh, cy + hh};
+
+        if (rot != 0) {
+            double radians = Math.toRadians(rot);
+            double cos = Math.cos(radians);
+            double sin = Math.sin(radians);
+            for (int i = 0; i < 4; i++) {
+                double newX = cornersX[i] * cos - cornersY[i] * sin;
+                cornersY[i] = cornersX[i] * sin + cornersY[i] * cos;
+                cornersX[i] = newX;
+            }
+        }
+
+        Path2D.Double path = new Path2D.Double(Path2D.WIND_NON_ZERO, 5);
+        path.moveTo(cornersX[0], cornersY[0]);
+        for (int i = 1; i < 4; i++) {
+            path.lineTo(cornersX[i], cornersY[i]);
+        }
+        path.closePath();
+        return path;
     }
 
     @Override

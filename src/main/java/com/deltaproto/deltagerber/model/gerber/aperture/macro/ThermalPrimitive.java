@@ -4,6 +4,11 @@ import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
 import com.deltaproto.deltagerber.renderer.svg.SvgPathUtils;
 import java.util.Map;
+import java.awt.Shape;
+import java.awt.geom.AffineTransform;
+import java.awt.geom.Area;
+import java.awt.geom.Ellipse2D;
+import java.awt.geom.Rectangle2D;
 
 /**
  * Thermal primitive (code 7).
@@ -100,6 +105,39 @@ public class ThermalPrimitive implements MacroPrimitive {
 
         double r = od / 2;
         return new BoundingBox(cx - r, cy - r, cx + r, cy + r);
+    }
+
+    @Override
+    public Shape toShape(Map<Integer, Double> variables, double unitFactor) {
+        double cx = centerX.evaluate(variables) * unitFactor;
+        double cy = centerY.evaluate(variables) * unitFactor;
+        double od = outerDiameter.evaluate(variables) * unitFactor;
+        double id = innerDiameter.evaluate(variables) * unitFactor;
+        double gap = gapWidth.evaluate(variables) * unitFactor;
+        double rot = rotation.evaluate(variables);
+        if (od <= 0) {
+            return null;
+        }
+
+        double or = od / 2;
+        Area area = new Area(new Ellipse2D.Double(cx - or, cy - or, od, od));
+        if (id > 0) {
+            double ir = id / 2;
+            area.subtract(new Area(new Ellipse2D.Double(cx - ir, cy - ir, id, id)));
+        }
+        if (gap > 0) {
+            // The four gaps are one horizontal and one vertical bar across the whole ring, cut
+            // before the primitive's own rotation is applied.
+            area.subtract(new Area(new Rectangle2D.Double(cx - or, cy - gap / 2, od, gap)));
+            area.subtract(new Area(new Rectangle2D.Double(cx - gap / 2, cy - or, gap, od)));
+        }
+        if (area.isEmpty()) {
+            return null;
+        }
+        if (rot != 0) {
+            area.transform(AffineTransform.getRotateInstance(Math.toRadians(rot), cx, cy));
+        }
+        return area;
     }
 
     @Override

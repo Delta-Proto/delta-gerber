@@ -316,6 +316,56 @@ v8; **EAGLE/Fusion writes no stack-up at all** and puts the general specs under 
 `Name.ProjectId` the other way round), which `GerberJobParser` reads as a fallback — without it
 those files are not even recognised as job files.
 
+`dfm.AnnularRingDetector` answers the other DFM question a fab's capability table asks: how much
+copper is left between a drilled hole and the edge of its pad. The ring is the **shortest distance
+from the hole's edge to the pad's edge over every direction** — not `(pad − hole) / 2`, which is
+only true of a round pad with a centred hole. An obround pad is decided by its short axis and a hole
+sitting off-centre by its near side, which is the side that breaks out. It is measured against the
+*drilled* diameter, and reported per copper layer (`PadRing`) with the worst of them as the hole's
+answer (`AnnularRing`), because a via's ring differs layer to layer and the breakdown is what a
+designer fixes. `BoardSpecification.getMinAnnularRingMm()` is the set's tightest;
+`AnnularRingPolicy` holds the thresholds (0.15 mm by default, outer and inner alike;
+`IPC_6012_CLASS_3` is an *acceptance* limit, not a design rule).
+
+**A pad is a flash or a short stroke that contains the hole's centre — never a region.** A poured
+plane swallows every hole that crosses it, so counting it would report an ample ring for a via that
+is only passing through; the cost of that choice is a plane-connected via with no flash of its own,
+which reports no pad on that layer and takes its ring from the layers that have one. Strokes are in
+because EAGLE draws an oblong through-hole pad as a swept aperture — 120 of the Arduino Uno's 285
+pads are strokes, and a flashes-only check finds no pad for two thirds of its holes.
+`PcbAnalyzer` keeps only flashes and strokes no longer than twice their width (a trace runs tens of
+times its width), which is what lets it drop the copper documents and still answer the question.
+
+Copper is read in **file order**, so a clear flash erases what is under it: a via inside an antipad
+has *no pad* on that layer rather than a ring of zero — without that, every via through a plane
+reads as broken out. Where several objects contain a hole (a pad plus the trace entering it) the
+ring is the largest any single one allows: copper is really their union, whose edge is at least as
+far away, so the answer errs towards reporting less copper than there is.
+
+Three answers that must not be conflated: a **tight** ring (under the rule), a **breakout** (the
+hole's edge crosses the pad's — negative by more than a rounding error; a pad drawn to the size of
+its hole is not one), and a **hole with no pad at all**. The last is an NPTH mounting hole or a
+buried via whose layers are absent — or a plated hole that lost its pad, which
+`getPlatedHolesWithoutPad()` separates. Reporting any of them as ring zero buries the others.
+
+**A non-plated hole is not measured.** It has no barrel to connect, so a ⌀3.2 mm mounting hole
+through a plane is exempt rather than a spectacular breakout. Plating rides on `Tool.getPlated()`
+(`Boolean`, null = the file did not say), read from Excellon's `;TYPE=PLATED` / `;TYPE=NON_PLATED`
+comments — which apply to the tools *after* them, since one Altium file routinely holds both and
+switches partway down its tool table — and set from the classification for a file named non-plated.
+No stack-up span is needed for a blind or buried drill: it finds pads on the layers it reaches and
+none on the others, which is the truth without anything declaring it. The drill program itself can
+arrive as Excellon or as a Gerber X2 drill layer (KiCad's `*-PTH-drl.gbr`, each hole a flashed
+circle); `PcbAnalyzer` turns the latter into a `DrillDocument`, so both DFM checks see the holes
+either way.
+
+`MacroAperture.getShape()` (and `MacroPrimitive.toShape`) exist for this: a macro's outline is
+nowhere in the file, only its primitives, and Altium's rounded-rectangle and octagonal pads catch
+hundreds of drilled holes in the corpus. Measuring those to a bounding box would overstate the ring
+in exactly the corner where it runs out. `renderer.svg.GerberShapes` still approximates a
+non-circular flash by its bounds — it is for silhouettes and boolean work that outset and union what
+they get, and its javadoc says so; the ring measurement needs the real edge and builds it itself.
+
 Pass `AnalysisDepth.SPECIFICATION` when you only want the specification: layers whose geometry
 cannot change it (silkscreen above all) are then classified but never parsed. Parsing a Gerber
 costs memory proportional to what it draws — a 27 MB silkscreen needs ~1 GB of heap to build and

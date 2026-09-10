@@ -18,6 +18,49 @@ public class ExcellonParserTest {
     private final ExcellonParser parser = new ExcellonParser();
 
     @Test
+    void platingIsReadPerToolFromTheTypeComment() {
+        // Altium writes one drill file holding both, switching partway down the tool table. Plating
+        // therefore belongs to the tool, not to the file — an annular ring is asked of the plated
+        // holes and not of the mounting hole below them.
+        String drill = """
+            M48
+            METRIC,LZ
+            ;TYPE=PLATED
+            T1C0.300
+            T2C0.800
+            ;TYPE=NON_PLATED
+            T3C3.200
+            %
+            T1
+            X10000Y10000
+            T3
+            X50000Y50000
+            M30
+            """;
+
+        DrillDocument doc = parser.parse(drill);
+
+        assertEquals(Boolean.TRUE, doc.getTool(1).getPlated());
+        assertEquals(Boolean.TRUE, doc.getTool(2).getPlated());
+        assertEquals(Boolean.FALSE, doc.getTool(3).getPlated());
+    }
+
+    @Test
+    void aFileThatStatesNoPlatingLeavesItUnknown() {
+        String drill = """
+            M48
+            METRIC,LZ
+            T1C0.800
+            %
+            T1
+            X10000Y10000
+            M30
+            """;
+
+        assertNull(parser.parse(drill).getTool(1).getPlated());
+    }
+
+    @Test
     void testParseBasicDrill() {
         String drill = """
             M48

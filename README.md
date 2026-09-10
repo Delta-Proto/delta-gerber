@@ -132,6 +132,12 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
   Only the second forces a filled-and-capped via process (**IPC-4761 Type VII**) and its cost and
   lead time. Surfaced as `spec.hasViaInPad()` / `requiresFilledAndCappedVias()` /
   `getViaInPadGroups()`, or standalone via `dfm.ViaInPadDetector`
+- **Annular ring check** — the copper left between a drilled hole and the edge of its pad, hole by
+  hole and layer by layer, measured in the *worst direction* rather than as `(pad − hole) / 2`.
+  Surfaced as `spec.getMinAnnularRingMm()` / `isAnnularRingWithinPolicy()` /
+  `getAnnularRingViolations()`, or standalone via `dfm.AnnularRingDetector`. Non-plated holes are
+  exempt (they need no ring), a hole that breaks out of its pad is told apart from a tight one, and
+  a plated hole with no pad at all is reported separately rather than as a ring of zero
 - **Physical stack-up** (`spec.getStack()`) — the board top to bottom as a list of `StackEntry`:
   copper, dielectric, mask, legend and paste, each with its thickness in picometres, plus the
   finished **board thickness** (`spec.getBoardThicknessPm()`). Read from a `.gbrjob`'s
@@ -401,6 +407,88 @@ boolean needsViaFill = vip.requiresFilledAndCapped();  // the process verdict �
 > Cost note: at `AnalysisDepth.SPECIFICATION` the analyzer skips parsing layers that can't change
 > the spec (a large silkscreen, for instance) but still parses the small paste layer when a drill
 > is present, so via-in-pad is reported at both depths.
+
+### Annular Ring
+
+The copper between the wall of a drilled hole and the edge of its pad — the "min annular ring" line
+on a fabricator's capability table. It needs the drill program and the copper layers correlated,
+which the analyzer does for you:
+
+```java
+BoardSpecification spec = new PcbAnalyzer().analyze(files);
+
+Double  ring    = spec.getMinAnnularRingMm();          // the board's tightest ring, null if unknown
+Boolean clears  = spec.isAnnularRingWithinPolicy();    // ... against 0.15 mm, the standard rule
+List<AnnularRing> tight = spec.getAnnularRingViolations();
+```
+
+The ring is the **shortest distance from the hole's edge to the pad's edge over every direction**,
+not half the difference of two diameters. On an obround pad the short axis decides; a hole that sits
+off-centre in its pad has less copper on one side, and that side is the one that breaks out. It is
+measured against the *drilled* diameter, before plating shrinks the finished hole.
+
+A hole is measured on **every copper layer whose pad it passes through**, and the per-layer
+breakdown is what a designer fixes:
+
+```java
+for (AnnularRing hole : spec.getAnnularRing().getViolations()) {
+    System.out.printf("⌀%.3f hole at (%.3f, %.3f): %.3f mm%n",
+        hole.getHoleDiameterMm(), hole.getX(), hole.getY(), hole.getMinRingMm());
+    for (PadRing pad : hole.getPads()) {
+        System.out.printf("    %-14s %s%s  ring %.3f mm  (%s pad)%n",
+            pad.getLayerName(), pad.getSide(),
+            pad.getLayerNumber() == null ? "" : " " + pad.getLayerNumber(),
+            pad.getRingMm(), pad.getPadShape());
+    }
+}
+```
+
+Three answers, and they are not the same one:
+
+| Question | Answer |
+|---|---|
+| `getMinRingMm()` | the board's tightest ring — the quote-form figure |
+| `getViolations(policy)` | the holes under the rule; `hasBreakout()` separates the ones already outside their pad |
+| `getPlatedHolesWithoutPad()` | plated holes with no pad on any layer — a missing pad, not a thin ring |
+
+**What counts as a pad.** A flash or a short stroke whose ink contains the hole's *centre*. A flash
+is what most tools emit; a stroke — an aperture swept along a stub — is how EAGLE and others draw an
+oblong through-hole pad, and two thirds of the Arduino Uno's pads are drawn that way. A poured
+region is **not** a pad: a plane swallows every hole crossing it, and a via merely passing through
+is not sitting in a pad. Clear (`%LPC*%`) features erase what is under them, so a via through an
+antipad reports *no pad on that layer* rather than a ring of zero. Pad geometry is exact for
+circles, rectangles, obrounds, polygons and **aperture macros** — Altium's rounded-rectangle pads
+are measured to their real outline, not their bounding box.
+
+**Non-plated holes are not measured at all.** They have no barrel to connect to a pad, so a ⌀3.2 mm
+mounting hole punched through a plane is exempt rather than a spectacular breakout. Plating is read
+per tool from the Excellon `;TYPE=PLATED` / `;TYPE=NON_PLATED` comments (one file routinely holds
+both, switching partway down its tool table) and from a drill file classified as non-plated.
+
+The drill program may be **Excellon or Gerber X2** — `PcbAnalyzer` reads a KiCad-style
+`*-PTH-drl.gbr`, where each hole is a flashed circle, as a drill program like any other.
+
+Thresholds live in `AnnularRingPolicy`. The default is 0.15 mm on outer and inner layers alike — the
+standard-capability design rule. `AnnularRingPolicy.IPC_6012_CLASS_3` (0.05 mm external, 0.025 mm
+internal) is what IPC-6012 Class 3 *accepts on a finished board*, an acceptance limit rather than a
+design rule; pass your fabricator's own figures with `new AnnularRingPolicy(outer, inner)`.
+
+If you already parsed the copper and drill documents, call the detector directly — pass each copper
+layer with the side and stack-up index it sits at, and use `detectAligned(...)` when the drill might
+be on a different origin than the copper:
+
+```java
+import com.deltaproto.deltagerber.dfm.AnnularRingDetector;
+import com.deltaproto.deltagerber.dfm.CopperLayer;
+
+AnnularRingResult rings = AnnularRingDetector.detectAligned(
+    List.of(CopperLayer.top("board-F_Cu.gbr", topCu),
+            CopperLayer.inner("board-In1_Cu.gbr", 1, in1Cu),
+            CopperLayer.bottom("board-B_Cu.gbr", botCu)),
+    List.of(drillDoc));
+
+Double min = rings.getMinRingMm();
+```
 
 ### Coordinate Format
 

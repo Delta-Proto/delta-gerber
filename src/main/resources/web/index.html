@@ -1527,6 +1527,21 @@
             return `Yes${n} — needs filled & capped vias (IPC-4761 Type VII)`;
         }
 
+        // Annular ring — the copper between a drilled hole and the edge of its pad, at its worst
+        // on the board. null means the set had no copper or no drill to judge from. The number is
+        // the measurement; whether it is enough is a fabricator's rule, so both are shown.
+        function annularRing(i) {
+            if (i.minAnnularRingMm === null || i.minAnnularRingMm === undefined) return null;
+            const mm = Number(i.minAnnularRingMm).toFixed(3) + ' mm';
+            if (i.annularRingBreakout) {
+                return `${mm} — a hole breaks out of its pad`;
+            }
+            if (i.annularRingWithinPolicy === false) {
+                return `${mm} — ${i.annularRingViolations} hole(s) under 0.15 mm`;
+            }
+            return mm;
+        }
+
         // How the files write their numbers — "4:3, leading zeros suppressed". A group has no single
         // format either because nothing stated one or because the files disagree, and those read
         // very differently to whoever has to quote the board, so they are never both an em-dash.
@@ -1568,6 +1583,7 @@
                 infoRow('Has copper', yesNo(i.hasCopper)),
                 infoRow('Has drill', yesNo(i.hasDrill)),
                 infoRow('Via in pad', viaInPad(i)),
+                infoRow('Min annular ring', annularRing(i)),
             ];
 
             // The board is measured in the files' own coordinate space; the origin is wherever the

@@ -2,6 +2,8 @@ package com.deltaproto.deltagerber.model.gerber.aperture.macro;
 
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
+
+import java.awt.Shape;
 import java.util.Map;
 
 /**
@@ -51,6 +53,24 @@ public interface MacroPrimitive {
      * @return The bounding box in mm
      */
     BoundingBox getBoundingBox(Map<Integer, Double> variables, double unitFactor);
+
+    /**
+     * The area this primitive covers, as a Java2D shape in millimetres, in the aperture's own
+     * frame (centred on the flash point, Y up) with the primitive's own rotation applied.
+     *
+     * <p>This is the geometry itself rather than a drawing of it: {@link #toSvg} renders, this
+     * measures. It is what lets a caller ask whether a point is inside a macro aperture, or how
+     * far it is from the edge — {@code .AperFunction} says a macro is a pad, and the annular ring
+     * around a hole in that pad is a distance to its real boundary, not to its bounding box.
+     *
+     * <p>Exposure is <em>not</em> applied here: a primitive with exposure off returns the area it
+     * clears, and {@link MacroAperture#getShape()} subtracts it. Returns {@code null} for a
+     * primitive that covers nothing (a zero-length vector line).
+     *
+     * @param variables  the variable values from aperture instantiation
+     * @param unitFactor factor to multiply dimensional values by (e.g. 25.4 for inch-to-mm)
+     */
+    Shape toShape(Map<Integer, Double> variables, double unitFactor);
 
     /**
      * Get the exposure of this primitive (1=on/dark, 0=off/clear).
