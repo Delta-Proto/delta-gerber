@@ -24,7 +24,7 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
 <dependency>
     <groupId>com.deltaproto</groupId>
     <artifactId>delta-gerber</artifactId>
-    <version>1.1.6</version>
+    <version>1.7.0</version>
 </dependency>
 ```
 
