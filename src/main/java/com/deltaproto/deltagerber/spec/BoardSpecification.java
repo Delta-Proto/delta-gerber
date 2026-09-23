@@ -6,6 +6,7 @@ import com.deltaproto.deltagerber.classify.LayerSide;
 import com.deltaproto.deltagerber.dfm.AnnularRing;
 import com.deltaproto.deltagerber.dfm.AnnularRingPolicy;
 import com.deltaproto.deltagerber.dfm.AnnularRingResult;
+import com.deltaproto.deltagerber.dfm.HoleSpacingResult;
 import com.deltaproto.deltagerber.dfm.ViaInPadGroup;
 import com.deltaproto.deltagerber.dfm.ViaInPadPolicy;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
@@ -70,6 +71,7 @@ public final class BoardSpecification {
     private final boolean hasOutline;
     private final ViaInPadResult viaInPad;
     private final AnnularRingResult annularRing;
+    private final HoleSpacingResult holeSpacing;
     private final BoardStack stack;
     private final List<AnalyzedLayer> layers;
 
@@ -79,7 +81,8 @@ public final class BoardSpecification {
                                Double minClearanceMm, Double minConductorWidthUm,
                                boolean hasDrill, boolean hasCopper, boolean hasOutline,
                                ViaInPadResult viaInPad, AnnularRingResult annularRing,
-                               BoardStack stack, List<AnalyzedLayer> layers) {
+                               HoleSpacingResult holeSpacing, BoardStack stack, List<AnalyzedLayer> layers) {
+        this.holeSpacing = holeSpacing;
         this.sizeXMm = sizeXMm;
         this.sizeYMm = sizeYMm;
         this.bounds = bounds;
@@ -149,6 +152,17 @@ public final class BoardSpecification {
      */
     public static BoardSpecification from(List<AnalyzedLayer> layers, ViaInPadResult viaInPad,
                                           BoardStack stack, AnnularRingResult annularRing) {
+        return from(layers, viaInPad, stack, annularRing, null);
+    }
+
+    /**
+     * As {@link #from(List, ViaInPadResult, BoardStack, AnnularRingResult)}, with the hole-to-hole
+     * spacing the caller measured over the drill program. It spans every drill file of the set, so
+     * like the annular ring it cannot be re-derived from per-layer measurements.
+     */
+    public static BoardSpecification from(List<AnalyzedLayer> layers, ViaInPadResult viaInPad,
+                                          BoardStack stack, AnnularRingResult annularRing,
+                                          HoleSpacingResult holeSpacing) {
         List<AnalyzedLayer> safe = layers == null ? List.of() : List.copyOf(layers);
         BoardStack given = stack == null ? BoardStack.empty() : stack;
         BoardStack resolvedStack = given.getEntries().isEmpty()
@@ -172,7 +186,7 @@ public final class BoardSpecification {
                 safe.stream().anyMatch(l -> l.getFunction().isDrill()),
                 safe.stream().anyMatch(l -> l.getFunction().isCopper()),
                 safe.stream().anyMatch(l -> l.getFunction() == LayerFunction.OUTLINE),
-                viaInPad, annularRing, resolvedStack, safe);
+                viaInPad, annularRing, holeSpacing, resolvedStack, safe);
     }
 
     /**
@@ -319,6 +333,33 @@ public final class BoardSpecification {
     @Beta("validated against HQDFM on one board")
     public Double getMinEdgeClearanceMm() {
         return min(layers, AnalyzedLayer::getMinEdgeClearanceMm);
+    }
+
+    /**
+     * Tightest gap between a hole's wall and copper it must not touch, on any layer, in millimetres
+     * — the "hole to copper" line of a capability table, usually 0.2–0.25 mm. Null when the set has
+     * no drill or no such copper comes within
+     * {@link com.deltaproto.deltagerber.dfm.DrillClearanceDetector#DEFAULT_CUTOFF_MM}. Per layer on
+     * {@link AnalyzedLayer#getDrillClearance()}.
+     */
+    @Beta("validated against HQDFM on one board")
+    public Double getMinDrillClearanceMm() {
+        return min(layers, AnalyzedLayer::getMinDrillClearanceMm);
+    }
+
+    /**
+     * Hole-to-hole spacing over the whole drill program, or null — "not determined" — when the set
+     * has no drill or was rebuilt from per-layer measurements without one passed in.
+     */
+    @Beta("validated against HQDFM on one board")
+    public HoleSpacingResult getHoleSpacing() {
+        return holeSpacing;
+    }
+
+    /** The least laminate between two drilled holes in millimetres, or null — see {@link #getHoleSpacing()}. */
+    @Beta("validated against HQDFM on one board")
+    public Double getMinHoleSpacingMm() {
+        return holeSpacing == null ? null : holeSpacing.getMinMm();
     }
 
     /**

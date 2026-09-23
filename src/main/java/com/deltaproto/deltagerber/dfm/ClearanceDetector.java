@@ -48,12 +48,29 @@ public final class ClearanceDetector {
     }
 
     public static ClearanceResult detect(CopperNets nets, String fileName, double cutoffMm) {
+        return detect(nets, fileName, cutoffMm, null);
+    }
+
+    /**
+     * As {@link #detect(CopperNets, String, double)}, leaving out the copper {@code floating} found
+     * to be connected to nothing — copper lettering above all. Its letters are separate pieces of
+     * copper a stroke's width apart, so every gap between two of them reads as a clearance between
+     * two nets, and on the Arduino's bottom that put 6.4 mil where the nets are 7 mil apart. HQDFM
+     * leaves them out the same way; the floating result lists them.
+     *
+     * @param floating measured on these same nets, or null to measure every piece
+     */
+    public static ClearanceResult detect(CopperNets nets, String fileName, double cutoffMm,
+                                         FloatingCopperResult floating) {
         CopperGeometry g = nets.geometry();
+        if (floating != null && !floating.isOf(g)) {
+            throw new IllegalArgumentException("floating copper was measured on a different geometry");
+        }
         Map<Long, Clearance> best = new HashMap<>();
         int entries = g.entryCount();
         for (int e = 0; e < entries; e++) {
             Feature fe = g.feature(g.entryFeature(e));
-            if (fe.clear) {
+            if (fe.clear || floating != null && floating.isFloatingFeature(fe.index)) {
                 continue;
             }
             int netE = nets.netOf(fe.index);
@@ -63,10 +80,11 @@ public final class ClearanceDetector {
                 Feature ff = g.feature(g.entryFeature(f));
                 Capsule cf = g.entryCapsule(f);
                 if (ff.clear) {
-                    measureToClear(nets, fe, netE, ce, ff, cf, cutoffMm, best);
+                    measureToClear(nets, fe, netE, ce, ff, cf, cutoffMm, best, floating);
                     return;
                 }
-                if (f <= entry || ff.index == fe.index) {
+                if (f <= entry || ff.index == fe.index
+                        || floating != null && floating.isFloatingFeature(ff.index)) {
                     return;
                 }
                 int netF = nets.netOf(ff.index);
@@ -96,7 +114,8 @@ public final class ClearanceDetector {
      * just across that edge is another net's.
      */
     private static void measureToClear(CopperNets nets, Feature fe, int netE, Capsule ce,
-                                       Feature clear, Capsule edge, double cutoffMm, Map<Long, Clearance> best) {
+                                       Feature clear, Capsule edge, double cutoffMm, Map<Long, Clearance> best,
+                                       FloatingCopperResult floating) {
         CopperGeometry g = nets.geometry();
         double d = ce.distance(edge);
         if (d >= cutoffMm) {
@@ -106,6 +125,9 @@ public final class ClearanceDetector {
         int behind = g.copperAt(p[2], p[3]);
         if (behind < 0 || behind > clear.index) {
             return;     // laminate, or copper drawn after the clear — its own edges are measured directly
+        }
+        if (floating != null && floating.isFloatingFeature(behind)) {
+            return;
         }
         Feature fb = g.feature(behind);
         int netB = nets.netOf(behind);

@@ -10,6 +10,10 @@ import com.deltaproto.deltagerber.dfm.AnnularRingResult;
 import com.deltaproto.deltagerber.dfm.ClearanceDetector;
 import com.deltaproto.deltagerber.dfm.ConductorWidthDetector;
 import com.deltaproto.deltagerber.dfm.CopperLayer;
+import com.deltaproto.deltagerber.dfm.DrillClearanceDetector;
+import com.deltaproto.deltagerber.dfm.DrilledHole;
+import com.deltaproto.deltagerber.dfm.HoleSpacingDetector;
+import com.deltaproto.deltagerber.dfm.HoleSpacingResult;
 import com.deltaproto.deltagerber.dfm.EdgeClearanceDetector;
 import com.deltaproto.deltagerber.dfm.FloatingCopperDetector;
 import com.deltaproto.deltagerber.dfm.FloatingCopperResult;
@@ -85,6 +89,21 @@ public class PcbAnalyzer {
      */
     private static final double MIN_INSIDE_FRACTION = 0.25;
 
+    private boolean floatingInClearance;
+
+    /**
+     * Whether floating copper counts in the clearance and drill-to-copper checks. Off by default:
+     * the letters of copper lettering are separate pieces a stroke's width apart, and every gap
+     * between two of them would read as a clearance between nets — HQDFM leaves them out too. The
+     * pieces themselves are always reported on {@link AnalyzedLayer#getFloatingCopper()}.
+     *
+     * @return this analyzer
+     */
+    public PcbAnalyzer floatingCopperInClearance(boolean include) {
+        this.floatingInClearance = include;
+        return this;
+    }
+
     /**
      * Classify and measure every file, then reduce them to one board specification.
      *
@@ -129,7 +148,7 @@ public class PcbAnalyzer {
         // parsing the paste for this when the set actually has a drill to test against.
         boolean setHasDrill = classifications.stream()
                 .anyMatch(c -> c != null && c.function().isDrill());
-        DfmCollector dfm = new DfmCollector(profile, setHasDrill);
+        DfmCollector dfm = new DfmCollector(profile, setHasDrill, floatingInClearance);
 
         // Drills and solder masks are measured before copper: what connects a piece of copper to
         // anything — a plated hole, a mask opening over a painted pad — is in them, and floating
@@ -145,7 +164,8 @@ public class PcbAnalyzer {
             }
         }
         dfm.correlate();
-        return BoardSpecification.from(List.of(layers), dfm.viaInPad(), stackOf(files), dfm.annularRing());
+        return BoardSpecification.from(List.of(layers), dfm.viaInPad(), stackOf(files), dfm.annularRing(),
+                dfm.holeSpacing());
     }
 
     /**
@@ -392,7 +412,8 @@ public class PcbAnalyzer {
      * that connect copper — plated hole centres aligned into this layer's frame, and this side's
      * mask openings. Null fields mean "not in the set", and switch the check that needs them off.
      */
-    record CopperContext(BoardProfile profile, List<double[]> anchors, boolean holeAware) {}
+    record CopperContext(BoardProfile profile, List<double[]> anchors, List<DrilledHole> holes,
+                         boolean holeAware, boolean floatingInClearance) {}
 
     private static AnalyzedLayer measure(String fileName, GerberDocument document,
                                          LayerClassification classification, BoundingBox outlineMm,
@@ -435,16 +456,21 @@ public class PcbAnalyzer {
         try {
             CopperGeometry geometry = CopperGeometry.of(document, strokeFilter(document, outlineMm));
             CopperNets nets = CopperNets.of(geometry);
-            layer.clearance(ClearanceDetector.detect(nets, fileName, ClearanceDetector.DEFAULT_CUTOFF_MM));
             FloatingCopperResult floating = context != null && context.holeAware()
                     ? FloatingCopperDetector.detect(nets, fileName, context.anchors(), true)
                     : null;
             layer.floatingCopper(floating);
+            FloatingCopperResult leftOut = context != null && context.floatingInClearance() ? null : floating;
+            layer.clearance(ClearanceDetector.detect(nets, fileName, ClearanceDetector.DEFAULT_CUTOFF_MM, leftOut));
             layer.conductorWidth(ConductorWidthDetector.detect(geometry, fileName,
                     ConductorWidthDetector.DEFAULT_CUTOFF_MM, floating));
             if (context != null && context.profile() != null) {
                 layer.edgeClearance(EdgeClearanceDetector.detect(geometry, context.profile(), fileName,
                         EdgeClearanceDetector.DEFAULT_CUTOFF_MM));
+            }
+            if (context != null && context.holeAware()) {
+                layer.drillClearance(DrillClearanceDetector.detect(nets, fileName, context.holes(),
+                        DrillClearanceDetector.DEFAULT_CUTOFF_MM, leftOut));
             }
         } catch (RuntimeException e) {
             log.warn("copper geometry of {} not measured: {}", fileName, e.toString());
@@ -648,12 +674,15 @@ public class PcbAnalyzer {
         private final List<double[]> bottomMaskOpenings = new ArrayList<>();
         private final BoardProfile profile;
         private final boolean setHasDrill;
+        private final boolean floatingInClearance;
         private ViaInPadResult viaInPad;
         private AnnularRingResult annularRing;
+        private HoleSpacingResult holeSpacing;
 
-        DfmCollector(BoardProfile profile, boolean setHasDrill) {
+        DfmCollector(BoardProfile profile, boolean setHasDrill, boolean floatingInClearance) {
             this.profile = profile;
             this.setHasDrill = setHasDrill;
+            this.floatingInClearance = floatingInClearance;
         }
 
         /**
@@ -664,14 +693,13 @@ public class PcbAnalyzer {
          */
         CopperContext copperContext(LayerClassification classification, GerberDocument doc) {
             List<double[]> anchors = new ArrayList<>();
+            List<DrilledHole> holes = List.of();
             if (!drills.isEmpty()) {
-                List<DrillDocument> aligned = DrillGerberAlignment.alignedAll(drills, doc.getBoundingBox(),
-                        DrillGerberAlignment.flashCenters(doc));
-                for (DrillDocument drill : aligned) {
-                    for (var op : drill.getOperations()) {
-                        if (op instanceof DrillHit hit && !Boolean.FALSE.equals(hit.getTool().getPlated())) {
-                            anchors.add(new double[]{hit.getX(), hit.getY()});
-                        }
+                holes = DrilledHole.of(DrillGerberAlignment.alignedAll(drills, doc.getBoundingBox(),
+                        DrillGerberAlignment.flashCenters(doc)));
+                for (DrilledHole hole : holes) {
+                    if (!Boolean.FALSE.equals(hole.plated())) {
+                        anchors.add(new double[]{hole.xMm(), hole.yMm()});
                     }
                 }
             }
@@ -681,7 +709,8 @@ public class PcbAnalyzer {
             } else if (side == LayerSide.BOTTOM) {
                 anchors.addAll(bottomMaskOpenings);
             }
-            return new CopperContext(profile, anchors, setHasDrill && !drills.isEmpty());
+            return new CopperContext(profile, anchors, holes, setHasDrill && !drills.isEmpty(),
+                    floatingInClearance);
         }
 
         /**
@@ -817,6 +846,12 @@ public class PcbAnalyzer {
             if (!copperPads.isEmpty()) {
                 annularRing = AnnularRingDetector.detect(copperPads, aligned);
             }
+            holeSpacing = HoleSpacingDetector.detect(aligned, HoleSpacingDetector.DEFAULT_CUTOFF_MM);
+        }
+
+        /** Hole-to-hole spacing, or {@code null} when the set has no drill. */
+        HoleSpacingResult holeSpacing() {
+            return holeSpacing;
         }
 
         /** Via in pad, or {@code null} — "not determined" — when the set has no paste or no drill. */

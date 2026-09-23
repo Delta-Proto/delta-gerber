@@ -67,6 +67,19 @@ class FloatingCopperDetectorTest {
     }
 
     @Test
+    void theGapsBetweenFloatingLettersAreNotClearances() {
+        // Two letters 0.1 mm apart, and a second net whose ⌀0.5 pad is 0.55 mm from the first pad.
+        String body = PAD_AND_TRACE + "%ADD13C,0.5*%\nD13*\nX0Y1300000D03*\nD11*\nX0Y1300000D02*\nX5000000Y1300000D01*\n"
+                + "%ADD12C,0.1*%\nD12*\nX10000000Y10000000D02*\nX10000000Y11000000D01*\n"
+                + "X10200000Y10000000D02*\nX10200000Y11000000D01*\n";
+        CopperNets n = nets(body);
+        assertEquals(0.1, ClearanceDetector.detect(n, "top.gbr", 1.0).getMinMm(), 1e-9);
+        FloatingCopperResult floating = FloatingCopperDetector.detect(n, "top.gbr", null, true);
+        assertEquals(2, floating.getCount());
+        assertEquals(0.55, ClearanceDetector.detect(n, "top.gbr", 1.0, floating).getMinMm(), 1e-9);
+    }
+
+    @Test
     void aPinAttributeMarksACustomPadDrawnAsARegion() {
         String region = "%TO.P,U1,5*%\nG36*\nX0Y0D02*\nX1000000Y0D01*\nX1000000Y1000000D01*\nX0Y1000000D01*\nX0Y0D01*\nG37*\n%TD*%\n";
         assertEquals(0, FloatingCopperDetector.detect(nets(region), "top.gbr", null, false).getCount());

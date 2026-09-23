@@ -437,8 +437,31 @@ the classifier calls an outline). Clears are handled as in the clearance check, 
 sampled at several points, because an entry parallel to the edge has a whole stretch of "nearest"
 points and the one `closestAxisPoints` picks can sit on a corner another object covers.
 
+**Floating copper is left out of the clearance and drill-to-copper checks by default** — the
+letters of copper lettering are separate pieces a stroke apart, and every gap between two read as a
+clearance (the Arduino bottom's 6.4 mil, where its nets are 10 mil apart). HQDFM does the same.
+`PcbAnalyzer.floatingCopperInClearance(true)` puts them back; the detectors take the
+`FloatingCopperResult` as an optional last argument.
+
+## Holes: spacing and drill-to-copper
+
+`dfm.HoleSpacingDetector` is the laminate between neighbouring holes' walls over the whole drill
+program (plated and non-plated together — the drill does not care which file a hole came from),
+each hole keeping its nearest neighbour. Holes that touch or overlap are **not** a spacing: EAGLE
+drills a slot as a row of overlapping holes, and those land on `getOverlapping()`, out of the
+minimum. It is set-level, so it rides on `BoardSpecification.getHoleSpacing()` and survives
+`from(...)` only when passed in, like the annular ring.
+
+`dfm.DrillClearanceDetector` is per copper layer: from each hole's wall to copper it must not
+touch. The hole's own net is whatever copper survives at its centre (pad, or a plane it connects
+to); anything else is foreign — another net's track ("PTH to trace"), the edge of the antipad a via
+passes through, any copper around a non-plated hole. Clears as in the clearance check. The holes are
+aligned per copper layer in `copperContext`, the same as the floating-copper anchors.
+
 **Validated against HQDFM 4.6** (`HqdfmComparisonTest`): Arduino floating copper 9 at
-(22.96, 28.99), conductor width 8.00 mil both layers; DEPR pad spacing 5.90 mil at (51.60, 40.33),
-floating copper at (30.42, 69.41), planes at the board edge (0.00), PTH ring 4.88 mil. delta-gerber
+(22.96, 28.99), conductor width 8.00 mil both layers, clearance 6.70 mil (HQDFM: 7.00); DEPR pad
+spacing 5.90 mil at (51.60, 40.33), floating copper at (30.42, 69.41), planes at the board edge
+(0.00), PTH ring 4.88 mil, hole-to-hole 15.65 mil at (51.60, 40.33), and hole-to-copper 7.82 mil at
+each of HQDFM's three places — inner (162.06, 39.41), outer (161.69, 39.08), NPTH (99.77, 86.25). delta-gerber
 finds two more DEPR floating regions HQDFM does not list, and does not share HQDFM's 1.01 mil via
 ring (HQDFM appears to cut the via pads with the clears drawn *before* them).
