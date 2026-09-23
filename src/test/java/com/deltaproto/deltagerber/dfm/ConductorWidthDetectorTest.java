@@ -82,6 +82,40 @@ class ConductorWidthDetectorTest {
     }
 
     @Test
+    void aPadPaintedStrokeBesideStrokeIsNotAConductorOfTheBrushWidth() {
+        // Five 0.1 mm strokes 0.08 mm apart fill a 0.42 mm pad; a 0.2 mm track leaves it.
+        StringBuilder body = new StringBuilder("%ADD10C,0.1*%\n%ADD11C,0.2*%\nD10*\n");
+        for (int i = 0; i < 5; i++) {
+            body.append(String.format("X0Y%dD02*\nX700000Y%dD01*\n", i * 80000, i * 80000));
+        }
+        body.append("D11*\nX700000Y160000D02*\nX5000000Y160000D01*\n");
+        ConductorWidthResult r = ConductorWidthDetector.detect(copper(body.toString()));
+        assertEquals(0.2, r.getMinMm(), 1e-9, "each paint stroke has copper on one side at least");
+        assertEquals(1, r.getWidths().size());
+    }
+
+    @Test
+    void aStrokeWithNoLengthIsADotNotAConductor() {
+        ConductorWidthResult r = ConductorWidthDetector.detect(copper("%ADD10C,0.1*%\n%ADD11C,0.2*%\n"
+                + "D10*\nX0Y0D02*\nX0Y0D01*\nD11*\nX0Y2000000D02*\nX5000000Y2000000D01*\n"));
+        assertEquals(0.2, r.getMinMm(), 1e-9);
+    }
+
+    @Test
+    void floatingCopperIsLeftOutOfTheWidth() {
+        // A pad with a 0.2 mm track, and 0.1 mm copper lettering connected to nothing.
+        GerberDocument doc = copper("%ADD10C,1.0*%\n%ADD11C,0.2*%\n%ADD12C,0.1*%\n"
+                + "D10*\nX0Y0D03*\nD11*\nX0Y0D02*\nX5000000Y0D01*\n"
+                + "D12*\nX10000000Y10000000D02*\nX11000000Y11000000D01*\n");
+        com.deltaproto.deltagerber.dfm.geometry.CopperGeometry g =
+                com.deltaproto.deltagerber.dfm.geometry.CopperGeometry.of(doc);
+        assertEquals(0.1, ConductorWidthDetector.detect(g, "top.gbr", 1.0).getMinMm(), 1e-9);
+        FloatingCopperResult floating = FloatingCopperDetector.detect(
+                com.deltaproto.deltagerber.dfm.geometry.CopperNets.of(g), "top.gbr", null, true);
+        assertEquals(0.2, ConductorWidthDetector.detect(g, "top.gbr", 1.0, floating).getMinMm(), 1e-9);
+    }
+
+    @Test
     void necksWiderThanTheCutoffAreNotLookedFor() {
         ConductorWidthResult r = ConductorWidthDetector.detect(copper(region(0, 0, 5, 0, 5, 1.5, 0, 1.5)));
         assertNull(r.getMinMm());

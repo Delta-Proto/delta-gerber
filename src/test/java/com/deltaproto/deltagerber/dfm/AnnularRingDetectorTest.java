@@ -258,13 +258,34 @@ class AnnularRingDetectorTest {
     }
 
     @Test
-    void aPadDrawnToTheSizeOfItsHoleIsNotABreakout() {
-        // Pad and hole the same ⌀1.0 to within the file's own resolution: the ring is nothing, and
-        // nothing is not a hole outside its pad.
-        AnnularRingResult r = measure(
-                top("%ADD10C,0.999900*%\nD10*\nX10000000Y10000000D03*\n"), drill(1.0, 10, 10));
+    void aPlatedPadDrawnToTheSizeOfItsHoleIsNotABreakout() {
+        // Pad and hole the same ⌀1.0 to within the file's own resolution, on a hole the drill file
+        // says is plated: the ring is nothing, and nothing is not a hole outside its pad.
+        DrillDocument doc = drill(1.0, 10, 10);
+        doc.getTools().values().forEach(t -> t.setPlated(Boolean.TRUE));
+        AnnularRingResult r = measure(top("%ADD10C,0.999900*%\nD10*\nX10000000Y10000000D03*\n"), doc);
         assertEquals(-0.00005, ring(r), 1e-6);
         assertFalse(r.hasBreakout());
+    }
+
+    @Test
+    void anUnstatedHoleWithAPadTheSizeOfItsHoleHasNoPad() {
+        // Altium writes a non-plated hole's pad at the hole's own size. With plating unstated, a pad
+        // flush with its hole on every layer is that hole's outline, not a ring of nothing — HQDFM
+        // does not report it either.
+        AnnularRingResult r = measure(
+                top("%ADD10C,0.999900*%\nD10*\nX10000000Y10000000D03*\n"), drill(1.0, 10, 10));
+        assertTrue(r.getRings().isEmpty());
+        assertEquals(1, r.getHolesWithoutPad().size());
+        assertNull(r.getMinRingMm());
+    }
+
+    @Test
+    void aPadAFewMicronsWiderThanTheFlushToleranceIsARing() {
+        // 0.012 mm of copper: tight, but a ring — well outside the 5 µm a flush pad is allowed.
+        AnnularRingResult r = measure(
+                top("%ADD10C,1.024000*%\nD10*\nX10000000Y10000000D03*\n"), drill(1.0, 10, 10));
+        assertEquals(0.012, ring(r), 1e-9);
     }
 
     @Test

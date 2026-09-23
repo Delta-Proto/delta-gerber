@@ -94,18 +94,24 @@ class AnnularRingRealBoardTest {
     // ------------------------------------------------------------------------
 
     @Test
-    @DisplayName("The Altium board has a ⌀3.2 mm hole in a ⌀3.2 mm pad — a ring of nothing")
+    @DisplayName("The Altium board's ⌀3.2 mm holes in ⌀3.2 mm pads are non-plated holes, not rings of nothing")
     void deprPr31HasAPadTheSizeOfItsHole() {
         BoardSpecification spec = analyze("testdata/DEPR PR31 GBDR V04");
 
-        // The pad is written 3.1999 and the hole 3.2004, so the ring measures a micron negative.
-        // That is a pad drawn to the size of its hole, not a hole outside its pad.
-        assertEquals(0.0, spec.getMinAnnularRingMm(), 0.002);
-        assertFalse(spec.getAnnularRing().hasBreakout());
+        // The pad is written 3.1999 and the hole 3.2004: Altium's way of writing a non-plated
+        // hole, in a drill file that does not state plating. They join the four ⌀2.5 mm holes that
+        // have no pad at all.
+        AnnularRingResult rings = spec.getAnnularRing();
+        assertEquals(8, rings.getHolesWithoutPad().size());
+        assertEquals(4, rings.getHolesWithoutPad().stream()
+                .filter(hole -> Math.abs(hole.getHoleDiameterMm() - 3.2) < 0.01).count());
+        assertFalse(rings.hasBreakout());
 
-        // Thirty holes are under the standard 0.15 mm rule, so the board does not clear it.
+        // The tightest real ring is the 0.4 mm holes' 0.124 mm (4.87 mil) — HQDFM reports the same
+        // holes at 4.88 mil. Twenty-six holes are under the standard 0.15 mm rule.
+        assertEquals(0.1237, spec.getMinAnnularRingMm(), 5e-4);
         assertEquals(Boolean.FALSE, spec.isAnnularRingWithinPolicy());
-        assertEquals(30, spec.getAnnularRingViolations().size());
+        assertEquals(26, spec.getAnnularRingViolations().size());
     }
 
     @Test
@@ -113,7 +119,7 @@ class AnnularRingRealBoardTest {
     void deprPr31MeasuresMacroPads() {
         AnnularRingResult rings = analyze("testdata/DEPR PR31 GBDR V04").getAnnularRing();
 
-        assertEquals(370, rings.getRings().size());
+        assertEquals(366, rings.getRings().size());
         long macroPads = rings.getRings().stream()
                 .flatMap(r -> r.getPads().stream())
                 .filter(pad -> pad.getPadShape().startsWith("ROUNDEDRECT"))

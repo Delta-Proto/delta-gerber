@@ -412,3 +412,33 @@ either side). The NDc top layer is the reference: a copper logo whose strokes ne
 whose eye sits 25 µm from its head, while every other layer reads 0.1 mm — the disagreement the
 issue asks for. The results ride on `AnalyzedLayer` (`getClearance()`, `getConductorWidth()`,
 and the two summary numbers) and survive `BoardSpecification.from(layers)` as numbers.
+
+**A stroke is a conductor only where both its sides are copper edges.** EAGLE paints a pad it
+rotates off the grid with a 0.1 mm brush, stroke beside stroke; each has copper on at least one
+side, and the Arduino's top read 3.9 mil from them where its narrowest track is 8 mil. A stroke is
+measured when, at a quarter, half or three quarters of some chord, laminate lies 1 µm beyond both
+sides; a zero-length stroke is a dot, never a conductor.
+
+## Floating copper and copper-to-edge
+
+`dfm.FloatingCopperDetector` reports each `CopperNets` component that nothing connects to, and
+`ConductorWidthDetector` leaves those pieces out — copper lettering is drawn with the finest brush on
+a board. A piece is anchored by a flash, a `.P` pin attribute (KiCad's region pads), or an *anchor
+point* on its surviving copper: plated hole centres and this side's mask openings (a painted pad
+has no flash, only a mask opening). Every rule can only anchor, so a reported piece is really
+unconnected. It needs the holes, so `PcbAnalyzer` runs it only when the set has a drill — and
+measures drills and masks **before** copper (two passes over the files, layers kept in file order),
+aligning the drills per copper layer because the set-wide alignment runs only at `correlate()`.
+Positions are bounding-box centres, which is what HQDFM reports.
+
+`dfm.EdgeClearanceDetector` measures copper to the `BoardProfile` — the centrelines of the outline
+layers that *span* the board (≥ 90 % of the outline in both directions; DEPR's `.GM1` is lettering
+the classifier calls an outline). Clears are handled as in the clearance check, and each entry is
+sampled at several points, because an entry parallel to the edge has a whole stretch of "nearest"
+points and the one `closestAxisPoints` picks can sit on a corner another object covers.
+
+**Validated against HQDFM 4.6** (`HqdfmComparisonTest`): Arduino floating copper 9 at
+(22.96, 28.99), conductor width 8.00 mil both layers; DEPR pad spacing 5.90 mil at (51.60, 40.33),
+floating copper at (30.42, 69.41), planes at the board edge (0.00), PTH ring 4.88 mil. delta-gerber
+finds two more DEPR floating regions HQDFM does not list, and does not share HQDFM's 1.01 mil via
+ring (HQDFM appears to cut the via pads with the clears drawn *before* them).

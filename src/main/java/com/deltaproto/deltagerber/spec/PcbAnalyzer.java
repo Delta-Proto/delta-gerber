@@ -10,7 +10,12 @@ import com.deltaproto.deltagerber.dfm.AnnularRingResult;
 import com.deltaproto.deltagerber.dfm.ClearanceDetector;
 import com.deltaproto.deltagerber.dfm.ConductorWidthDetector;
 import com.deltaproto.deltagerber.dfm.CopperLayer;
+import com.deltaproto.deltagerber.dfm.EdgeClearanceDetector;
+import com.deltaproto.deltagerber.dfm.FloatingCopperDetector;
+import com.deltaproto.deltagerber.dfm.FloatingCopperResult;
+import com.deltaproto.deltagerber.dfm.geometry.BoardProfile;
 import com.deltaproto.deltagerber.dfm.geometry.CopperGeometry;
+import com.deltaproto.deltagerber.dfm.geometry.CopperNets;
 import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.model.drill.DrillDocument;
@@ -18,6 +23,7 @@ import com.deltaproto.deltagerber.model.drill.DrillHit;
 import com.deltaproto.deltagerber.model.drill.Tool;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
+import com.deltaproto.deltagerber.model.gerber.Polarity;
 import com.deltaproto.deltagerber.model.gerber.Unit;
 import com.deltaproto.deltagerber.model.gerber.aperture.Aperture;
 import com.deltaproto.deltagerber.model.gerber.aperture.CircleAperture;
@@ -112,8 +118,10 @@ public class PcbAnalyzer {
         // The outline governs the rest: it is the board size, it decides which copper features are
         // tracks, and it decides whether any other layer's extent matters. So it is resolved
         // across the whole set before any single layer is measured.
-        BoundingBox outline = outlineBounds(files, classifications);
+        List<GerberDocument> outlineDocs = outlineDocuments(files, classifications);
+        BoundingBox outline = outlineBounds(outlineDocs);
         boolean usableOutline = outline != null && outline.getWidth() > 0 && outline.getHeight() > 0;
+        BoardProfile profile = usableOutline ? BoardProfile.of(spanningOutlines(outlineDocs, outline)) : null;
 
         // Both DFM checks are relationships between two layers rather than measurements of one, so
         // what they need is collected across the whole set as it is parsed — the paste's pads, the
@@ -121,15 +129,23 @@ public class PcbAnalyzer {
         // parsing the paste for this when the set actually has a drill to test against.
         boolean setHasDrill = classifications.stream()
                 .anyMatch(c -> c != null && c.function().isDrill());
-        DfmCollector dfm = new DfmCollector();
+        DfmCollector dfm = new DfmCollector(profile, setHasDrill);
 
-        List<AnalyzedLayer> layers = new ArrayList<>(files.size());
-        for (int i = 0; i < files.size(); i++) {
-            layers.add(measure(files.get(i), classifications.get(i), outline, usableOutline, depth,
-                    setHasDrill, dfm));
+        // Drills and solder masks are measured before copper: what connects a piece of copper to
+        // anything — a plated hole, a mask opening over a painted pad — is in them, and floating
+        // copper is decided while the copper layer is still in memory. The layers keep file order.
+        AnalyzedLayer[] layers = new AnalyzedLayer[files.size()];
+        for (int pass = 0; pass < 2; pass++) {
+            for (int i = 0; i < files.size(); i++) {
+                LayerClassification c = classifications.get(i);
+                boolean early = c != null && (c.function().isDrill() || c.function() == LayerFunction.SOLDERMASK);
+                if (early == (pass == 0)) {
+                    layers[i] = measure(files.get(i), c, outline, usableOutline, depth, setHasDrill, dfm);
+                }
+            }
         }
         dfm.correlate();
-        return BoardSpecification.from(layers, dfm.viaInPad(), stackOf(files), dfm.annularRing());
+        return BoardSpecification.from(List.of(layers), dfm.viaInPad(), stackOf(files), dfm.annularRing());
     }
 
     /**
@@ -210,8 +226,9 @@ public class PcbAnalyzer {
             return true;
         }
         // Paste has to be parsed even at SPECIFICATION depth so via-in-pad can be checked against
-        // the drill — but only when the set has a drill, and paste layers are small regardless.
-        if (function == LayerFunction.PASTE && setHasDrill) {
+        // the drill, and the mask so floating copper can tell a painted pad from lettering — but
+        // only when the set has a drill, and both layers are small regardless.
+        if ((function == LayerFunction.PASTE || function == LayerFunction.SOLDERMASK) && setHasDrill) {
             return true;
         }
         return function == LayerFunction.OUTLINE || function.isCopper() || function.isDrill()
@@ -260,14 +277,13 @@ public class PcbAnalyzer {
     }
 
     /**
-     * Union of the profile centrelines of every outline layer in the set.
+     * Every outline layer of the set, parsed.
      *
-     * <p>Outline layers are parsed here and released; they are parsed a second time when measured.
-     * A profile is a handful of draws, so the duplicated work is not worth avoiding — whereas
-     * keeping every document alive to avoid it would defeat the point of the whole exercise.
+     * <p>They are parsed a second time when measured. A profile is a handful of draws, so keeping
+     * them for the edge-clearance check and parsing them twice both cost next to nothing.
      */
-    private static BoundingBox outlineBounds(List<PcbFile> files, List<LayerClassification> classifications) {
-        BoundingBox union = new BoundingBox();
+    private static List<GerberDocument> outlineDocuments(List<PcbFile> files, List<LayerClassification> classifications) {
+        List<GerberDocument> docs = new ArrayList<>();
         for (int i = 0; i < files.size(); i++) {
             LayerClassification classification = classifications.get(i);
             String content = files.get(i).getContent();
@@ -276,10 +292,40 @@ public class PcbAnalyzer {
                 continue;
             }
             try {
-                union.include(new GerberParser().parse(content).calculatePathBoundingBox());
+                docs.add(new GerberParser().parse(content));
             } catch (RuntimeException e) {
                 log.warn("Could not parse outline {}: {}", files.get(i).getFileName(), e.toString());
             }
+        }
+        return docs;
+    }
+
+    /**
+     * The outline layers that draw the board's edge, as opposed to a mechanical layer the
+     * classifier also called an outline: a layer counts when it spans at least
+     * {@link #SPANNING_FRACTION} of the set's outline in both directions. The DEPR set's
+     * {@code .GM1} is a dimension and some lettering inside the board, and read as edge it put copper
+     * "at the edge" in the middle of a thermal pad. A cut-out drawn in the edge's own file is kept.
+     */
+    private static List<GerberDocument> spanningOutlines(List<GerberDocument> outlines, BoundingBox union) {
+        List<GerberDocument> out = new ArrayList<>();
+        for (GerberDocument doc : outlines) {
+            BoundingBox b = doc.calculatePathBoundingBox();
+            if (b != null && b.isValid() && b.getWidth() >= SPANNING_FRACTION * union.getWidth()
+                    && b.getHeight() >= SPANNING_FRACTION * union.getHeight()) {
+                out.add(doc);
+            }
+        }
+        return out;
+    }
+
+    private static final double SPANNING_FRACTION = 0.9;
+
+    /** Union of the profile centrelines of the outline layers. */
+    private static BoundingBox outlineBounds(List<GerberDocument> outlines) {
+        BoundingBox union = new BoundingBox();
+        for (GerberDocument doc : outlines) {
+            union.include(doc.calculatePathBoundingBox());
         }
         return union.isValid() ? union : null;
     }
@@ -318,7 +364,8 @@ public class PcbAnalyzer {
             }
             GerberDocument doc = new GerberParser().parse(content);
             dfm.addGerber(file.getFileName(), classification, function, doc);
-            return measure(file.getFileName(), doc, classification, outline);
+            return measure(file.getFileName(), doc, classification, outline,
+                    function.isCopper() ? dfm.copperContext(classification, doc) : null);
         } catch (RuntimeException e) {
             log.warn("Could not parse {}: {}", file.getFileName(), e.toString());
             return AnalyzedLayer.builder(file.getFileName())
@@ -337,6 +384,19 @@ public class PcbAnalyzer {
      */
     public static AnalyzedLayer measure(String fileName, GerberDocument document,
                                         LayerClassification classification, BoundingBox outlineMm) {
+        return measure(fileName, document, classification, outlineMm, null);
+    }
+
+    /**
+     * What a copper layer's checks need from the rest of the set: the board's edge, and the points
+     * that connect copper — plated hole centres aligned into this layer's frame, and this side's
+     * mask openings. Null fields mean "not in the set", and switch the check that needs them off.
+     */
+    record CopperContext(BoardProfile profile, List<double[]> anchors, boolean holeAware) {}
+
+    private static AnalyzedLayer measure(String fileName, GerberDocument document,
+                                         LayerClassification classification, BoundingBox outlineMm,
+                                         CopperContext context) {
         LayerFunction function = classification == null ? LayerFunction.UNKNOWN : classification.function();
         AnalyzedLayer.Builder layer = AnalyzedLayer.builder(fileName)
                 .classification(classification)
@@ -349,7 +409,7 @@ public class PcbAnalyzer {
                 .formatSpec(document.getFormatSpec());
         if (function.isCopper()) {
             layer.minTrackWidthUm(minTrackWidthUm(document, outlineMm));
-            measureCopperGeometry(layer, fileName, document, outlineMm);
+            measureCopperGeometry(layer, fileName, document, outlineMm, context);
         }
         if (function.isDrill()) {
             layer.minDrillDiameterMm(minDrillDiameterMm(document));      // Gerber X2 drill file
@@ -358,19 +418,34 @@ public class PcbAnalyzer {
     }
 
     /**
-     * The two figures that come from the copper's geometry rather than its aperture table: the
-     * tightest gap between nets ({@link ClearanceDetector}) and the narrowest copper
-     * ({@link ConductorWidthDetector}). Both run on one {@link CopperGeometry} built while the
-     * document is still in memory, and cost well under a second on the largest board in the corpus.
-     * A failure inside them is logged and leaves the figures unmeasured; it never fails the analysis.
+     * The figures that come from the copper's geometry rather than its aperture table: the tightest
+     * gap between nets ({@link ClearanceDetector}), the narrowest copper
+     * ({@link ConductorWidthDetector}), the copper nothing connects to
+     * ({@link FloatingCopperDetector}, left out of the width) and the copper nearest the board's edge
+     * ({@link EdgeClearanceDetector}). All run on one {@link CopperGeometry} built while the document
+     * is still in memory, and cost well under a second on the largest board in the corpus. A failure
+     * inside them is logged and leaves the figures unmeasured; it never fails the analysis.
+     *
+     * <p>Floating copper only runs when the set has a drill: without the holes, a plane joined to
+     * its net by padless vias would read as floating and vanish from the width.
      */
     private static void measureCopperGeometry(AnalyzedLayer.Builder layer, String fileName,
-                                              GerberDocument document, BoundingBox outlineMm) {
+                                              GerberDocument document, BoundingBox outlineMm,
+                                              CopperContext context) {
         try {
             CopperGeometry geometry = CopperGeometry.of(document, strokeFilter(document, outlineMm));
-            layer.clearance(ClearanceDetector.detect(geometry, fileName, ClearanceDetector.DEFAULT_CUTOFF_MM));
+            CopperNets nets = CopperNets.of(geometry);
+            layer.clearance(ClearanceDetector.detect(nets, fileName, ClearanceDetector.DEFAULT_CUTOFF_MM));
+            FloatingCopperResult floating = context != null && context.holeAware()
+                    ? FloatingCopperDetector.detect(nets, fileName, context.anchors(), true)
+                    : null;
+            layer.floatingCopper(floating);
             layer.conductorWidth(ConductorWidthDetector.detect(geometry, fileName,
-                    ConductorWidthDetector.DEFAULT_CUTOFF_MM));
+                    ConductorWidthDetector.DEFAULT_CUTOFF_MM, floating));
+            if (context != null && context.profile() != null) {
+                layer.edgeClearance(EdgeClearanceDetector.detect(geometry, context.profile(), fileName,
+                        EdgeClearanceDetector.DEFAULT_CUTOFF_MM));
+            }
         } catch (RuntimeException e) {
             log.warn("copper geometry of {} not measured: {}", fileName, e.toString());
         }
@@ -569,8 +644,63 @@ public class PcbAnalyzer {
         private final List<CopperLayer> copperPads = new ArrayList<>();
         private final List<double[]> copperFlashCenters = new ArrayList<>();
         private final BoundingBox copperBounds = new BoundingBox();
+        private final List<double[]> topMaskOpenings = new ArrayList<>();
+        private final List<double[]> bottomMaskOpenings = new ArrayList<>();
+        private final BoardProfile profile;
+        private final boolean setHasDrill;
         private ViaInPadResult viaInPad;
         private AnnularRingResult annularRing;
+
+        DfmCollector(BoardProfile profile, boolean setHasDrill) {
+            this.profile = profile;
+            this.setHasDrill = setHasDrill;
+        }
+
+        /**
+         * What one copper layer's checks need from the rest of the set, which {@code analyze} has
+         * measured first: the plated holes, aligned onto this layer — alignment is per layer here
+         * because the set-wide alignment runs only once every copper layer has been read — and the
+         * mask openings on this layer's side.
+         */
+        CopperContext copperContext(LayerClassification classification, GerberDocument doc) {
+            List<double[]> anchors = new ArrayList<>();
+            if (!drills.isEmpty()) {
+                List<DrillDocument> aligned = DrillGerberAlignment.alignedAll(drills, doc.getBoundingBox(),
+                        DrillGerberAlignment.flashCenters(doc));
+                for (DrillDocument drill : aligned) {
+                    for (var op : drill.getOperations()) {
+                        if (op instanceof DrillHit hit && !Boolean.FALSE.equals(hit.getTool().getPlated())) {
+                            anchors.add(new double[]{hit.getX(), hit.getY()});
+                        }
+                    }
+                }
+            }
+            LayerSide side = classification == null ? LayerSide.UNKNOWN : classification.side();
+            if (side == LayerSide.TOP) {
+                anchors.addAll(topMaskOpenings);
+            } else if (side == LayerSide.BOTTOM) {
+                anchors.addAll(bottomMaskOpenings);
+            }
+            return new CopperContext(profile, anchors, setHasDrill && !drills.isEmpty());
+        }
+
+        /**
+         * A point inside every opening a solder-mask layer makes: a flash's centre and the midpoint
+         * of each stroke — a painted opening is strokes, and each of them lies inside the pad it
+         * exposes. Regions are left out: a region's centre need not be inside it.
+         */
+        private static void maskOpenings(GerberDocument doc, List<double[]> out) {
+            for (GraphicsObject obj : doc.getObjects()) {
+                if (obj.getPolarity() != Polarity.DARK) {
+                    continue;
+                }
+                if (obj instanceof Flash flash) {
+                    out.add(new double[]{flash.getX(), flash.getY()});
+                } else if (obj instanceof Draw draw) {
+                    out.add(new double[]{(draw.getStartX() + draw.getEndX()) / 2, (draw.getStartY() + draw.getEndY()) / 2});
+                }
+            }
+        }
 
         void addDrill(DrillDocument doc, LayerFunction function) {
             // What the file is called says something about plating, and what it contains says more:
@@ -600,6 +730,8 @@ public class PcbAnalyzer {
             if (function == LayerFunction.PASTE) {
                 // A sideless paste layer (rare) is assumed top; its pads still count either way.
                 (side == LayerSide.BOTTOM ? bottomPaste : topPaste).add(doc);
+            } else if (function == LayerFunction.SOLDERMASK) {
+                maskOpenings(doc, side == LayerSide.BOTTOM ? bottomMaskOpenings : topMaskOpenings);
             } else if (function.isCopper()) {
                 List<GraphicsObject> pads = new ArrayList<>();
                 for (GraphicsObject obj : doc.getObjects()) {

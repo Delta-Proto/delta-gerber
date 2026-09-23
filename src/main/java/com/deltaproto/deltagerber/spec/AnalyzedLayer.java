@@ -4,6 +4,8 @@ import com.deltaproto.deltagerber.Beta;
 import com.deltaproto.deltagerber.classify.LayerClassification;
 import com.deltaproto.deltagerber.dfm.ClearanceResult;
 import com.deltaproto.deltagerber.dfm.ConductorWidthResult;
+import com.deltaproto.deltagerber.dfm.EdgeClearanceResult;
+import com.deltaproto.deltagerber.dfm.FloatingCopperResult;
 import com.deltaproto.deltagerber.classify.LayerFunction;
 import com.deltaproto.deltagerber.classify.LayerSide;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
@@ -33,6 +35,9 @@ public final class AnalyzedLayer {
     private final Double minConductorWidthUm;
     private final ClearanceResult clearance;
     private final ConductorWidthResult conductorWidth;
+    private final FloatingCopperResult floatingCopper;
+    private final EdgeClearanceResult edgeClearance;
+    private final Double minEdgeClearanceMm;
     private final Boolean hasGeometry;
     private final FormatSpec formatSpec;
     private final List<String> warnings;
@@ -47,6 +52,9 @@ public final class AnalyzedLayer {
         this.minConductorWidthUm = builder.minConductorWidthUm;
         this.clearance = builder.clearance;
         this.conductorWidth = builder.conductorWidth;
+        this.floatingCopper = builder.floatingCopper;
+        this.edgeClearance = builder.edgeClearance;
+        this.minEdgeClearanceMm = builder.minEdgeClearanceMm;
         this.hasGeometry = builder.hasGeometry;
         this.formatSpec = builder.formatSpec;
         this.warnings = List.copyOf(builder.warnings);
@@ -140,6 +148,28 @@ public final class AnalyzedLayer {
     }
 
     /**
+     * The copper on this layer that nothing connects to, or null when the check did not run — it
+     * needs the set's drill to tell a plane joined by padless vias from a stray piece. Floating
+     * copper is left out of {@link #getConductorWidth()}.
+     */
+    @Beta("validated against HQDFM on two boards; see issue #11")
+    public FloatingCopperResult getFloatingCopper() {
+        return floatingCopper;
+    }
+
+    /** Copper-to-board-edge clearance in full, or null when it did not run (no outline, non-copper). */
+    @Beta("validated against HQDFM on one board")
+    public EdgeClearanceResult getEdgeClearance() {
+        return edgeClearance;
+    }
+
+    /** Copper nearest the board's edge on this layer in millimetres, or null — see {@link #getEdgeClearance()}. */
+    @Beta("validated against HQDFM on one board")
+    public Double getMinEdgeClearanceMm() {
+        return minEdgeClearanceMm;
+    }
+
+    /**
      * Whether the file draws anything at all. A paste layer that exists but is empty needs no
      * stencil, and an outline layer that is empty is not an outline; null when not determined.
      */
@@ -177,6 +207,9 @@ public final class AnalyzedLayer {
         private Double minConductorWidthUm;
         private ClearanceResult clearance;
         private ConductorWidthResult conductorWidth;
+        private FloatingCopperResult floatingCopper;
+        private EdgeClearanceResult edgeClearance;
+        private Double minEdgeClearanceMm;
         private Boolean hasGeometry;
         private FormatSpec formatSpec;
         private List<String> warnings = List.of();
@@ -242,6 +275,24 @@ public final class AnalyzedLayer {
             this.conductorWidth = conductorWidth;
             Double mm = conductorWidth == null ? null : conductorWidth.getMinMm();
             this.minConductorWidthUm = mm == null ? null : mm * 1000.0;
+            return this;
+        }
+
+        public Builder floatingCopper(FloatingCopperResult floatingCopper) {
+            this.floatingCopper = floatingCopper;
+            return this;
+        }
+
+        /** The edge-clearance check; also sets {@link #minEdgeClearanceMm} from it. */
+        public Builder edgeClearance(EdgeClearanceResult edgeClearance) {
+            this.edgeClearance = edgeClearance;
+            this.minEdgeClearanceMm = edgeClearance == null ? null : edgeClearance.getMinMm();
+            return this;
+        }
+
+        /** The summary figure alone — for a layer re-created from persisted measurements. */
+        public Builder minEdgeClearanceMm(Double minEdgeClearanceMm) {
+            this.minEdgeClearanceMm = minEdgeClearanceMm;
             return this;
         }
 

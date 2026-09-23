@@ -309,6 +309,35 @@ public final class BoardSpecification {
         return minConductorWidthUm;
     }
 
+    /**
+     * Copper nearest the board's edge on any layer, in millimetres — the "copper to board edge"
+     * line of a capability table, usually 0.2–0.3 mm for a routed edge. Null when no copper layer
+     * was measured against an outline, or none comes within
+     * {@link com.deltaproto.deltagerber.dfm.EdgeClearanceDetector#DEFAULT_CUTOFF_MM} of it. Per
+     * layer on {@link AnalyzedLayer#getEdgeClearance()}.
+     */
+    @Beta("validated against HQDFM on one board")
+    public Double getMinEdgeClearanceMm() {
+        return min(layers, AnalyzedLayer::getMinEdgeClearanceMm);
+    }
+
+    /**
+     * Pieces of copper nothing connects to, over every copper layer — see
+     * {@link com.deltaproto.deltagerber.dfm.FloatingCopperDetector}. Null when no layer was checked
+     * (the set has no drill, or the layers were re-created from persisted figures). Per layer, with
+     * the positions, on {@link AnalyzedLayer#getFloatingCopper()}.
+     */
+    @Beta("validated against HQDFM on two boards; see issue #11")
+    public Integer getFloatingCopperCount() {
+        Integer total = null;
+        for (AnalyzedLayer layer : layers) {
+            if (layer.getFloatingCopper() != null) {
+                total = (total == null ? 0 : total) + layer.getFloatingCopper().getCount();
+            }
+        }
+        return total;
+    }
+
     /** True when the set contains an NC drill file. */
     public boolean hasDrill() {
         return hasDrill;

@@ -6,6 +6,7 @@ import com.deltaproto.deltagerber.dfm.geometry.Capsule;
 import com.deltaproto.deltagerber.dfm.geometry.CopperGeometry;
 import com.deltaproto.deltagerber.dfm.geometry.CopperGeometry.Feature;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
+import com.deltaproto.deltagerber.model.gerber.operation.Draw;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -89,9 +90,29 @@ public final class ConductorWidthDetector {
     }
 
     public static ConductorWidthResult detect(CopperGeometry g, String fileName, double cutoffMm) {
+        return detect(g, fileName, cutoffMm, null);
+    }
+
+    /**
+     * As {@link #detect(CopperGeometry, String, double)}, leaving out the copper
+     * {@code floating} found to be connected to nothing. Copper lettering is drawn with the finest
+     * brush on the board — 0.1 mm on the Arduino Uno, where the tracks are 0.2 mm — and a width
+     * nothing carries a current through is not a conductor width. The pieces left out are listed
+     * by the floating result itself.
+     *
+     * @param floating measured on this same geometry, or null to measure every piece
+     */
+    public static ConductorWidthResult detect(CopperGeometry g, String fileName, double cutoffMm,
+                                              FloatingCopperResult floating) {
+        if (floating != null && !floating.isOf(g)) {
+            throw new IllegalArgumentException("floating copper was measured on a different geometry");
+        }
         List<ConductorWidth> out = new ArrayList<>();
-        strokes(g, out);
+        strokes(g, floating, out);
         for (Feature f : g.features()) {
+            if (floating != null && floating.isFloatingFeature(f.index)) {
+                continue;
+            }
             if (!f.clear && f.kind == CopperGeometry.Kind.REGION && f.polygon != null) {
                 ConductorWidth neck = regionNeck(g, f, cutoffMm);
                 if (neck != null) {
@@ -104,18 +125,73 @@ public final class ConductorWidthDetector {
     }
 
     /** One entry per distinct stroke width, at the first stroke drawn with it. */
-    private static void strokes(CopperGeometry g, List<ConductorWidth> out) {
+    private static void strokes(CopperGeometry g, FloatingCopperResult floating, List<ConductorWidth> out) {
         Map<Double, ConductorWidth> byWidth = new LinkedHashMap<>();
         for (Feature f : g.features()) {
             if (f.clear || f.kind != CopperGeometry.Kind.STROKE || !(f.strokeWidthMm > 0)) {
                 continue;
             }
+            if (floating != null && floating.isFloatingFeature(f.index)) {
+                continue;
+            }
             double key = Math.round(f.strokeWidthMm * 1e6) / 1e6;
-            byWidth.computeIfAbsent(key, w -> new ConductorWidth(f.strokeWidthMm,
+            if (byWidth.containsKey(key) || !bordersLaminateOnBothSides(g, f)) {
+                continue;
+            }
+            byWidth.put(key, new ConductorWidth(f.strokeWidthMm,
                     f.bounds.getCenterX(), f.bounds.getCenterY(), Kind.STROKE, f.describe()));
         }
         out.addAll(byWidth.values());
     }
+
+    /**
+     * Whether a stroke is as narrow as its brush somewhere: at a quarter, half or three quarters of
+     * some chord, bare laminate lies just beyond <em>both</em> of its sides. A stroke's width is a
+     * conductor's width only where both its edges are the copper's edges — the rule a region's neck
+     * already follows. EAGLE paints a pad it rotates off the grid with a 0.1 mm brush, stroke beside
+     * stroke; each has copper on at least one side, and the Arduino Uno's top layer read 3.9 mil
+     * from them where its narrowest track is 8 mil. A stroke with no length is a dot — a pad or a
+     * via drawn as a stroke — and not a conductor either.
+     */
+    private static boolean bordersLaminateOnBothSides(CopperGeometry g, Feature f) {
+        double out = f.strokeWidthMm / 2 + BESIDE_MM;
+        for (double[] s : axis(f)) {
+            double len = Math.hypot(s[2] - s[0], s[3] - s[1]);
+            if (len < MIN_EDGE_MM) {
+                continue;
+            }
+            double nx = -(s[3] - s[1]) / len, ny = (s[2] - s[0]) / len;
+            for (double t : new double[]{0.25, 0.5, 0.75}) {
+                double px = s[0] + (s[2] - s[0]) * t, py = s[1] + (s[3] - s[1]) * t;
+                if (g.copperAt(px + nx * out, py + ny * out) < 0 && g.copperAt(px - nx * out, py - ny * out) < 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** A stroke's centreline as segments {x1, y1, x2, y2}: its chords, or the draw it came from. */
+    private static List<double[]> axis(Feature f) {
+        List<double[]> out = new ArrayList<>();
+        if (!f.solids.isEmpty()) {
+            int n = f.solids.size();
+            // An arc of hundreds of chords is sampled at three of them, not all.
+            for (int i : n <= 3 ? new int[]{0, n - 1, n / 2} : new int[]{n / 4, n / 2, 3 * n / 4}) {
+                Capsule c = f.solids.get(i);
+                out.add(new double[]{c.x1, c.y1, c.x2, c.y2});
+            }
+        } else if (f.source instanceof Draw d) {
+            out.add(new double[]{d.getStartX(), d.getStartY(), d.getEndX(), d.getEndY()});
+        }
+        return out;
+    }
+
+    /**
+     * How far beyond a stroke's edge to look for laminate: 1 µm — past the half-micrometre
+     * flattening of an arc, well inside any gap a fabricator can etch.
+     */
+    private static final double BESIDE_MM = 0.001;
 
     /**
      * Whether there is copper a quarter of {@code d} inside the boundary at both points {@code d}

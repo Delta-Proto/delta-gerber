@@ -78,7 +78,10 @@ import java.util.Map;
  * spectacular breakout. The drill file states this per tool ({@code ;TYPE=NON_PLATED}, see
  * {@link com.deltaproto.deltagerber.model.drill.Tool#getPlated()}), and a file that says nothing
  * has every hole measured — a padless hole then lands in
- * {@link AnnularRingResult#getHolesWithoutPad()} for the caller to judge.
+ * {@link AnnularRingResult#getHolesWithoutPad()} for the caller to judge. So does a hole of
+ * unstated plating whose pad is flush with it (within 5 µm) on every layer: that is how Altium
+ * writes a non-plated hole, and read as a ring it put a micrometre "breakout" at the head of every
+ * DEPR report where HQDFM reports none.
  *
  * <p>The drill and the copper must share one coordinate frame. Both parsers normalise to mm, so
  * they do unless the drill was exported on a different origin (some Altium flows) — use
@@ -121,12 +124,41 @@ public final class AnnularRingDetector {
         List<AnnularRing> rings = new ArrayList<>();
         List<AnnularRing> withoutPad = new ArrayList<>();
         for (Hole hole : holes) {
+            List<PadRing> pads = hole.pads == null ? List.of() : hole.pads;
+            if (hole.plated == null && isFlush(pads)) {
+                pads = List.of();
+            }
             AnnularRing ring = new AnnularRing(hole.x, hole.y, hole.diameter, hole.drillFile,
-                    hole.plated, hole.pads == null ? List.of() : hole.pads);
+                    hole.plated, pads);
             (ring.hasPad() ? rings : withoutPad).add(ring);
         }
         return new AnnularRingResult(rings, withoutPad);
     }
+
+    /**
+     * A pad no bigger than its hole, within {@link #FLUSH_MM}, on every layer that has one. Altium
+     * writes a non-plated hole's pad at exactly the hole's size — the copper is drilled away and no
+     * ring was ever meant — and a drill file that does not state plating (FAB 3000 re-exports, the
+     * DEPR set) turns every such mounting hole into a breakout of a micrometre. HQDFM does not flag
+     * them either. The hole is reported as having no pad instead, which is what it has once drilled.
+     */
+    private static boolean isFlush(List<PadRing> pads) {
+        if (pads.isEmpty()) {
+            return false;
+        }
+        for (PadRing pad : pads) {
+            if (Math.abs(pad.getRingMm()) > FLUSH_MM) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * How close to zero every ring must be for a pad to be the hole's own outline: 5 µm, twice the
+     * registration noise of a drill file written at 2:4 inch precision (2.54 µm per count).
+     */
+    private static final double FLUSH_MM = 0.005;
 
     /**
      * As {@link #detect}, but first moves the drills into the Gerber frame using the copper pads —
