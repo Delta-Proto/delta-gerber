@@ -148,7 +148,23 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
   gets, from the outline rather than the aperture table: strokes of any aperture shape and the
   necks of pours (a plane split by a slot, the web between two antipads). Kept beside
   `getMinTrackWidthUm()` on purpose: a board that *quotes* as 100 µm but necks to 30 µm in a pour
-  is what the difference is for. Standalone via `dfm.ConductorWidthDetector`
+  is what the difference is for. A stroke only counts where both its sides are copper edges, so a
+  pad painted with a fine brush (EAGLE's rotated pads) is not a hairline conductor. Standalone via
+  `dfm.ConductorWidthDetector`
+- **Floating copper** (`spec.getFloatingCopperCount()`, **beta**) — pieces of copper nothing connects
+  to: no pad, no plated hole, no solder-mask opening. Copper lettering, pour slivers left between
+  tracks, dead-end stubs. Listed per layer with position and size on
+  `AnalyzedLayer.getFloatingCopper()`, and left out of the conductor width and — by default — the
+  clearance (`new PcbAnalyzer().floatingCopperInClearance(true)` puts it back)
+- **Copper to board edge** (`spec.getMinEdgeClearanceMm()`, **beta**) — measured to the router's
+  centreline, internal cut-outs and slots included; a pour cut back by a later clear is measured to
+  where its copper really ends
+- **Hole to copper** (`spec.getMinDrillClearanceMm()`, **beta**) — from each hole's wall to copper
+  of another net (a track passing a plated hole, the antipad a via passes through in a plane) or to
+  any copper around a non-plated hole, per copper layer
+- **Hole to hole** (`spec.getMinHoleSpacingMm()`, **beta**) — the laminate between neighbouring
+  holes over the whole drill program; overlapping holes (a slot drilled as a row of holes, a
+  duplicated hit) are listed apart on `getHoleSpacing().getOverlapping()`
 - **Physical stack-up** (`spec.getStack()`) — the board top to bottom as a list of `StackEntry`:
   copper, dielectric, mask, legend and paste, each with its thickness in picometres, plus the
   finished **board thickness** (`spec.getBoardThicknessPm()`). Read from a `.gbrjob`'s
@@ -176,6 +192,10 @@ Generate photorealistic top and bottom views of your PCB with proper layer stack
 - STEP export of the board outline, with an editable board thickness (default 1.6 mm)
 - PCB info tab: board size, layer count, processes, tolerances, via-in-pad, and the coordinate
   format each file was exported in
+- DFM figures with the place they occur — clearance, conductor width, annular ring, floating copper,
+  copper to edge, hole to copper, hole to hole — per board and per layer, and a **DFM findings**
+  table listing the worst of every check with its layer, value (mm and mil) and coordinate. The
+  viewer runs the same analysis as the library (`PcbAnalyzer.analyzeParsed`)
 - Warnings tab listing per-file parse warnings (disabled when there are none)
 - Layer type auto-detection from filename and content analysis
 - Layer type dropdowns for manual override
@@ -521,6 +541,60 @@ AnnularRingResult rings = AnnularRingDetector.detectAligned(
 
 Double min = rings.getMinRingMm();
 ```
+
+A hole whose plating the drill file does not state, with a pad no bigger than the hole on every
+layer, is how Altium writes a **non-plated** hole: it is reported under
+`getHolesWithoutPad()`, not as a ring of nothing.
+
+### Copper and Hole DFM Checks
+
+Every geometric check runs as part of `analyze(...)`, and each result carries the place it was found:
+
+```java
+BoardSpecification spec = new PcbAnalyzer().analyze(files);
+
+spec.getMinClearanceMm();        // tightest gap between two nets, floating copper left out
+spec.getMinConductorWidthUm();   // narrowest copper: strokes and the necks of pours
+spec.getFloatingCopperCount();   // pieces nothing connects to (null without a drill file)
+spec.getMinEdgeClearanceMm();    // copper nearest the board's edge
+spec.getMinDrillClearanceMm();   // hole wall to copper it must not touch
+spec.getMinHoleSpacingMm();      // laminate between two holes
+
+for (AnalyzedLayer layer : spec.getLayers()) {
+    if (layer.getFloatingCopper() != null) {
+        for (FloatingCopper piece : layer.getFloatingCopper().getPieces()) {
+            System.out.printf("%s: floating copper at (%.2f, %.2f), %.2f x %.2f mm%n",
+                layer.getFileName(), piece.xMm(), piece.yMm(), piece.widthMm(), piece.heightMm());
+        }
+    }
+    if (layer.getDrillClearance() != null) {
+        DrillClearance worst = layer.getDrillClearance().getMin();   // null when nothing within 1 mm
+    }
+    if (layer.getEdgeClearance() != null) {
+        EdgeClearance worst = layer.getEdgeClearance().getMin();
+    }
+}
+HoleSpacing tightest = spec.getHoleSpacing().getMin();
+```
+
+Positions are millimetres in the Gerber frame: the middle of a gap, or the centre of a floating
+piece's bounds. Floating copper, drill-to-copper and hole spacing need the drill program and are
+`null` without one — a plane joined to its net only by vias would otherwise read as floating.
+
+**Documents you have already parsed** (a viewer that rendered them, say) go through
+`analyzeParsed`, which runs exactly the same pipeline without parsing a second time:
+
+```java
+BoardSpecification spec = new PcbAnalyzer().analyzeParsed(List.of(
+    ParsedLayer.of("board.GTL", topClassification, topCopperDoc),
+    ParsedLayer.of("board.GKO", outlineClassification, outlineDoc),
+    ParsedLayer.of("board-Plated.TXT", drillClassification, drillDoc)));
+```
+
+Each check is also usable on its own, on a `CopperGeometry` built from one document:
+`FloatingCopperDetector`, `ClearanceDetector`, `ConductorWidthDetector`, `EdgeClearanceDetector`
+(with a `BoardProfile`), `DrillClearanceDetector` (with `DrilledHole`s in the Gerber frame) and
+`HoleSpacingDetector`.
 
 ### Coordinate Format
 

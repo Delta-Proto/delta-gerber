@@ -19,18 +19,22 @@ import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
 import com.deltaproto.deltagerber.renderer.svg.SilkscreenColor;
 import com.deltaproto.deltagerber.renderer.svg.SoldermaskColor;
 import com.deltaproto.deltagerber.renderer.step.StepExporter;
-import com.deltaproto.deltagerber.dfm.AnnularRingDetector;
+import com.deltaproto.deltagerber.dfm.AnnularRing;
 import com.deltaproto.deltagerber.dfm.AnnularRingResult;
 import com.deltaproto.deltagerber.dfm.Clearance;
 import com.deltaproto.deltagerber.dfm.ClearanceResult;
 import com.deltaproto.deltagerber.dfm.ConductorWidth;
 import com.deltaproto.deltagerber.dfm.ConductorWidthResult;
-import com.deltaproto.deltagerber.dfm.CopperLayer;
-import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
+import com.deltaproto.deltagerber.dfm.DrillClearance;
+import com.deltaproto.deltagerber.dfm.EdgeClearance;
+import com.deltaproto.deltagerber.dfm.FloatingCopper;
+import com.deltaproto.deltagerber.dfm.HoleSpacing;
+import com.deltaproto.deltagerber.dfm.HoleSpacingResult;
+import com.deltaproto.deltagerber.dfm.PadRing;
 import com.deltaproto.deltagerber.dfm.ViaInPadGroup;
-import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.spec.AnalyzedLayer;
 import com.deltaproto.deltagerber.spec.BoardSpecification;
+import com.deltaproto.deltagerber.spec.ParsedLayer;
 import com.deltaproto.deltagerber.spec.PcbAnalyzer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -438,19 +442,6 @@ public class GerberViewerServer {
             };
         }
 
-        /** Union of the profile centrelines of the outline layers — the board rectangle. */
-        private static BoundingBox outlineBounds(List<MultiLayerSVGRenderer.Layer> layers,
-                                                 Map<String, LayerClassification> classifications) {
-            BoundingBox union = new BoundingBox();
-            for (MultiLayerSVGRenderer.Layer layer : layers) {
-                LayerClassification c = classifications.get(layer.getName());
-                if (c != null && c.function() == LayerFunction.OUTLINE && layer.isGerber()) {
-                    union.include(layer.getGerberDoc().calculatePathBoundingBox());
-                }
-            }
-            return union.isValid() ? union : null;
-        }
-
         /** Where the board's tightest gap is and between which nets — the layer that holds the minimum. */
         private static void appendTightestClearance(StringBuilder json, BoardSpecification spec) {
             json.append(",\"minClearanceAt\":");
@@ -496,41 +487,147 @@ public class GerberViewerServer {
                     .append(",\"y\":").append(number(best.yMm(), 3)).append('}');
         }
 
-        private static void appendPcbInfo(StringBuilder json, List<MultiLayerSVGRenderer.Layer> layers,
-                                          Map<String, LayerClassification> classifications) {
-            BoundingBox outline = outlineBounds(layers, classifications);
+        /** How many findings of one check the panel lists — the worst ones. */
+        private static final int FINDINGS_PER_CHECK = 20;
 
-            List<AnalyzedLayer> analyzed = new ArrayList<>();
-            List<GerberDocument> topPaste = new ArrayList<>();
-            List<GerberDocument> bottomPaste = new ArrayList<>();
-            List<CopperLayer> copper = new ArrayList<>();
-            List<DrillDocument> drills = new ArrayList<>();
-            for (MultiLayerSVGRenderer.Layer layer : layers) {
-                LayerClassification c = classifications.get(layer.getName());
-                if (layer.isDrill()) {
-                    analyzed.add(PcbAnalyzer.measure(layer.getName(), layer.getDrillDoc(), c));
-                    drills.add(layer.getDrillDoc());
-                } else if (layer.isGerber()) {
-                    analyzed.add(PcbAnalyzer.measure(layer.getName(), layer.getGerberDoc(), c, outline));
-                    if (layer.getLayerType() == LayerType.PASTE_TOP) {
-                        topPaste.add(layer.getGerberDoc());
-                    } else if (layer.getLayerType() == LayerType.PASTE_BOTTOM) {
-                        bottomPaste.add(layer.getGerberDoc());
+        /** One row of the findings list: a check, where it was found, and its measure. */
+        private record Finding(String check, String layer, Double valueMm, double x, double y, String detail) {}
+
+        /**
+         * The geometric DFM figures that carry a place — floating copper, copper to the board's edge,
+         * hole to copper, hole to hole and the annular ring — as board minima with the place they
+         * occur, plus {@code dfmFindings}: the worst {@link #FINDINGS_PER_CHECK} of every check, each
+         * with its layer, measure and coordinate, so a designer can go and look.
+         */
+        private static void appendDfmFindings(StringBuilder json, BoardSpecification spec) {
+            List<Finding> findings = new ArrayList<>();
+            List<Finding> clearance = new ArrayList<>(), width = new ArrayList<>(), floating = new ArrayList<>(),
+                    edge = new ArrayList<>(), drill = new ArrayList<>(), ring = new ArrayList<>(), holes = new ArrayList<>();
+            Finding minEdge = null, minDrill = null;
+            for (AnalyzedLayer layer : spec.getLayers()) {
+                String name = layer.getFileName();
+                if (layer.getClearance() != null) {
+                    for (Clearance c : layer.getClearance().getClearances()) {
+                        clearance.add(new Finding("Clearance", name, c.distanceMm(), c.xMm(), c.yMm(),
+                                c.netA() + " – " + c.netB()));
                     }
-                    if (c != null && c.function().isCopper()) {
-                        copper.add(CopperLayer.of(layer.getName(), c, layer.getGerberDoc()));
+                }
+                if (layer.getConductorWidth() != null) {
+                    for (ConductorWidth w : layer.getConductorWidth().getWidths()) {
+                        width.add(new Finding("Conductor width", name, w.widthMm(), w.xMm(), w.yMm(),
+                                w.kind() == ConductorWidth.Kind.REGION_NECK ? "neck in a pour" : "stroke " + w.feature()));
+                    }
+                }
+                if (layer.getFloatingCopper() != null) {
+                    for (FloatingCopper f : layer.getFloatingCopper().getPieces()) {
+                        floating.add(new Finding("Floating copper", name, null, f.xMm(), f.yMm(),
+                                String.format(Locale.ROOT, "%.2f × %.2f mm, %d object%s", f.widthMm(), f.heightMm(),
+                                        f.objectCount(), f.objectCount() == 1 ? "" : "s")));
+                    }
+                }
+                if (layer.getEdgeClearance() != null) {
+                    for (EdgeClearance e : layer.getEdgeClearance().getClearances()) {
+                        Finding f = new Finding("Copper to edge", name, e.distanceMm(), e.xMm(), e.yMm(), e.feature());
+                        edge.add(f);
+                        if (minEdge == null || f.valueMm() < minEdge.valueMm()) minEdge = f;
+                    }
+                }
+                if (layer.getDrillClearance() != null) {
+                    for (DrillClearance d : layer.getDrillClearance().getClearances()) {
+                        Finding f = new Finding("Hole to copper", name, d.distanceMm(), d.xMm(), d.yMm(),
+                                String.format(Locale.ROOT, "⌀%.3f %s → %s", d.hole().diameterMm(),
+                                        d.onPad() ? "plated, to other net" : "in no copper", d.feature()));
+                        drill.add(f);
+                        if (minDrill == null || f.valueMm() < minDrill.valueMm()) minDrill = f;
                     }
                 }
             }
-            // Drills here are already aligned into the Gerber frame (alignDrillLayers ran before
-            // rendering), so detect directly rather than re-aligning.
-            ViaInPadResult viaInPad = (topPaste.isEmpty() && bottomPaste.isEmpty()) || drills.isEmpty()
-                    ? null
-                    : ViaInPadDetector.detect(topPaste, bottomPaste, drills);
-            AnnularRingResult annularRing = copper.isEmpty() || drills.isEmpty()
-                    ? null
-                    : AnnularRingDetector.detect(copper, drills);
-            BoardSpecification spec = BoardSpecification.from(analyzed, viaInPad, null, annularRing);
+            AnnularRingResult rings = spec.getAnnularRing();
+            if (rings != null) {
+                for (AnnularRing r : rings.getRings()) {
+                    PadRing worst = r.getWorstPad();
+                    ring.add(new Finding("Annular ring", worst.getLayerName(), worst.getRingMm(), r.getX(), r.getY(),
+                            String.format(Locale.ROOT, "⌀%.3f hole, %s pad", r.getHoleDiameterMm(), worst.getPadShape())));
+                }
+                for (AnnularRing r : rings.getPlatedHolesWithoutPad()) {
+                    findings.add(new Finding("Plated hole without pad", null, null, r.getX(), r.getY(),
+                            String.format(Locale.ROOT, "⌀%.3f hole", r.getHoleDiameterMm())));
+                }
+            }
+            HoleSpacingResult spacing = spec.getHoleSpacing();
+            if (spacing != null) {
+                for (HoleSpacing h : spacing.getSpacings()) {
+                    holes.add(new Finding("Hole to hole", null, h.distanceMm(), h.xMm(), h.yMm(),
+                            String.format(Locale.ROOT, "⌀%.3f and ⌀%.3f", h.a().diameterMm(), h.b().diameterMm())));
+                }
+                for (HoleSpacing h : spacing.getOverlapping()) {
+                    findings.add(new Finding("Overlapping holes", null, h.distanceMm(), h.xMm(), h.yMm(),
+                            String.format(Locale.ROOT, "⌀%.3f and ⌀%.3f — a slot drilled as holes, or a duplicate",
+                                    h.a().diameterMm(), h.b().diameterMm())));
+                }
+            }
+            for (List<Finding> check : List.of(clearance, width, edge, drill, ring, holes)) {
+                check.sort(java.util.Comparator.comparingDouble(Finding::valueMm));
+                findings.addAll(check.subList(0, Math.min(FINDINGS_PER_CHECK, check.size())));
+            }
+            findings.addAll(floating);
+
+            json.append(",\"floatingCopperCount\":").append(spec.getFloatingCopperCount());
+            json.append(",\"minEdgeClearanceMm\":").append(number(spec.getMinEdgeClearanceMm(), 4));
+            json.append(",\"minEdgeClearanceAt\":");
+            appendPlace(json, minEdge);
+            json.append(",\"minDrillClearanceMm\":").append(number(spec.getMinDrillClearanceMm(), 4));
+            json.append(",\"minDrillClearanceAt\":");
+            appendPlace(json, minDrill);
+            json.append(",\"minHoleSpacingMm\":").append(number(spec.getMinHoleSpacingMm(), 4));
+            json.append(",\"minHoleSpacingAt\":");
+            appendPlace(json, holes.isEmpty() ? null : holes.get(0));
+            json.append(",\"overlappingHoles\":").append(spacing == null ? "null" : String.valueOf(spacing.getOverlapping().size()));
+            json.append(",\"minAnnularRingAt\":");
+            appendPlace(json, ring.isEmpty() ? null : ring.get(0));
+            json.append(",\"dfmFindings\":[");
+            for (int i = 0; i < findings.size(); i++) {
+                Finding f = findings.get(i);
+                if (i > 0) json.append(',');
+                json.append("{\"check\":").append(escapeJson(f.check()));
+                json.append(",\"layer\":").append(escapeJson(f.layer()));
+                json.append(",\"valueMm\":").append(number(f.valueMm(), 4));
+                json.append(",\"x\":").append(number(f.x(), 3));
+                json.append(",\"y\":").append(number(f.y(), 3));
+                json.append(",\"detail\":").append(escapeJson(f.detail())).append('}');
+            }
+            json.append(']');
+        }
+
+        /** {@code {layer, x, y, detail}} for a finding, or null. */
+        private static void appendPlace(StringBuilder json, Finding f) {
+            if (f == null) {
+                json.append("null");
+                return;
+            }
+            json.append("{\"layer\":").append(escapeJson(f.layer()))
+                    .append(",\"x\":").append(number(f.x(), 3))
+                    .append(",\"y\":").append(number(f.y(), 3))
+                    .append(",\"detail\":").append(escapeJson(f.detail())).append('}');
+        }
+
+        private static void appendPcbInfo(StringBuilder json, List<MultiLayerSVGRenderer.Layer> layers,
+                                          Map<String, LayerClassification> classifications) {
+            // The documents are already parsed for rendering, so the library analyses them as they
+            // are — the same pipeline, and so the same figures, a caller of PcbAnalyzer gets from
+            // files. Drills are already aligned into the Gerber frame; aligning again is a no-op.
+            List<ParsedLayer> parsed = new ArrayList<>();
+            for (MultiLayerSVGRenderer.Layer layer : layers) {
+                LayerClassification c = classifications.get(layer.getName());
+                if (layer.isDrill()) {
+                    parsed.add(ParsedLayer.of(layer.getName(), c, layer.getDrillDoc()));
+                } else if (layer.isGerber()) {
+                    parsed.add(ParsedLayer.of(layer.getName(), c, layer.getGerberDoc()));
+                }
+            }
+            BoardSpecification spec = new PcbAnalyzer().analyzeParsed(parsed);
+            List<AnalyzedLayer> analyzed = spec.getLayers();
+            AnnularRingResult annularRing = spec.getAnnularRing();
 
             json.append(",\"pcbInfo\":{");
             json.append("\"sizeX\":").append(number(spec.getSizeXMm(), 4));
@@ -547,8 +644,11 @@ public class GerberViewerServer {
             json.append(",\"minConductorUm\":").append(number(spec.getMinConductorWidthUm(), 3));
             appendTightestClearance(json, spec);
             appendNarrowestConductor(json, spec);
-            // Which figures are still beta — measured and tested, not yet validated externally.
-            json.append(",\"betaFigures\":[\"minClearanceMm\",\"minClearanceAt\",\"minConductorUm\",\"minConductorAt\"]");
+            appendDfmFindings(json, spec);
+            // Which figures are still beta — measured, tested and checked against an independent
+            // DFM tool on a handful of boards, not yet on a corpus.
+            json.append(",\"betaFigures\":[\"minClearanceMm\",\"minClearanceAt\",\"minConductorUm\",\"minConductorAt\","
+                    + "\"floatingCopperCount\",\"minEdgeClearanceMm\",\"minDrillClearanceMm\",\"minHoleSpacingMm\"]");
             json.append(",\"hasCopper\":").append(spec.hasCopper());
             json.append(",\"hasDrill\":").append(spec.hasDrill());
             json.append(",\"hasOutline\":").append(spec.hasOutline());
@@ -638,6 +738,10 @@ public class GerberViewerServer {
                 json.append(",\"minDrillMm\":").append(number(layer.getMinDrillDiameterMm(), 4));
                 json.append(",\"minClearanceMm\":").append(number(layer.getMinClearanceMm(), 4));
                 json.append(",\"minConductorUm\":").append(number(layer.getMinConductorWidthUm(), 3));
+                json.append(",\"minEdgeClearanceMm\":").append(number(layer.getMinEdgeClearanceMm(), 4));
+                json.append(",\"minDrillClearanceMm\":").append(number(layer.getMinDrillClearanceMm(), 4));
+                json.append(",\"floatingCopper\":").append(layer.getFloatingCopper() == null
+                        ? "null" : String.valueOf(layer.getFloatingCopper().getCount()));
                 json.append(",\"hasGeometry\":").append(layer.getHasGeometry());
                 json.append(",\"format\":");
                 appendFormat(json, layer.getFormatSpec());

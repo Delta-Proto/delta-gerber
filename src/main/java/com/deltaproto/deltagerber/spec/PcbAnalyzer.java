@@ -169,6 +169,68 @@ public class PcbAnalyzer {
     }
 
     /**
+     * As {@link #analyze(List)}, for documents the caller has already parsed and classified — every
+     * check runs exactly as it does from files: the DFM correlations (via in pad, annular ring, hole
+     * spacing), floating copper, drill-to-copper and copper-to-edge clearance. Drills may already be
+     * aligned into the Gerber frame; aligning them again is a no-op.
+     *
+     * <p>The documents are not modified, except that a drill tool with no stated plating takes it
+     * from its file's classification, as it does in {@link #analyze(List)}. No stack-up is read, so
+     * the stack is {@linkplain BoardStack#estimate estimated} from the layers.
+     */
+    public BoardSpecification analyzeParsed(List<ParsedLayer> parsed) {
+        if (parsed == null || parsed.isEmpty()) {
+            return BoardSpecification.from(List.of());
+        }
+        List<GerberDocument> outlineDocs = new ArrayList<>();
+        boolean setHasDrill = false;
+        for (ParsedLayer p : parsed) {
+            LayerClassification c = p.classification();
+            if (p.gerber() != null && c != null && c.function() == LayerFunction.OUTLINE) {
+                outlineDocs.add(p.gerber());
+            }
+            setHasDrill |= p.drill() != null || c != null && c.function().isDrill();
+        }
+        BoundingBox outline = outlineBounds(outlineDocs);
+        boolean usableOutline = outline != null && outline.getWidth() > 0 && outline.getHeight() > 0;
+        BoardProfile profile = usableOutline ? BoardProfile.of(spanningOutlines(outlineDocs, outline)) : null;
+        DfmCollector dfm = new DfmCollector(profile, setHasDrill, floatingInClearance);
+
+        AnalyzedLayer[] layers = new AnalyzedLayer[parsed.size()];
+        for (int pass = 0; pass < 2; pass++) {
+            for (int i = 0; i < parsed.size(); i++) {
+                ParsedLayer p = parsed.get(i);
+                LayerClassification c = p.classification();
+                boolean early = p.drill() != null
+                        || c != null && (c.function().isDrill() || c.function() == LayerFunction.SOLDERMASK);
+                if (early == (pass == 0)) {
+                    layers[i] = measureParsed(p, usableOutline ? outline : null, dfm);
+                }
+            }
+        }
+        dfm.correlate();
+        return BoardSpecification.from(List.of(layers), dfm.viaInPad(), null, dfm.annularRing(),
+                dfm.holeSpacing());
+    }
+
+    private static AnalyzedLayer measureParsed(ParsedLayer p, BoundingBox outline, DfmCollector dfm) {
+        LayerClassification c = p.classification();
+        LayerFunction function = c == null ? LayerFunction.UNKNOWN : c.function();
+        try {
+            if (p.drill() != null) {
+                dfm.addDrill(p.drill(), function);
+                return measure(p.fileName(), p.drill(), c);
+            }
+            dfm.addGerber(p.fileName(), c, function, p.gerber());
+            return measure(p.fileName(), p.gerber(), c, outline,
+                    function.isCopper() ? dfm.copperContext(c, p.gerber()) : null);
+        } catch (RuntimeException e) {
+            log.warn("Could not measure {}: {}", p.fileName(), e.toString());
+            return AnalyzedLayer.builder(p.fileName()).classification(c).warnings(List.of(e.toString())).build();
+        }
+    }
+
+    /**
      * The physical stack-up the set itself states, or {@link BoardStack#empty()} when nothing in it
      * does — which is the common case, and leaves the specification to
      * {@linkplain BoardStack#estimate estimate} the layers from the artwork.

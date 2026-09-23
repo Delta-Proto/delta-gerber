@@ -443,6 +443,13 @@ clearance (the Arduino bottom's 6.4 mil, where its nets are 10 mil apart). HQDFM
 `PcbAnalyzer.floatingCopperInClearance(true)` puts them back; the detectors take the
 `FloatingCopperResult` as an optional last argument.
 
+**The web viewer runs the library's pipeline, never its own.** `GerberViewerServer.appendPcbInfo`
+hands its already-parsed documents to `PcbAnalyzer.analyzeParsed(List<ParsedLayer>)` — the same
+two-pass analysis `analyze(files)` runs — and serialises the `BoardSpecification` it gets back
+(`dfmFindings`: the worst 20 of each check, with layer, value and coordinate). A new check shows up in
+the viewer by adding it to `appendDfmFindings` and the panel, not by calling a detector from the
+server. `AnalyzeParsedTest` pins that both entry points agree.
+
 ## Holes: spacing and drill-to-copper
 
 `dfm.HoleSpacingDetector` is the laminate between neighbouring holes' walls over the whole drill

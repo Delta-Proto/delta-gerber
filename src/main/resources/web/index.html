@@ -1531,7 +1531,7 @@
         // against an independent DFM tool. The badge travels with the number so nobody quotes off it.
         function beta(i, field) {
             return (i.betaFigures || []).includes(field)
-                ? ' <span class="beta" title="Beta: not yet validated against an external DFM tool">BETA</span>'
+                ? ' <span class="beta" title="Beta: checked against an independent DFM tool on a handful of boards, not yet on a corpus">BETA</span>'
                 : '';
         }
 
@@ -1556,6 +1556,35 @@
             return text;
         }
 
+        // "on top copper at 12.34, 5.67" — where a figure was measured, when the server says.
+        function placeOf(at) {
+            if (!at) return '';
+            const on = at.layer ? ` on ${at.layer}` : '';
+            return `${on} at ${fixed(at.x, 2)}, ${fixed(at.y, 2)}`;
+        }
+
+        // A board minimum with the place it occurs. null minimum with the check having run means
+        // nothing came within the check's 1 mm cutoff.
+        function minWithPlace(mm, at, ran) {
+            if (mm === null || mm === undefined) return ran ? '≥ 1 mm' : null;
+            const where = placeOf(at);
+            return Number(mm).toFixed(4) + ' mm' + (where ? ` (${where.trim()})` : '');
+        }
+
+        // Floating copper: pieces nothing connects to — no pad, plated hole or mask opening. It is
+        // left out of the conductor width and the clearance. null when the set has no drill.
+        function floatingCopper(i) {
+            const n = i.floatingCopperCount;
+            if (n === null || n === undefined) return null;
+            return n === 0 ? 'None' : `${n} piece${n === 1 ? '' : 's'} (see DFM findings)`;
+        }
+
+        function holeSpacing(i) {
+            const text = minWithPlace(i.minHoleSpacingMm, i.minHoleSpacingAt, i.hasDrill);
+            if (!text || !i.overlappingHoles) return text;
+            return `${text}; ${i.overlappingHoles} overlapping pair${i.overlappingHoles === 1 ? '' : 's'}`;
+        }
+
         function viaInPad(i) {
             if (i.hasViaInPad === null || i.hasViaInPad === undefined) return null;
             if (!i.hasViaInPad) return 'No';
@@ -1569,7 +1598,8 @@
         // the measurement; whether it is enough is a fabricator's rule, so both are shown.
         function annularRing(i) {
             if (i.minAnnularRingMm === null || i.minAnnularRingMm === undefined) return null;
-            const mm = Number(i.minAnnularRingMm).toFixed(3) + ' mm';
+            const where = placeOf(i.minAnnularRingAt);
+            const mm = Number(i.minAnnularRingMm).toFixed(3) + ' mm' + (where ? ` (${where.trim()})` : '');
             if (i.annularRingBreakout) {
                 return `${mm} — a hole breaks out of its pad`;
             }
@@ -1623,7 +1653,31 @@
                 infoRow('Has drill', yesNo(i.hasDrill)),
                 infoRow('Via in pad', viaInPad(i)),
                 infoRow('Min annular ring', annularRing(i)),
+                infoRow('Floating copper', floatingCopper(i), null, beta(i, 'floatingCopperCount')),
+                infoRow('Min copper to edge', minWithPlace(i.minEdgeClearanceMm, i.minEdgeClearanceAt, i.hasOutline && i.hasCopper), null, beta(i, 'minEdgeClearanceMm')),
+                infoRow('Min hole to copper', minWithPlace(i.minDrillClearanceMm, i.minDrillClearanceAt, i.hasDrill && i.hasCopper), null, beta(i, 'minDrillClearanceMm')),
+                infoRow('Min hole to hole', holeSpacing(i), null, beta(i, 'minHoleSpacingMm')),
             ];
+
+            // Every DFM finding with a place, worst first per check: what the minima above are the
+            // head of. mil alongside mm, because fabricators quote in both.
+            const findings = (i.dfmFindings || []).map(f => `<tr>
+                    <td>${escapeHtml(f.check)}</td>
+                    <td>${escapeHtml(f.layer || '—')}</td>
+                    ${f.valueMm === null || f.valueMm === undefined
+                        ? '<td class="num absent">—</td><td class="num absent">—</td>'
+                        : `<td class="num">${fixed(f.valueMm, 4)}</td><td class="num">${fixed(f.valueMm / 0.0254, 2)}</td>`}
+                    <td class="num">${fixed(f.x, 3)}</td>
+                    <td class="num">${fixed(f.y, 3)}</td>
+                    <td>${escapeHtml(f.detail || '')}</td>
+                </tr>`).join('');
+            const findingsSection = findings
+                ? `<div class="pcbinfo-section"><h3>DFM findings <span class="beta">BETA</span></h3><div class="pcbinfo-table-wrap">
+                    <table class="pcbinfo-table" id="dfm-findings">
+                        <thead><tr><th>Check</th><th>Layer</th><th>mm</th><th>mil</th><th>X (mm)</th><th>Y (mm)</th><th>Detail</th></tr></thead>
+                        <tbody>${findings}</tbody>
+                    </table></div></div>`
+                : '';
 
             // The board is measured in the files' own coordinate space; the origin is wherever the
             // CAD tool left it, so the extents are worth showing rather than just the size.
@@ -1662,6 +1716,9 @@
                     ${cell(fixed(l.minTrackUm, 1))}
                     ${cell(fixed(l.minConductorUm, 1))}
                     ${cell(fixed(l.minClearanceMm, 4))}
+                    ${cell(fixed(l.minEdgeClearanceMm, 4))}
+                    ${cell(fixed(l.minDrillClearanceMm, 4))}
+                    ${cell(l.floatingCopper)}
                     ${cell(fixed(l.minDrillMm, 3))}
                     ${l.format ? `<td>${escapeHtml(formatDigits(l.format))}</td>`
                                : '<td class="absent">—</td>'}
@@ -1679,10 +1736,14 @@
                             <th>Width (mm)</th><th>Height (mm)</th>
                             <th>Min track (µm)</th><th>Min conductor (µm) <span class="beta">BETA</span></th>
                             <th>Min clearance (mm) <span class="beta">BETA</span></th>
+                            <th>To edge (mm) <span class="beta">BETA</span></th>
+                            <th>Hole to copper (mm) <span class="beta">BETA</span></th>
+                            <th>Floating <span class="beta">BETA</span></th>
                             <th>Min drill (mm)</th><th>Format</th><th>Draws</th>
                         </tr></thead>
                         <tbody>${rows}</tbody>
-                    </table></div></div>`;
+                    </table></div></div>`
+                + findingsSection;
         }
 
         // ===== Warnings =====
