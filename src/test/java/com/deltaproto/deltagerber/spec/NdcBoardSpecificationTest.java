@@ -46,6 +46,10 @@ class NdcBoardSpecificationTest {
 
     @BeforeAll
     static void analyze() throws IOException {
+        spec = new PcbAnalyzer().analyze(files());
+    }
+
+    private static List<PcbFile> files() throws IOException {
         List<PcbFile> files = new ArrayList<>();
         try (Stream<Path> entries = Files.list(FIXTURE)) {
             entries.sorted().forEach(path -> {
@@ -56,7 +60,7 @@ class NdcBoardSpecificationTest {
                 }
             });
         }
-        spec = new PcbAnalyzer().analyze(files);
+        return files;
     }
 
     private static AnalyzedLayer layer(String fileName) {
@@ -89,25 +93,42 @@ class NdcBoardSpecificationTest {
     }
 
     @Test
-    @DisplayName("Two nets come within 0.025 mm on the top layer: the eye of the copper logo")
+    @DisplayName("The copper logo on the top layer is floating copper")
+    void floatingCopper() {
+        // The figure is drawn as regions that nothing joins to a net: no flash, no pin, no hole.
+        assertEquals(5, layer("NDc.GTL").getFloatingCopper().getPieces().size());
+        assertEquals(0, layer("NDc.G2").getFloatingCopper().getPieces().size());
+    }
+
+    @Test
+    @DisplayName("Two nets come within 0.090 mm on the top layer, the floating logo left out")
     void minClearance() {
-        // The top layer carries artwork drawn as regions, and the pupil of the figure sits
-        // 25 µm from the outline of its head — two pieces of copper that nothing joins. Every
-        // other copper layer keeps its nets 0.098 mm or more apart.
-        assertEquals(0.0253, spec.getMinClearanceMm(), 5e-4);
-        assertEquals(0.0253, layer("NDc.GTL").getMinClearanceMm(), 5e-4);
+        assertEquals(0.0900, spec.getMinClearanceMm(), 5e-4);
+        assertEquals(0.0900, layer("NDc.GTL").getMinClearanceMm(), 5e-4);
         assertEquals(0.0983, layer("NDc.G2").getMinClearanceMm(), 5e-4);
         assertTrue(layer("NDc.GBL").getMinClearanceMm() > 0.099);
     }
 
     @Test
-    @DisplayName("The copper necks to 0.030 mm in the logo, though the narrowest track is 0.100 mm")
+    @DisplayName("With floating copper counted, the logo's eye sits 0.025 mm from its head")
+    void minClearanceWithFloatingCopper() throws IOException {
+        // The pupil of the figure sits 25 µm from the outline of its head — two pieces of
+        // copper that nothing joins, so they only count when floating copper is put back.
+        BoardSpecification withFloating = new PcbAnalyzer().floatingCopperInClearance(true)
+                .analyze(files());
+        assertEquals(0.0253, withFloating.getMinClearanceMm(), 5e-4);
+    }
+
+    @Test
+    @DisplayName("The copper necks to 0.056 mm in an inner plane, though the narrowest track is 0.100 mm")
     void minConductorWidth() {
-        // Exactly the disagreement issue #11 is about: the aperture table says 0.1 mm, the
-        // artwork regions on the top layer go down to 30 µm.
-        assertEquals(29.6, spec.getMinConductorWidthUm(), 0.5);
+        // Exactly the disagreement issue #11 is about: the aperture table says 0.1 mm, a pour on
+        // the first inner layer narrows to 56 µm. The logo's 30 µm strokes are floating copper
+        // and are not conductors.
+        assertEquals(56.3, spec.getMinConductorWidthUm(), 0.5);
+        assertEquals(56.3, layer("NDc.G1").getMinConductorWidthUm(), 0.5);
+        assertEquals(94.0, layer("NDc.GTL").getMinConductorWidthUm(), 0.5);
         assertEquals(100.0, layer("NDc.G2").getMinConductorWidthUm(), 1e-6);
-        assertEquals(29.6, layer("NDc.GTL").getMinConductorWidthUm(), 0.5);
     }
 
     @Test

@@ -409,8 +409,9 @@ sub-micrometre zigzags (edges under 2 µm are nobody's side), Altium's teardrop 
 their pads (both ends must have bare laminate just outside), and a pour tapering to a point
 (widths along an edge agree to a quarter, and the copper carries on for at least the width to
 either side). The NDc top layer is the reference: a copper logo whose strokes neck to 30 µm and
-whose eye sits 25 µm from its head, while every other layer reads 0.1 mm — the disagreement the
-issue asks for. The results ride on `AnalyzedLayer` (`getClearance()`, `getConductorWidth()`,
+whose eye sits 25 µm from its head — floating copper, so it counts only with
+`floatingCopperInClearance(true)` — while the board's real minimum is a 56 µm neck in the `G1`
+plane against a 0.1 mm aperture table, the disagreement the issue asks for. The results ride on `AnalyzedLayer` (`getClearance()`, `getConductorWidth()`,
 and the two summary numbers) and survive `BoardSpecification.from(layers)` as numbers.
 
 **A stroke is a conductor only where both its sides are copper edges.** EAGLE paints a pad it
