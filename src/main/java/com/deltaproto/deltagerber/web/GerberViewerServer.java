@@ -95,8 +95,8 @@ public class GerberViewerServer {
             if (path.equals("/") || path.equals("/index.html")) {
                 String html = getIndexHtml();
                 sendResponse(exchange, 200, "text/html", html);
-            } else if (path.equals("/api/gerber/arduino-uno-example.zip")) {
-                try (InputStream is = GerberViewerServer.class.getResourceAsStream("/web/arduino-uno-example.zip")) {
+            } else if (path.equals("/api/gerber/nucleo-l031k6-example.zip")) {
+                try (InputStream is = GerberViewerServer.class.getResourceAsStream("/web/nucleo-l031k6-example.zip")) {
                     if (is != null) {
                         byte[] data = is.readAllBytes();
                         exchange.getResponseHeaders().set("Content-Type", "application/zip");

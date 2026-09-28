@@ -414,7 +414,7 @@
             <input type="file" id="file-input" accept=".zip">
             Open ZIP File
         </label>
-        <button class="example-btn" onclick="loadExample()" title="Load Arduino Uno example project">Try Example</button>
+        <button class="example-btn" onclick="loadExample()" title="Load the ST NUCLEO-L031K6 example project">Try Example</button>
         <span class="app-version" id="app-version" title="Delta Gerber version">__APP_VERSION__</span>
         <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" onclick="toggleTheme()">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1007,12 +1007,12 @@
             dropZone.classList.add('hidden');
             loading.classList.remove('hidden');
             progressBar.classList.add('progress-bar-indeterminate');
-            loadingStatus.textContent = 'Loading Arduino Uno example...';
+            loadingStatus.textContent = 'Loading NUCLEO-L031K6 example...';
             try {
-                const resp = await fetch(`${API_BASE}/arduino-uno-example.zip`);
+                const resp = await fetch(`${API_BASE}/nucleo-l031k6-example.zip`);
                 if (!resp.ok) throw new Error('Failed to fetch example');
                 const blob = await resp.blob();
-                const file = new File([blob], 'arduino-uno-example.zip', {type: 'application/zip'});
+                const file = new File([blob], 'nucleo-l031k6-example.zip', {type: 'application/zip'});
                 loading.classList.add('hidden');
                 progressBar.classList.remove('progress-bar-indeterminate');
                 await loadFile(file);
