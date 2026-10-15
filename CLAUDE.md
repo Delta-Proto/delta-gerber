@@ -126,6 +126,24 @@ color the mask pairs with (white on everything but a white mask, which pairs bla
 caller names a `SilkscreenColor` a later `setSoldermaskColor` re-pairs nothing. Don't collapse this
 back to "mask setter also assigns silk" — call order would then decide the legend color.
 
+## Polarity masks
+
+Gerber is a painter's model: a clear object erases everything drawn before it where it lies.
+`renderer.svg.PolarityMaskHelper` renders that with SVG masks, and **masks are scoped, flat, and
+sized**: a dark object is masked by exactly the later clear *runs* whose bounding boxes reach it,
+objects nothing reaches are emitted bare, and each distinct set of runs is one `<g mask>` whose
+mask holds only the clears of those runs within the set's extent, stated as a `userSpaceOnUse`
+region. Don't go back to nesting one mask per clear run around everything before it — it is just
+as correct and it is what made an Altium legend with 211 polarity flips (inverted labels, then a
+run of 1 393 pad knockouts) cost 15 s in Batik, lose the labels to 211 rounds of mask rounding,
+and repaint at four frames a second in the browser. Keying by run rather than by clear object is
+deliberate: the knockout run then masks the strokes it trims with one mask instead of 1 400
+near-identical ones. The region must be explicit because the default is the group's bounding box
+in objectBoundingBox units, which excludes stroke width — a group holding one horizontal trace
+has a zero-height region and the trace vanishes. Reordering dark objects is free because a layer
+is one colour under one group opacity. `PolarityMaskScopingTest` pins the structure on a
+synthetic legend; the real one is a customer file and lives under `excluded/`.
+
 ## Board outline, and the STEP export
 
 `MultiLayerSVGRenderer.resolveBoardOutline(layers)` is the **one** place the board edge is decided,
