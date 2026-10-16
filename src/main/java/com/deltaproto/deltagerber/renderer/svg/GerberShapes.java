@@ -16,6 +16,7 @@ import java.awt.geom.Ellipse2D;
 import java.awt.geom.Line2D;
 import java.awt.geom.Path2D;
 import java.awt.geom.Rectangle2D;
+import java.util.List;
 
 /**
  * The area a Gerber object <em>inks</em>, as a Java2D {@link Shape} in millimetres, Y up.
@@ -26,8 +27,9 @@ import java.awt.geom.Rectangle2D;
  * band of its aperture.
  *
  * <p>Round apertures are exact. Everything else — rectangles, obrounds, polygons, macros — is
- * approximated by its bounding box, and a draw's width by its aperture's <em>smaller</em>
- * dimension. Both callers (the derived board silhouette, which outsets and unions what it gets,
+ * approximated by its bounding box: a flash by the box itself, a draw by the box swept along
+ * the line (exact for a rectangle, which the spec sweeps without rotating), an arc's width by the
+ * aperture's <em>smaller</em> dimension. Both callers (the derived board silhouette, which outsets and unions what it gets,
  * and the drill-hole subtraction in the STEP export, where the apertures are circles anyway) are
  * insensitive to that; a caller that is not should not use this class.
  */
@@ -80,11 +82,28 @@ public final class GerberShapes {
     }
 
     private static Shape drawShape(Draw draw) {
-        double w = apertureWidth(draw.getAperture());
-        Line2D line = new Line2D.Double(draw.getStartX(), draw.getStartY(),
-            draw.getEndX(), draw.getEndY());
-        return new BasicStroke((float) Math.max(w, FLATNESS_MM),
-            BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND).createStrokedShape(line);
+        Aperture ap = draw.getAperture();
+        if (ap instanceof CircleAperture) {
+            double w = apertureWidth(ap);
+            Line2D line = new Line2D.Double(draw.getStartX(), draw.getStartY(),
+                draw.getEndX(), draw.getEndY());
+            return new BasicStroke((float) Math.max(w, FLATNESS_MM),
+                BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND).createStrokedShape(line);
+        }
+        // A non-round aperture sweeps its (axis-aligned) bounding rectangle along the line:
+        // the convex hull of that rectangle at both ends, flat-ended — exact for a rectangle.
+        BoundingBox bb = ap == null ? null : ap.getBoundingBox();
+        if (bb == null || !bb.isValid()) return null;
+        List<double[]> hull = SvgPathUtils.sweptRectangle(draw.getStartX(), draw.getStartY(),
+            draw.getEndX(), draw.getEndY(),
+            Math.max(bb.getWidth(), FLATNESS_MM), Math.max(bb.getHeight(), FLATNESS_MM));
+        Path2D.Double path = new Path2D.Double();
+        for (int i = 0; i < hull.size(); i++) {
+            double[] pt = hull.get(i);
+            if (i == 0) path.moveTo(pt[0], pt[1]); else path.lineTo(pt[0], pt[1]);
+        }
+        path.closePath();
+        return path;
     }
 
     private static Shape arcShape(Arc arc) {

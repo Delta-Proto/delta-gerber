@@ -136,6 +136,47 @@ public class SvgPathUtils {
     }
 
     /**
+     * The outline a rectangular aperture inks when a draw sweeps it from (x1,y1) to (x2,y2): the
+     * convex hull of the axis-aligned {@code width}×{@code height} rectangle placed at both ends
+     * (spec §4.9.1 — the rectangle moves along the segment without rotating, so the ends are
+     * flat and the corners square, never round). Four vertices for an axis-aligned draw, six for
+     * a diagonal one, counter-clockwise in Gerber (Y-up) coordinates.
+     */
+    public static List<double[]> sweptRectangle(double x1, double y1, double x2, double y2,
+                                                double width, double height) {
+        double hw = width / 2, hh = height / 2;
+        double[][] pts = {
+            {x1 - hw, y1 - hh}, {x1 + hw, y1 - hh}, {x1 + hw, y1 + hh}, {x1 - hw, y1 + hh},
+            {x2 - hw, y2 - hh}, {x2 + hw, y2 - hh}, {x2 + hw, y2 + hh}, {x2 - hw, y2 + hh}};
+        // Andrew's monotone chain; eight points, so the sort is nothing.
+        java.util.Arrays.sort(pts, (a, b) -> a[0] != b[0] ? Double.compare(a[0], b[0])
+                                                          : Double.compare(a[1], b[1]));
+        double[][] hull = new double[16][];
+        int k = 0;
+        for (double[] pt : pts) {
+            while (k >= 2 && cross(hull[k - 2], hull[k - 1], pt) <= 0) k--;
+            hull[k++] = pt;
+        }
+        for (int i = pts.length - 2, lower = k + 1; i >= 0; i--) {
+            while (k >= lower && cross(hull[k - 2], hull[k - 1], pts[i]) <= 0) k--;
+            hull[k++] = pts[i];
+        }
+        List<double[]> out = new ArrayList<>(k - 1);
+        for (int i = 0; i < k - 1; i++) out.add(hull[i]);   // last repeats the first
+        return out;
+    }
+
+    /** {@link #sweptRectangle} as a closed SVG path. */
+    public static String sweptRectanglePath(double x1, double y1, double x2, double y2,
+                                            double width, double height) {
+        return outlinePath(sweptRectangle(x1, y1, x2, y2, width, height), true);
+    }
+
+    private static double cross(double[] o, double[] a, double[] b) {
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    }
+
+    /**
      * Generate a rectangle with a round hole.
      */
     public static String rectangleWithHolePath(double cx, double cy, double width, double height, double holeDiameter) {

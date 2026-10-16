@@ -4,7 +4,6 @@ import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.Polarity;
 import com.deltaproto.deltagerber.model.gerber.aperture.Aperture;
 import com.deltaproto.deltagerber.model.gerber.aperture.CircleAperture;
-import com.deltaproto.deltagerber.model.gerber.aperture.RectangleAperture;
 import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
 import com.deltaproto.deltagerber.renderer.svg.SvgPathUtils;
 
@@ -63,10 +62,15 @@ public class Draw extends GraphicsObject {
         BoundingBox bounds = new BoundingBox();
         bounds.includePoint(startX, startY);
         bounds.includePoint(endX, endY);
-        // Expand by aperture size
+        // Expand by the aperture's extent on each axis: a rectangle swept along a line stays
+        // axis-aligned, so it reaches width/2 sideways and height/2 up and down, never the
+        // larger of the two in every direction.
         BoundingBox apBounds = aperture.getBoundingBox();
-        double margin = Math.max(apBounds.getWidth(), apBounds.getHeight()) / 2;
-        bounds.expand(margin);
+        if (apBounds.isValid()) {
+            double hw = apBounds.getWidth() / 2, hh = apBounds.getHeight() / 2;
+            bounds.includePoint(bounds.getMinX() - hw, bounds.getMinY() - hh);
+            bounds.includePoint(bounds.getMaxX() + hw, bounds.getMaxY() + hh);
+        }
         return bounds;
     }
 
@@ -81,15 +85,22 @@ public class Draw extends GraphicsObject {
     @Override
     public String toSvg(SvgOptions options) {
         String color = polarity == Polarity.DARK ? options.getDarkColor() : options.getClearColor();
-        double strokeWidth = 0;
-        if (aperture instanceof CircleAperture) {
-            strokeWidth = ((CircleAperture) aperture).getDiameter();
-        } else if (aperture instanceof RectangleAperture) {
-            // Use max dimension as stroke width (approximation for non-rotated lines)
-            RectangleAperture rect = (RectangleAperture) aperture;
-            strokeWidth = Math.max(rect.getWidth(), rect.getHeight());
+        if (!(aperture instanceof CircleAperture)) {
+            // A rectangle swept along a line inks the convex hull of the rectangle at both ends
+            // (spec §4.9.1): flat ends, square corners. A round stroke of its larger side, which
+            // this used to be, pokes a half-disc past each end — ST draws every solder-bridge
+            // chevron on the NUCLEO boards this way, and the caps showed up as bare laminate
+            // beside the pads. Any other aperture is swept as its bounding box, which can only
+            // overstate.
+            BoundingBox ap = aperture.getBoundingBox();
+            if (!ap.isValid()) {
+                return "";
+            }
+            String pathData = SvgPathUtils.sweptRectanglePath(startX, startY, endX, endY,
+                ap.getWidth() * strokeScale, ap.getHeight() * strokeScale);
+            return String.format("<path d=\"%s\" fill=\"%s\"/>", pathData, color);
         }
-        strokeWidth *= strokeScale;
+        double strokeWidth = ((CircleAperture) aperture).getDiameter() * strokeScale;
 
         if (options.isPolygonize()) {
             // Polygonized mode: path-based stroked line (rectangle with round caps)
