@@ -117,6 +117,9 @@ public class GerberParser {
         for (Token token : tokens) {
             processToken(token);
         }
+        // A file that ends on a bare coordinate (no M02, or M02 is missing) still owes that
+        // operation; everything else was flushed by the token that followed it.
+        flushPendingOperation();
         log.trace("Token processing took {}ms", System.currentTimeMillis() - parseStart);
 
         // All coordinates and dimensions have been normalized to mm during parsing.
@@ -133,7 +136,18 @@ public class GerberParser {
     }
 
     private void processToken(Token token) {
-        switch (token.getType()) {
+        // The lexer splits "X..Y..D01*" into a COORDINATE token and a D-code token, so a bare
+        // coordinate word — "X..Y..*", repeating the last D-code (deprecated but what every
+        // Protel/Altium file does) — cannot be executed until the next token says no D-code
+        // follows. That next token is then the one that must not see it still pending: a G37
+        // would drop the region's closing segment and emit it as a draw with whatever aperture
+        // is selected next (an aperture select, a polarity change, an attribute, a G36 — all
+        // change what the operation would mean), and M02 would lose it altogether.
+        TokenType type = token.getType();
+        if (type != TokenType.D01 && type != TokenType.D02 && type != TokenType.D03) {
+            flushPendingOperation();
+        }
+        switch (type) {
             case FORMAT_SPEC -> parseFormatSpec(token);
             case UNIT -> parseUnit(token);
             case APERTURE_DEFINE -> parseApertureDefine(token);
@@ -151,14 +165,7 @@ public class GerberParser {
             case OFFSET -> parseOffset(token);
             case STEP_REPEAT -> parseStepRepeat(token);
             case BLOCK_APERTURE -> parseBlockAperture(token);
-            case COORDINATE -> {
-                // If there are already pending coordinates without an explicit D-code,
-                // execute the modal (last active) D-code before parsing the new coordinate.
-                if (hasPendingCoordinates() && lastDCode != null) {
-                    executeModalDCode();
-                }
-                parseCoordinate(token);
-            }
+            case COORDINATE -> parseCoordinate(token);
             case D01 -> { lastDCode = TokenType.D01; executeD01(); }
             case D02 -> { lastDCode = TokenType.D02; executeD02(); }
             case D03 -> { lastDCode = TokenType.D03; executeD03(); }
@@ -170,6 +177,13 @@ public class GerberParser {
             case G36 -> startRegion();
             case G37 -> endRegion();
             default -> { /* Ignore */ }
+        }
+    }
+
+    /** Execute a bare coordinate word's modal D-code, if one is still waiting. */
+    private void flushPendingOperation() {
+        if (hasPendingCoordinates() && lastDCode != null) {
+            executeModalDCode();
         }
     }
 
