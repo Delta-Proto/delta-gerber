@@ -175,13 +175,20 @@ public class GerberDocument {
     }
 
     /**
-     * Get generation software info from .GenerationSoftware attribute.
+     * The {@code .GenerationSoftware} attribute as one line — vendor, application and, when the
+     * file states it, version: {@code "Altium Limited Altium Designer 25.8.1 (18)"}. The version
+     * is what a bug report needs, since the same tool writes different Gerbers from one release
+     * to the next.
      */
     public String getGenerationSoftware() {
         FileAttribute attr = fileAttributes.get(".GenerationSoftware");
         if (attr == null) attr = fileAttributes.get("GenerationSoftware");
         if (attr != null && attr.getValues().size() >= 2) {
-            return attr.getValue(0) + " " + attr.getValue(1);
+            StringBuilder out = new StringBuilder(attr.getValue(0)).append(' ').append(attr.getValue(1));
+            if (attr.getValues().size() >= 3 && !attr.getValue(2).isBlank()) {
+                out.append(' ').append(attr.getValue(2).trim());
+            }
+            return out.toString();
         }
         return null;
     }

@@ -462,8 +462,23 @@ measured against each other (a via and its pad on another layer are not a cleara
 
 **A reported gap is a real gap; the rules can only miss one.** A gap measured to a clear's edge
 is credited to whatever copper survives just across it (`copperAt`); a gap measured to a dark edge
-a later clear erased is dropped. Gaps beyond `DEFAULT_CUTOFF_MM` (1 mm) are not measured, so a
-null minimum means "at least the cutoff".
+a later clear erased is dropped. The detectors take a **cutoff** because it bounds their cost
+(each query costs its neighbourhood), not because a wide gap is uninteresting: whether 1.2 mm is
+fine is the fabricator's rule, and the library's job is the number (issue #9, danyhm: "you assume
+≥ 1 mm is ok"). So `PcbAnalyzer.reaching` widens it — 1 mm, then ×4 per round — until the check
+answers or the reach exceeds the board's diagonal, for clearance, conductor width, copper-to-edge,
+hole-to-copper and hole-to-hole alike. A check that cannot answer at any reach stops at once:
+one measurable net on the layer (floating pieces left out), no region for a neck, a hole whose
+nearest neighbour already overlaps it — without those stops a duplicated drill program widened
+to 339 mm at O(n²) per round and took a minute. **A null minimum therefore means there was
+nothing to measure, never "at least 1 mm"**, and the viewer shows no threshold of its own: every
+length is given in mm and mil, with no verdict (the 0.15 mm annular-ring policy is an API
+overload, not a display rule), and each DFM finding is a link that opens the layer view at its
+coordinate with the layer shown and a marker drawn over the place.
+
+**Slots are reported apart from holes.** `BoardSpecification.getMinSlotWidthMm()` is the smallest
+tool any Excellon G85 slot is milled with (issue #21): a slot is routed, and a fabricator's floor
+for a router bit (most say 1 mm) is well above its smallest drill.
 
 **Width has two sources and a pad is neither.** Strokes are their aperture, whatever its shape.
 A region's neck is the nearest facing edge of the same region (or of a clear cut into it) whose

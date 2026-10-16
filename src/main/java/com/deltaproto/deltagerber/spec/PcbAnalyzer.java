@@ -24,6 +24,7 @@ import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.model.drill.DrillDocument;
 import com.deltaproto.deltagerber.model.drill.DrillHit;
+import com.deltaproto.deltagerber.model.drill.DrillSlot;
 import com.deltaproto.deltagerber.model.drill.Tool;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
@@ -590,7 +591,8 @@ public class PcbAnalyzer {
                 .formatSpec(document.getFormatSpec());
         if (function.isCopper()) {
             layer.minTrackWidthUm(minTrackWidthUm(document, outlineMm));
-            measureCopperGeometry(layer, fileName, document, outlineMm, context);
+            measureCopperGeometry(layer, fileName, document, outlineMm, context,
+                    reachLimitMm(outlineMm != null ? outlineMm : document.getBoundingBox()));
         }
         if (function.isDrill()) {
             layer.minDrillDiameterMm(minDrillDiameterMm(document));      // Gerber X2 drill file
@@ -612,7 +614,7 @@ public class PcbAnalyzer {
      */
     private static void measureCopperGeometry(AnalyzedLayer.Builder layer, String fileName,
                                               GerberDocument document, BoundingBox outlineMm,
-                                              CopperContext context) {
+                                              CopperContext context, double reachLimitMm) {
         try {
             CopperGeometry geometry = CopperGeometry.of(document, strokeFilter(document, outlineMm));
             CopperNets nets = CopperNets.of(geometry);
@@ -621,20 +623,73 @@ public class PcbAnalyzer {
                     : null;
             layer.floatingCopper(floating);
             FloatingCopperResult leftOut = context != null && context.floatingInClearance() ? null : floating;
-            layer.clearance(ClearanceDetector.detect(nets, fileName, ClearanceDetector.DEFAULT_CUTOFF_MM, leftOut));
-            layer.conductorWidth(ConductorWidthDetector.detect(geometry, fileName,
-                    ConductorWidthDetector.DEFAULT_CUTOFF_MM, floating));
+            // What cannot be found at any reach is not looked for: a clearance needs two nets that
+            // are measured (floating pieces left out), a region neck needs a region.
+            int measurableNets = nets.netCount() - (leftOut == null ? 0 : leftOut.getCount());
+            boolean hasRegion = geometry.features().stream()
+                    .anyMatch(f -> !f.clear && f.kind == CopperGeometry.Kind.REGION && f.polygon != null);
+            layer.clearance(reaching(reachLimitMm,
+                    reach -> ClearanceDetector.detect(nets, fileName, reach, leftOut),
+                    r -> r.getMin() != null || measurableNets < 2));
+            layer.conductorWidth(reaching(reachLimitMm,
+                    reach -> ConductorWidthDetector.detect(geometry, fileName, reach, floating),
+                    r -> r.getMin() != null || !hasRegion));
             if (context != null && context.profile() != null) {
-                layer.edgeClearance(EdgeClearanceDetector.detect(geometry, context.profile(), fileName,
-                        EdgeClearanceDetector.DEFAULT_CUTOFF_MM));
+                layer.edgeClearance(reaching(reachLimitMm,
+                        reach -> EdgeClearanceDetector.detect(geometry, context.profile(), fileName, reach),
+                        r -> r.getMin() != null));
             }
             if (context != null && context.holeAware()) {
-                layer.drillClearance(DrillClearanceDetector.detect(nets, fileName, context.holes(),
-                        DrillClearanceDetector.DEFAULT_CUTOFF_MM, leftOut));
+                layer.drillClearance(reaching(reachLimitMm,
+                        reach -> DrillClearanceDetector.detect(nets, fileName, context.holes(), reach, leftOut),
+                        r -> r.getMin() != null || context.holes().isEmpty()));
             }
         } catch (RuntimeException e) {
             log.warn("copper geometry of {} not measured: {}", fileName, e.toString());
         }
+    }
+
+    /**
+     * Where a geometric check starts looking, in mm. Nearly every board has its tightest gap well
+     * under this, and a check costs its reach — a uniform grid over every boundary makes each
+     * query cost its neighbourhood — so the first pass is cheap and almost always the last.
+     */
+    static final double FIRST_REACH_MM = 1.0;
+
+    /** How much further each pass looks than the one before, when the one before found nothing. */
+    static final double REACH_GROWTH = 4.0;
+
+    /**
+     * Run a check that looks no further than a cutoff, and look further until it finds something.
+     *
+     * <p>The detectors take a cutoff because that bounds their cost, not because a gap beyond it
+     * is uninteresting: whether 1.2 mm between two nets is fine is the fabricator's rule, and the
+     * library's job is the number. So the cutoff is widened — {@link #FIRST_REACH_MM}, then
+     * {@link #REACH_GROWTH} times further each round — until the check answers or the reach
+     * exceeds the board, at which point there was nothing to find. A check that cannot answer at
+     * any reach (one net on the layer, no holes) says so through {@code found}, and stops at once.
+     *
+     * @param limitMm as far as is worth looking — the board's diagonal
+     * @param check   the detector, at a given cutoff
+     * @param found   whether this result settles the question
+     */
+    static <R> R reaching(double limitMm, java.util.function.DoubleFunction<R> check,
+                          java.util.function.Predicate<R> found) {
+        double reach = FIRST_REACH_MM;
+        R result = check.apply(reach);
+        while (!found.test(result) && reach < limitMm) {
+            reach = Math.min(reach * REACH_GROWTH, limitMm);
+            result = check.apply(reach);
+        }
+        return result;
+    }
+
+    /** The diagonal of {@code bounds}, as far as any check need look; {@link #FIRST_REACH_MM} without one. */
+    static double reachLimitMm(BoundingBox bounds) {
+        if (bounds == null || !bounds.isValid()) {
+            return FIRST_REACH_MM;
+        }
+        return Math.max(FIRST_REACH_MM, Math.hypot(bounds.getWidth(), bounds.getHeight()));
     }
 
     /**
@@ -685,6 +740,7 @@ public class PcbAnalyzer {
                 .bounds(document.getBoundingBox())
                 .hasGeometry(!document.getOperations().isEmpty())
                 .minDrillDiameterMm(minDrillDiameterMm(document))
+                .minSlotWidthMm(minSlotWidthMm(document))
                 // A file that declared no format and drilled no hole states nothing: it is a tool
                 // report or a status log that the .txt extension made look like a drill, and its
                 // "format" would be the parser's defaults, disagreeing with the real drill file.
@@ -789,6 +845,26 @@ public class PcbAnalyzer {
                 .map(Tool::getDiameter)
                 .min(Double::compare)
                 .orElse(null);
+    }
+
+    /**
+     * Narrowest slot the drill program mills, in millimetres: the smallest tool any G85 slot is
+     * cut with. A slot is routed, not drilled, and a fabricator's floor for a router bit (most say
+     * 1 mm) is well above its smallest drill, so the two are reported apart.
+     *
+     * @return the minimum, or null when the file mills no slot
+     */
+    public static Double minSlotWidthMm(DrillDocument document) {
+        Double min = null;
+        for (var operation : document.getOperations()) {
+            if (operation instanceof DrillSlot slot && slot.getTool() != null) {
+                double d = slot.getTool().getDiameter();
+                if (min == null || d < min) {
+                    min = d;
+                }
+            }
+        }
+        return min;
     }
 
     /**
@@ -1012,7 +1088,20 @@ public class PcbAnalyzer {
             if (!copperPads.isEmpty()) {
                 annularRing = AnnularRingDetector.detect(copperPads, aligned);
             }
-            holeSpacing = HoleSpacingDetector.detect(aligned, HoleSpacingDetector.DEFAULT_CUTOFF_MM);
+            List<DrilledHole> holes = DrilledHole.of(aligned);
+            // Found once any pair is in: a hole whose nearest neighbour overlaps it (a slot drilled
+            // as holes, a duplicate) has its answer, and looking further would not change it.
+            holeSpacing = reaching(reachLimitMm(copperBounds.isValid() ? copperBounds : drillBounds(aligned)),
+                    reach -> HoleSpacingDetector.detect(holes, reach),
+                    r -> r.getMin() != null || !r.getOverlapping().isEmpty() || holes.size() < 2);
+        }
+
+        private static BoundingBox drillBounds(List<DrillDocument> drills) {
+            BoundingBox union = new BoundingBox();
+            for (DrillDocument d : drills) {
+                union.include(d.getBoundingBox());
+            }
+            return union;
         }
 
         /** Hole-to-hole spacing, or {@code null} when the set has no drill. */

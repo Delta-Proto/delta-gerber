@@ -103,8 +103,8 @@ class NegativePlaneTest {
             assertNotNull(plane.getMinEdgeClearanceMm());
             assertEquals(0.5, plane.getMinEdgeClearanceMm(), 1e-3);
 
-            // A 9 mm plane with one 1.2 mm hole has no neck under the 1 mm cutoff.
-            assertNull(plane.getMinConductorWidthUm());
+            // The plane's narrowest copper: from the antipad's edge (5.6) to the pull-back's (9.5).
+            assertEquals(3900.0, plane.getMinConductorWidthUm(), 1.0);
         }
 
         @Test

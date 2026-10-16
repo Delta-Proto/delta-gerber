@@ -32,6 +32,7 @@ public final class AnalyzedLayer {
     private final BoundingBox bounds;
     private final Double minTrackWidthUm;
     private final Double minDrillDiameterMm;
+    private final Double minSlotWidthMm;
     private final Double minClearanceMm;
     private final Double minConductorWidthUm;
     private final ClearanceResult clearance;
@@ -51,6 +52,7 @@ public final class AnalyzedLayer {
         this.bounds = builder.bounds;
         this.minTrackWidthUm = builder.minTrackWidthUm;
         this.minDrillDiameterMm = builder.minDrillDiameterMm;
+        this.minSlotWidthMm = builder.minSlotWidthMm;
         this.minClearanceMm = builder.minClearanceMm;
         this.minConductorWidthUm = builder.minConductorWidthUm;
         this.clearance = builder.clearance;
@@ -117,6 +119,16 @@ public final class AnalyzedLayer {
     /** Smallest drill on this layer in millimetres, or null. */
     public Double getMinDrillDiameterMm() {
         return minDrillDiameterMm;
+    }
+
+    /**
+     * Narrowest slot this drill file mills, in millimetres — the diameter of the smallest tool
+     * used for a G85 slot. Null when the file has no slot. A slot is milled with a router bit
+     * rather than drilled, and most fabricators cannot cut one under 1 mm, so it is a separate
+     * figure from the smallest hole.
+     */
+    public Double getMinSlotWidthMm() {
+        return minSlotWidthMm;
     }
 
     /**
@@ -223,6 +235,7 @@ public final class AnalyzedLayer {
         private BoundingBox bounds;
         private Double minTrackWidthUm;
         private Double minDrillDiameterMm;
+        private Double minSlotWidthMm;
         private Double minClearanceMm;
         private Double minConductorWidthUm;
         private ClearanceResult clearance;
@@ -265,6 +278,11 @@ public final class AnalyzedLayer {
 
         public Builder minTrackWidthUm(Double minTrackWidthUm) {
             this.minTrackWidthUm = minTrackWidthUm;
+            return this;
+        }
+
+        public Builder minSlotWidthMm(Double minSlotWidthMm) {
+            this.minSlotWidthMm = minSlotWidthMm;
             return this;
         }
 

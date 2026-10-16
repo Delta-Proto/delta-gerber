@@ -64,6 +64,7 @@ public final class BoardSpecification {
     private final BoardSide stencilSide;
     private final Double minTrackWidthUm;
     private final Double minDrillDiameterMm;
+    private final Double minSlotWidthMm;
     private final Double minClearanceMm;
     private final Double minConductorWidthUm;
     private final boolean hasDrill;
@@ -77,7 +78,7 @@ public final class BoardSpecification {
 
     private BoardSpecification(Double sizeXMm, Double sizeYMm, BoundingBox bounds, Integer copperLayerCount,
                                BoardSide solderMaskSide, BoardSide silkscreenSide, BoardSide stencilSide,
-                               Double minTrackWidthUm, Double minDrillDiameterMm,
+                               Double minTrackWidthUm, Double minDrillDiameterMm, Double minSlotWidthMm,
                                Double minClearanceMm, Double minConductorWidthUm,
                                boolean hasDrill, boolean hasCopper, boolean hasOutline,
                                ViaInPadResult viaInPad, AnnularRingResult annularRing,
@@ -92,6 +93,7 @@ public final class BoardSpecification {
         this.stencilSide = stencilSide;
         this.minTrackWidthUm = minTrackWidthUm;
         this.minDrillDiameterMm = minDrillDiameterMm;
+        this.minSlotWidthMm = minSlotWidthMm;
         this.minClearanceMm = minClearanceMm;
         this.minConductorWidthUm = minConductorWidthUm;
         this.hasDrill = hasDrill;
@@ -181,6 +183,7 @@ public final class BoardSpecification {
                 empty ? null : sideOf(safe, LayerFunction.PASTE, true),
                 min(safe, AnalyzedLayer::getMinTrackWidthUm),
                 min(safe, AnalyzedLayer::getMinDrillDiameterMm),
+                min(safe, AnalyzedLayer::getMinSlotWidthMm),
                 min(safe, AnalyzedLayer::getMinClearanceMm),
                 min(safe, AnalyzedLayer::getMinConductorWidthUm),
                 safe.stream().anyMatch(l -> l.getFunction().isDrill()),
@@ -294,11 +297,21 @@ public final class BoardSpecification {
     }
 
     /**
+     * Narrowest slot across all drill layers, in millimetres — the smallest router bit the
+     * program mills a G85 slot with. Null when no file mills a slot. Separate from
+     * {@link #getMinDrillDiameterMm()} because a fabricator's limit for a milled slot (typically
+     * 1 mm) is not its limit for a drilled hole.
+     */
+    public Double getMinSlotWidthMm() {
+        return minSlotWidthMm;
+    }
+
+    /**
      * Tightest gap between two nets on any copper layer, in millimetres, measured from the geometry
      * — the minimum spacing a fabricator's capability table is checked against. Null when no copper
-     * layer was measured, or when no two nets on any layer come within
-     * {@link com.deltaproto.deltagerber.dfm.ClearanceDetector#DEFAULT_CUTOFF_MM} of each other.
-     * Per layer, with the nets and the place, on {@link AnalyzedLayer#getClearance()}.
+     * layer was measured, or when no layer carries two nets to measure between: the check looks as
+     * far as the board, so null never means "merely wide". Per layer, with the nets and the place,
+     * on {@link AnalyzedLayer#getClearance()}.
      *
      * <p><b>Beta.</b> Measured and tested, but not yet checked against an independent DFM tool on
      * real boards; treat as advisory until the {@link Beta} mark comes off.
@@ -326,9 +339,7 @@ public final class BoardSpecification {
     /**
      * Copper nearest the board's edge on any layer, in millimetres — the "copper to board edge"
      * line of a capability table, usually 0.2–0.3 mm for a routed edge. Null when no copper layer
-     * was measured against an outline, or none comes within
-     * {@link com.deltaproto.deltagerber.dfm.EdgeClearanceDetector#DEFAULT_CUTOFF_MM} of it. Per
-     * layer on {@link AnalyzedLayer#getEdgeClearance()}.
+     * was measured against an outline. Per layer on {@link AnalyzedLayer#getEdgeClearance()}.
      */
     @Beta("validated against HQDFM on one board")
     public Double getMinEdgeClearanceMm() {
@@ -338,9 +349,8 @@ public final class BoardSpecification {
     /**
      * Tightest gap between a hole's wall and copper it must not touch, on any layer, in millimetres
      * — the "hole to copper" line of a capability table, usually 0.2–0.25 mm. Null when the set has
-     * no drill or no such copper comes within
-     * {@link com.deltaproto.deltagerber.dfm.DrillClearanceDetector#DEFAULT_CUTOFF_MM}. Per layer on
-     * {@link AnalyzedLayer#getDrillClearance()}.
+     * no drill, or no layer has copper of another net for a hole to be measured against. Per layer
+     * on {@link AnalyzedLayer#getDrillClearance()}.
      */
     @Beta("validated against HQDFM on one board")
     public Double getMinDrillClearanceMm() {

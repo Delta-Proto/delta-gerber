@@ -126,7 +126,7 @@ public class AttributeModelTest {
         assertEquals("Copper", doc.getFileFunction());
         assertEquals(List.of("Copper", "L1", "Top"), doc.getFileFunctionValues());
         assertEquals("Positive", doc.getFilePolarity());
-        assertEquals("TestSuite GerberTestGenerator", doc.getGenerationSoftware());
+        assertEquals("TestSuite GerberTestGenerator 1.0", doc.getGenerationSoftware());
     }
 
     @Test

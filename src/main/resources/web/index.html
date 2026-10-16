@@ -393,6 +393,8 @@
         .pcbinfo-table td { padding: 7px 12px; }
         .pcbinfo-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
         .pcbinfo-table td.absent { color: var(--fg-faint); }
+        .pcbinfo-table tbody tr.dfm-row { cursor: pointer; }
+        .pcbinfo-table tbody tr.dfm-row:hover td:first-child { text-decoration: underline; }
         /* ===== Warnings Panel ===== */
         #warnings-panel { flex: 1; display: flex; flex-direction: column; overflow: auto; background: var(--bg); padding: 16px 20px; }
         .warnings-intro { font-size: 0.8125rem; color: var(--fg-muted); margin-bottom: 14px; }
@@ -1183,6 +1185,7 @@
             warnings = data.warnings || [];
             renderWarningsTab();
             pcbInfo = data.pcbInfo || null;
+            dfmMarker = null;
             renderPcbInfoTab();
 
             await adoptLayerTypes(data.layers);
@@ -1363,6 +1366,7 @@
                     renderWarningsTab();
                     if (currentView === 'warnings') { refreshWarningsPanel(); }
                     pcbInfo = data.pcbInfo || null;
+                    dfmMarker = null;
                     renderPcbInfoTab();
                     if (currentView === 'pcbinfo') { refreshPcbInfoPanel(); }
                     // Picking "Auto" sends AUTO; this is where the detected type comes back. The
@@ -1408,8 +1412,73 @@
                 applySoldermaskColor(svg);
                 svgContent.innerHTML = '';
                 svgContent.appendChild(svg);
+                drawDfmMarker(svg);
             }
             updateTransform();
+        }
+
+        // ===== DFM finding → its place in the layer view =====
+        // A finding carries the layer it was found on and a coordinate in the Gerber frame (mm,
+        // Y up). Clicking it opens the layer view with that layer shown, centred on the place at a
+        // zoom where a few millimetres fill the canvas, with a ring drawn over it. The rendered
+        // SVG's viewport group flips Y — translate(0, 2·minY + height) scale(1,-1) — so a Gerber
+        // y lands at 2·minY + height − y in the SVG's own frame, and the marker is drawn there,
+        // outside the viewport group, so it is never recoloured or hidden with a layer.
+        let dfmMarker = null;           // {x, y} in mm, Gerber frame; cleared on the next load
+        const FOCUS_SPAN_MM = 6;        // how much board fills the shorter side when a finding is shown
+
+        function locateFinding(layerName, x, y) {
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+            const layer = layers.find(l => l.name === layerName);
+            if (layer && !layer.visible) {
+                layer.visible = true;
+                renderLayerList();
+            }
+            dfmMarker = {x, y};
+            switchView('layers');       // renders the SVG, draws the marker, fits the board
+            applyLayerVisibility();
+            const svg = svgContent.querySelector('svg');
+            const vb = svg && svg.getAttribute('viewBox');
+            if (!vb) return;
+            const [vx, vy, , vh] = vb.split(' ').map(Number);
+            const px = (x - vx) * PX_PER_MM;
+            const py = (vy + vh - y) * PX_PER_MM;
+            const rect = svgContainer.getBoundingClientRect();
+            const height = visibleHeight(rect);
+            scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE,
+                Math.min(rect.width, height) / (FOCUS_SPAN_MM * PX_PER_MM)));
+            panX = rect.width / 2 - px * scale;
+            panY = height / 2 - py * scale;
+            updateTransform();
+        }
+
+        function drawDfmMarker(svg) {
+            if (!dfmMarker || currentView !== 'layers') return;
+            const vb = svg.getAttribute('viewBox');
+            if (!vb) return;
+            const [, vy, , vh] = vb.split(' ').map(Number);
+            const cx = dfmMarker.x, cy = 2 * vy + vh - dfmMarker.y;
+            const ns = 'http://www.w3.org/2000/svg';
+            const g = document.createElementNS(ns, 'g');
+            g.setAttribute('id', 'dfm-marker');
+            g.setAttribute('pointer-events', 'none');
+            // Sized in millimetres for the zoom locateFinding sets (FOCUS_SPAN_MM across the
+            // canvas): the view is scaled by a CSS transform, which non-scaling-stroke does not
+            // see, so a stroke in user units is the only one that comes out a predictable size.
+            g.setAttribute('fill', 'none');
+            g.setAttribute('stroke', '#ff3b30');
+            g.setAttribute('stroke-width', '0.06');
+            g.setAttribute('stroke-linecap', 'round');
+            const shapes = [['circle', {cx, cy, r: 0.5}]];
+            for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                shapes.push(['line', {x1: cx + dx * 0.7, y1: cy + dy * 0.7, x2: cx + dx * 1.3, y2: cy + dy * 1.3}]);
+            }
+            for (const [tag, attrs] of shapes) {
+                const el = document.createElementNS(ns, tag);
+                for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+                g.appendChild(el);
+            }
+            svg.appendChild(g);
         }
 
         // ===== Soldermask color =====
@@ -1658,6 +1727,14 @@
         }
 
         const fixed = (n, d) => (n === null || n === undefined) ? null : Number(n).toFixed(d);
+
+        // Lengths in both mm and mil, because fabricators' capability tables quote in either and
+        // a designer should not have to convert to read the board against one.
+        const MM_PER_MIL = 0.0254;
+        const mmText = (mm, dMm) => (mm === null || mm === undefined) ? null
+            : `${Number(mm).toFixed(dMm)} mm (${(Number(mm) / MM_PER_MIL).toFixed(2)} mil)`;
+        const umText = um => (um === null || um === undefined) ? null
+            : `${Number(um).toFixed(1)} µm (${(Number(um) / 1000 / MM_PER_MIL).toFixed(2)} mil)`;
         const side = s => (s === null || s === undefined) ? null : (SIDE_LABELS[s] || s);
         const yesNo = b => b ? 'Yes' : 'No';
 
@@ -1675,11 +1752,9 @@
         }
 
         function clearance(i) {
-            if (i.minClearanceMm === null || i.minClearanceMm === undefined) {
-                return i.hasCopper ? '≥ 1 mm' : null;
-            }
+            if (i.minClearanceMm === null || i.minClearanceMm === undefined) return null;
             const at = i.minClearanceAt;
-            let text = Number(i.minClearanceMm).toFixed(4) + ' mm';
+            let text = mmText(i.minClearanceMm, 4);
             if (at) text += ` (${at.netA} – ${at.netB} on ${at.layer} at ${fixed(at.x, 2)}, ${fixed(at.y, 2)})`;
             return text;
         }
@@ -1687,7 +1762,7 @@
         function conductorWidth(i) {
             if (i.minConductorUm === null || i.minConductorUm === undefined) return null;
             const at = i.minConductorAt;
-            let text = Number(i.minConductorUm).toFixed(1) + ' µm';
+            let text = umText(i.minConductorUm);
             if (at) {
                 const kind = at.kind === 'REGION_NECK' ? 'a neck in a pour' : 'a stroke';
                 text += ` (${kind} on ${at.layer} at ${fixed(at.x, 2)}, ${fixed(at.y, 2)})`;
@@ -1702,12 +1777,14 @@
             return `${on} at ${fixed(at.x, 2)}, ${fixed(at.y, 2)}`;
         }
 
-        // A board minimum with the place it occurs. null minimum with the check having run means
-        // nothing came within the check's 1 mm cutoff.
-        function minWithPlace(mm, at, ran) {
-            if (mm === null || mm === undefined) return ran ? '≥ 1 mm' : null;
+        // A board minimum with the place it occurs. The checks look as far as the board, so a null
+        // minimum means there was nothing to measure — one net on the layer, no copper, no hole —
+        // and not that the answer is merely large. Whether a value is enough is the fabricator's
+        // rule, never assumed here.
+        function minWithPlace(mm, at) {
+            if (mm === null || mm === undefined) return null;
             const where = placeOf(at);
-            return Number(mm).toFixed(4) + ' mm' + (where ? ` (${where.trim()})` : '');
+            return mmText(mm, 4) + (where ? ` (${where.trim()})` : '');
         }
 
         // Floating copper: pieces nothing connects to — no pad, plated hole or mask opening. It is
@@ -1719,9 +1796,10 @@
         }
 
         function holeSpacing(i) {
-            const text = minWithPlace(i.minHoleSpacingMm, i.minHoleSpacingAt, i.hasDrill);
-            if (!text || !i.overlappingHoles) return text;
-            return `${text}; ${i.overlappingHoles} overlapping pair${i.overlappingHoles === 1 ? '' : 's'}`;
+            const text = minWithPlace(i.minHoleSpacingMm, i.minHoleSpacingAt);
+            if (!i.overlappingHoles) return text;
+            const overlapping = `${i.overlappingHoles} overlapping pair${i.overlappingHoles === 1 ? '' : 's'}`;
+            return text ? `${text}; ${overlapping}` : overlapping;
         }
 
         function viaInPad(i) {
@@ -1734,18 +1812,13 @@
 
         // Annular ring — the copper between a drilled hole and the edge of its pad, at its worst
         // on the board. null means the set had no copper or no drill to judge from. The number is
-        // the measurement; whether it is enough is a fabricator's rule, so both are shown.
+        // the measurement and whether it is enough is a fabricator's rule, so no verdict is given;
+        // a breakout is a geometric fact (the hole's edge crosses the pad's) and is said.
         function annularRing(i) {
             if (i.minAnnularRingMm === null || i.minAnnularRingMm === undefined) return null;
             const where = placeOf(i.minAnnularRingAt);
-            const mm = Number(i.minAnnularRingMm).toFixed(3) + ' mm' + (where ? ` (${where.trim()})` : '');
-            if (i.annularRingBreakout) {
-                return `${mm} — a hole breaks out of its pad`;
-            }
-            if (i.annularRingWithinPolicy === false) {
-                return `${mm} — ${i.annularRingViolations} hole(s) under 0.15 mm`;
-            }
-            return mm;
+            const mm = mmText(i.minAnnularRingMm, 3) + (where ? ` (${where.trim()})` : '');
+            return i.annularRingBreakout ? `${mm} — a hole breaks out of its pad` : mm;
         }
 
         // How the files write their numbers — "4:3, leading zeros suppressed". A group has no single
@@ -1780,10 +1853,11 @@
                 infoRow('Board width', fixed(i.sizeX, 3), 'mm'),
                 infoRow('Board height', fixed(i.sizeY, 3), 'mm'),
                 infoRow('Copper layers', i.copperLayers),
-                infoRow('Min track width', fixed(i.minTrackUm, 1), 'µm'),
+                infoRow('Min track width', umText(i.minTrackUm)),
                 infoRow('Min conductor width', conductorWidth(i), null, beta(i, 'minConductorUm')),
                 infoRow('Min clearance', clearance(i), null, beta(i, 'minClearanceMm')),
-                infoRow('Min drill diameter', fixed(i.minDrillMm, 3), 'mm'),
+                infoRow('Min drill diameter', mmText(i.minDrillMm, 3)),
+                infoRow('Min slot width', mmText(i.minSlotMm, 3)),
                 infoRow('Soldermask', side(i.solderMaskSide)),
                 infoRow('Silkscreen', side(i.silkscreenSide)),
                 infoRow('Stencil needed', side(i.stencilSide)),
@@ -1793,14 +1867,16 @@
                 infoRow('Via in pad', viaInPad(i)),
                 infoRow('Min annular ring', annularRing(i)),
                 infoRow('Floating copper', floatingCopper(i), null, beta(i, 'floatingCopperCount')),
-                infoRow('Min copper to edge', minWithPlace(i.minEdgeClearanceMm, i.minEdgeClearanceAt, i.hasOutline && i.hasCopper), null, beta(i, 'minEdgeClearanceMm')),
-                infoRow('Min hole to copper', minWithPlace(i.minDrillClearanceMm, i.minDrillClearanceAt, i.hasDrill && i.hasCopper), null, beta(i, 'minDrillClearanceMm')),
+                infoRow('Min copper to edge', minWithPlace(i.minEdgeClearanceMm, i.minEdgeClearanceAt), null, beta(i, 'minEdgeClearanceMm')),
+                infoRow('Min hole to copper', minWithPlace(i.minDrillClearanceMm, i.minDrillClearanceAt), null, beta(i, 'minDrillClearanceMm')),
                 infoRow('Min hole to hole', holeSpacing(i), null, beta(i, 'minHoleSpacingMm')),
             ];
 
             // Every DFM finding with a place, worst first per check: what the minima above are the
-            // head of. mil alongside mm, because fabricators quote in both.
-            const findings = (i.dfmFindings || []).map(f => `<tr>
+            // head of. mil alongside mm, because fabricators quote in both. A row is a link to its
+            // place: clicking it opens the layer view there (see locateFinding).
+            const findings = (i.dfmFindings || []).map(f => `<tr class="dfm-row" title="Show in the layer view"
+                        data-layer="${escapeHtml(f.layer || '')}" data-x="${f.x}" data-y="${f.y}">
                     <td>${escapeHtml(f.check)}</td>
                     <td>${escapeHtml(f.layer || '—')}</td>
                     ${f.valueMm === null || f.valueMm === undefined
@@ -1859,6 +1935,7 @@
                     ${cell(fixed(l.minDrillClearanceMm, 4))}
                     ${cell(l.floatingCopper)}
                     ${cell(fixed(l.minDrillMm, 3))}
+                    ${cell(fixed(l.minSlotMm, 3))}
                     ${l.format ? `<td>${escapeHtml(formatDigits(l.format))}</td>`
                                : '<td class="absent">—</td>'}
                     <td>${l.hasGeometry === null || l.hasGeometry === undefined ? '—' : yesNo(l.hasGeometry)}</td>
@@ -1878,11 +1955,13 @@
                             <th>To edge (mm) <span class="beta">BETA</span></th>
                             <th>Hole to copper (mm) <span class="beta">BETA</span></th>
                             <th>Floating <span class="beta">BETA</span></th>
-                            <th>Min drill (mm)</th><th>Format</th><th>Draws</th>
+                            <th>Min drill (mm)</th><th>Min slot (mm)</th><th>Format</th><th>Draws</th>
                         </tr></thead>
                         <tbody>${rows}</tbody>
                     </table></div></div>`
                 + findingsSection;
+            el.querySelectorAll('tr.dfm-row').forEach(tr => tr.addEventListener('click', () =>
+                locateFinding(tr.dataset.layer, Number(tr.dataset.x), Number(tr.dataset.y))));
         }
 
         // ===== Warnings =====

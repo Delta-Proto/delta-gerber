@@ -645,6 +645,7 @@ public class GerberViewerServer {
             json.append(",\"stencilSide\":").append(escapeJson(name(spec.getStencilSide())));
             json.append(",\"minTrackUm\":").append(number(spec.getMinTrackWidthUm(), 3));
             json.append(",\"minDrillMm\":").append(number(spec.getMinDrillDiameterMm(), 4));
+            json.append(",\"minSlotMm\":").append(number(spec.getMinSlotWidthMm(), 4));
             json.append(",\"minClearanceMm\":").append(number(spec.getMinClearanceMm(), 4));
             json.append(",\"minConductorUm\":").append(number(spec.getMinConductorWidthUm(), 3));
             appendTightestClearance(json, spec);
@@ -741,6 +742,7 @@ public class GerberViewerServer {
                 appendBounds(json, layer.getBounds());
                 json.append(",\"minTrackUm\":").append(number(layer.getMinTrackWidthUm(), 3));
                 json.append(",\"minDrillMm\":").append(number(layer.getMinDrillDiameterMm(), 4));
+                json.append(",\"minSlotMm\":").append(number(layer.getMinSlotWidthMm(), 4));
                 json.append(",\"minClearanceMm\":").append(number(layer.getMinClearanceMm(), 4));
                 json.append(",\"minConductorUm\":").append(number(layer.getMinConductorWidthUm(), 3));
                 json.append(",\"minEdgeClearanceMm\":").append(number(layer.getMinEdgeClearanceMm(), 4));

@@ -64,6 +64,97 @@ class PcbAnalyzerTest {
     }
 
     @Nested
+    @DisplayName("Checks reach as far as the board — a wide gap is a number, not a null")
+    class Reaching {
+
+        @Test
+        void wideningStopsWhenFoundOrAtTheLimit() {
+            // Each round reaches ×4 further: 1, 4, 16 — found at 16.
+            assertEquals(16.0, PcbAnalyzer.reaching(100, reach -> reach, r -> r >= 10), 1e-12);
+            // Found at once: one pass.
+            assertEquals(1.0, PcbAnalyzer.reaching(100, reach -> reach, r -> true), 1e-12);
+            // Never found: the last pass is at the limit, not beyond it.
+            assertEquals(10.0, PcbAnalyzer.reaching(10, reach -> reach, r -> false), 1e-12);
+            // No board to speak of: one pass at the first reach.
+            assertEquals(PcbAnalyzer.FIRST_REACH_MM, PcbAnalyzer.reachLimitMm(null), 1e-12);
+            assertEquals(5.0, PcbAnalyzer.reachLimitMm(new BoundingBox(0, 0, 3, 4)), 1e-12);
+        }
+
+        /** Two 0.2 mm tracks of two nets, 2 mm apart centre to centre, 4 mm in from the left edge. */
+        private static final String SPARSE_CU = String.join("\n",
+                "%FSLAX46Y46*%",
+                "%MOMM*%",
+                "%ADD11C,0.200000*%",
+                "D11*",
+                "X4000000Y2000000D02*",
+                "X4000000Y8000000D01*",
+                "X6000000Y2000000D02*",
+                "X6000000Y8000000D01*",
+                "M02*");
+
+        @Test
+        @DisplayName("A 1.8 mm clearance and a 1.9 mm edge distance are reported, not assumed fine")
+        void wideGapsAreMeasured() {
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board.GKO", EDGE_CUTS),
+                    PcbFile.of("board.GTL", SPARSE_CU)));
+            assertEquals(1.8, spec.getMinClearanceMm(), 1e-3);
+            // The tracks' round ends at y = 2 and y = 8 sit 1.9 mm from the bottom and top edges.
+            assertEquals(1.9, spec.getMinEdgeClearanceMm(), 1e-3);
+            AnalyzedLayer top = spec.getLayers().get(1);
+            assertTrue(top.getClearance().getCutoffMm() > 1.0, "the check had to look further than 1 mm");
+        }
+
+        @Test
+        @DisplayName("One net on the layer: nothing to measure, and no search for it")
+        void oneNetStopsAtOnce() {
+            String oneTrack = SPARSE_CU.replace("X6000000Y2000000D02*\nX6000000Y8000000D01*\n", "");
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board.GKO", EDGE_CUTS),
+                    PcbFile.of("board.GTL", oneTrack)));
+            assertNull(spec.getMinClearanceMm());
+            assertEquals(1.0, spec.getLayers().get(1).getClearance().getCutoffMm(), 1e-12);
+        }
+    }
+
+    @Nested
+    @DisplayName("Slot width")
+    class SlotWidth {
+
+        /** A 0.3 mm hole and a 1.0 mm slot, decimal coordinates. */
+        private static final String DRILL = String.join("\n",
+                "M48",
+                "METRIC",
+                "T01C0.300",
+                "T02C1.000",
+                "%",
+                "T01",
+                "X3.0Y3.0",
+                "T02",
+                "X5.0Y7.0G85X8.0Y7.0",
+                "M30");
+
+        @Test
+        void smallestSlotToolIsReportedApartFromTheSmallestDrill() {
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                    PcbFile.of("board.GKO", EDGE_CUTS),
+                    PcbFile.of("board.TXT", DRILL)));
+            assertEquals(0.3, spec.getMinDrillDiameterMm(), 1e-9);
+            assertEquals(1.0, spec.getMinSlotWidthMm(), 1e-9);
+            // Re-derived from the per-layer figures, like every other minimum.
+            assertEquals(1.0, BoardSpecification.from(spec.getLayers()).getMinSlotWidthMm(), 1e-9);
+        }
+
+        @Test
+        void noSlotIsNull() {
+            String holesOnly = DRILL.replace("X5.0Y7.0G85X8.0Y7.0\n", "");
+            BoardSpecification spec = new PcbAnalyzer().analyze(List.of(PcbFile.of("board.TXT", holesOnly)));
+            assertEquals(0.3, spec.getMinDrillDiameterMm(), 1e-9);
+            assertNull(spec.getMinSlotWidthMm());
+        }
+    }
+
+    @Nested
     @DisplayName("Minimum track width")
     class MinTrackWidth {
 
