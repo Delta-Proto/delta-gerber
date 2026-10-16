@@ -2,14 +2,10 @@ package com.deltaproto.deltagerber.renderer.step;
 
 import com.deltaproto.deltagerber.renderer.svg.BoardOutline;
 import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
-import org.apache.batik.parser.AWTPathProducer;
 
 import java.awt.Shape;
 import java.awt.geom.Area;
 import java.awt.geom.PathIterator;
-import java.io.IOException;
-import java.io.StringReader;
-import java.io.UncheckedIOException;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -315,14 +311,7 @@ public class StepExporter {
      * a boolean and does read the rule.
      */
     private List<Loop> flatten(BoardOutline outline, Area holes) {
-        Shape shape;
-        try {
-            shape = AWTPathProducer.createShape(new StringReader(outline.getSvgPath()),
-                "evenodd".equals(outline.getFillRule())
-                    ? PathIterator.WIND_EVEN_ODD : PathIterator.WIND_NON_ZERO);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Failed to read board outline path", e);
-        }
+        Shape shape = outline.toShape();
         if (holes != null && !holes.isEmpty()) {
             // One boolean for the whole drill program: a hole inside the board opens a cut-out,
             // and one that straddles the routed edge notches the edge itself.

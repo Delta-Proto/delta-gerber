@@ -5,6 +5,7 @@ import com.deltaproto.deltagerber.model.drill.DrillDocument;
 import com.deltaproto.deltagerber.model.drill.DrillOperation;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
+import com.deltaproto.deltagerber.model.gerber.NegativeImage;
 import com.deltaproto.deltagerber.model.gerber.Polarity;
 import com.deltaproto.deltagerber.model.gerber.aperture.Aperture;
 import com.deltaproto.deltagerber.model.gerber.operation.Arc;
@@ -21,6 +22,7 @@ import javax.imageio.ImageIO;
 import java.awt.Graphics2D;
 import java.awt.Color;
 import java.awt.RenderingHints;
+import java.awt.Shape;
 import java.awt.geom.Area;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
@@ -170,6 +172,16 @@ public class MultiLayerSVGRenderer {
                 return drillDoc.getBoundingBox();
             }
             return new BoundingBox();
+        }
+
+        /** This layer — name, colour, opacity, visibility, type — over another document. */
+        Layer withDocument(GerberDocument doc) {
+            Layer copy = new Layer(name, doc);
+            copy.color = color;
+            copy.opacity = opacity;
+            copy.visible = visible;
+            copy.layerType = layerType;
+            return copy;
         }
     }
 
@@ -394,6 +406,7 @@ public class MultiLayerSVGRenderer {
         if (layers == null || layers.isEmpty()) {
             return createEmptySvg();
         }
+        layers = positiveImages(layers);
 
         BoundingBox globalBounds = computeGlobalBounds(layers);
         if (!globalBounds.isValid()) {
@@ -434,6 +447,7 @@ public class MultiLayerSVGRenderer {
         if (layers == null || layers.isEmpty()) {
             return createEmptySvg();
         }
+        layers = positiveImages(layers);
 
         BoundingBox globalBounds = computeGlobalBounds(layers);
         if (!globalBounds.isValid()) {
@@ -690,7 +704,12 @@ public class MultiLayerSVGRenderer {
                 // Everything the board is made of contributes to the silhouette: outer copper,
                 // the inner pours a realistic view never draws, and the soldermask sheet.
                 case COPPER_TOP, COPPER_BOTTOM, COPPER_INNER, SOLDERMASK_TOP, SOLDERMASK_BOTTOM -> {
-                    if (layer.isGerber() && layer.getGerberDoc() != null) {
+                    // A negative copper image draws its clearances, which silhouette nothing;
+                    // and once converted its copper *is* the extent resolved here, which would
+                    // be circular as a silhouette and would veto every cut-out as a probe.
+                    if (layer.isGerber() && layer.getGerberDoc() != null
+                            && !(isCopper(layer.getLayerType())
+                                 && NegativeImage.declaresNegative(layer.getGerberDoc()))) {
                         silhouetteDocs.add(layer.getGerberDoc());
                         if (layer.getLayerType() != LayerType.SOLDERMASK_TOP
                             && layer.getLayerType() != LayerType.SOLDERMASK_BOTTOM) {
@@ -712,6 +731,60 @@ public class MultiLayerSVGRenderer {
         return derived == null || derived.isBlank()
             ? BoardOutline.none()
             : new BoardOutline(derived, false);
+    }
+
+    /**
+     * The layers with every negative copper image replaced by the copper it stands for.
+     *
+     * <p>Altium's plane layers declare {@code .FilePolarity,Negative} and draw their clearances —
+     * the pull-back along the edge, the antipads, the thermals — so drawn as-is a plane is a few
+     * rings on an empty board. {@link NegativeImage#toPositive} rewrites each one as a dark field
+     * over the board outline with the clearances cut out of it, and every renderer entry point
+     * runs on the result. The outline is {@link #resolveBoardOutline}'s, which leaves negative
+     * copper out of its own evidence; a set with no resolvable edge falls back to the plane's
+     * own extent, which its pull-back bounds anyway.
+     *
+     * <p>A set with no negative copper comes back as it was: this costs nothing where it does
+     * not apply. Solder-mask layers are negative by convention and are not touched — what they
+     * draw is the openings, which is already how they are rendered.
+     */
+    public List<Layer> positiveImages(List<Layer> layers) {
+        if (layers == null || layers.isEmpty()) {
+            return layers;
+        }
+        boolean any = false;
+        for (Layer layer : layers) {
+            if (isNegativeCopper(layer)) {
+                any = true;
+                break;
+            }
+        }
+        if (!any) {
+            return layers;
+        }
+        BoardOutline outline = resolveBoardOutline(layers);
+        Shape extent = outline.isEmpty() ? null : outline.toShape();
+        List<Layer> out = new ArrayList<>(layers.size());
+        for (Layer layer : layers) {
+            if (!isNegativeCopper(layer)) {
+                out.add(layer);
+                continue;
+            }
+            GerberDocument positive = extent == null
+                ? NegativeImage.toPositive(layer.getGerberDoc())
+                : NegativeImage.toPositive(layer.getGerberDoc(), extent);
+            out.add(layer.withDocument(positive));
+        }
+        return out;
+    }
+
+    private static boolean isNegativeCopper(Layer layer) {
+        return layer.isGerber() && layer.getGerberDoc() != null
+            && isCopper(layer.getLayerType()) && NegativeImage.isNegative(layer.getGerberDoc());
+    }
+
+    private static boolean isCopper(LayerType type) {
+        return type == LayerType.COPPER_TOP || type == LayerType.COPPER_BOTTOM || type == LayerType.COPPER_INNER;
     }
 
     /**
@@ -777,6 +850,7 @@ public class MultiLayerSVGRenderer {
         if (layers == null || layers.isEmpty()) {
             return createEmptySvg();
         }
+        layers = positiveImages(layers);
 
         // Categorize layers by type
         Layer outlineLayer = null;

@@ -21,6 +21,7 @@ public class GerberDocument {
     private Unit unit = Unit.MM;
     private Unit sourceUnit = Unit.MM;
     private ImagePolarity imagePolarity = ImagePolarity.POSITIVE;
+    private boolean invertedImage;
 
     private final Map<String, FileAttribute> fileAttributes = new HashMap<>();
     private final Map<Integer, Aperture> apertures = new HashMap<>();
@@ -127,6 +128,20 @@ public class GerberDocument {
 
     public void setImagePolarity(ImagePolarity imagePolarity) {
         this.imagePolarity = imagePolarity;
+    }
+
+    /**
+     * True when this document was built by {@link NegativeImage#toPositive} from a negative
+     * image: its objects are the copper the file stands for, while {@link #getFilePolarity()}
+     * still describes the file it came from. Consumers test {@link NegativeImage#isNegative}
+     * rather than the attribute, so a converted document is never inverted twice.
+     */
+    public boolean isInvertedImage() {
+        return invertedImage;
+    }
+
+    public void setInvertedImage(boolean invertedImage) {
+        this.invertedImage = invertedImage;
     }
 
     /** The {@code .Part} attribute (e.g. "Single", "Array", "FabricationPanel"), or null. */

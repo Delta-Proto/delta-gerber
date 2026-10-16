@@ -61,8 +61,19 @@ public final class ConductorWidthDetector {
     /** The connector must leave/arrive through copper at 30° or steeper (sin 30°). */
     private static final double CONNECTOR_SIN = 0.5;
 
-    /** Two coincident edges — a region's cut-in line — are a slit, not a neck. */
-    private static final double SLIT_MM = 1e-6;
+    /**
+     * Two coincident edges — a region's cut-in line — are a slit, not a neck. At the flattening
+     * tolerance, since a flattened arc runs up to a sagitta off the exact arc of a stroke that
+     * traces the same curve (Altium cuts a plane's clearance as a region and strokes its outline).
+     */
+    private static final double SLIT_MM = 0.002;
+
+    /**
+     * Copper between two <em>clears</em> narrower than this (mm) is one clearance stated twice —
+     * a cleared region and the stroke along its boundary, a hair apart from coordinate rounding —
+     * not a conductor. No conductor is 10 µm wide; the finest in the corpus is 30 µm.
+     */
+    private static final double TWICE_MM = 0.010;
 
     /**
      * Edges shorter than this (mm) are not necks' sides. KiCad writes sub-micrometre zigzags where
@@ -288,7 +299,7 @@ public final class ConductorWidthDetector {
                     double[] q = cf.nearestOnAxis(sx, sy);
                     double dx = q[0] - sx, dy = q[1] - sy;
                     double d = Math.hypot(dx, dy);
-                    if (d <= SLIT_MM) {
+                    if (d <= SLIT_MM || (eIsClear && fIsClear && d < TWICE_MM)) {
                         return;
                     }
                     dx /= d;

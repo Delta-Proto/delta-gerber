@@ -27,6 +27,7 @@ import com.deltaproto.deltagerber.model.drill.DrillHit;
 import com.deltaproto.deltagerber.model.drill.Tool;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
+import com.deltaproto.deltagerber.model.gerber.NegativeImage;
 import com.deltaproto.deltagerber.model.gerber.Polarity;
 import com.deltaproto.deltagerber.model.gerber.Unit;
 import com.deltaproto.deltagerber.model.gerber.aperture.Aperture;
@@ -41,10 +42,14 @@ import com.deltaproto.deltagerber.parser.ExcellonParser;
 import com.deltaproto.deltagerber.parser.GerberJobParser;
 import com.deltaproto.deltagerber.parser.GerberParser;
 import com.deltaproto.deltagerber.parser.Ipc2581StackupParser;
+import com.deltaproto.deltagerber.renderer.svg.BoardOutline;
+import com.deltaproto.deltagerber.renderer.svg.LayerType;
+import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.awt.Shape;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -150,16 +155,31 @@ public class PcbAnalyzer {
                 .anyMatch(c -> c != null && c.function().isDrill());
         DfmCollector dfm = new DfmCollector(profile, setHasDrill, floatingInClearance);
 
+        // A negative copper image — an Altium plane — is the board minus what it draws, and the
+        // board is decided from the profile layers *and* the copper (a loop full of copper is not
+        // a cut-out). So the planes are read last, after every positive copper layer, and only
+        // when the set has one are those layers kept in memory until the extent is settled.
+        boolean[] negative = new boolean[files.size()];
+        boolean anyNegative = false;
+        for (int i = 0; i < files.size(); i++) {
+            LayerClassification c = classifications.get(i);
+            negative[i] = c != null && c.function().isCopper()
+                    && NegativeImage.headerDeclaresNegative(files.get(i).getContent());
+            anyNegative |= negative[i];
+        }
+        PlaneExtent planes = new PlaneExtent(outlineDocs, anyNegative);
+
         // Drills and solder masks are measured before copper: what connects a piece of copper to
         // anything — a plated hole, a mask opening over a painted pad — is in them, and floating
         // copper is decided while the copper layer is still in memory. The layers keep file order.
         AnalyzedLayer[] layers = new AnalyzedLayer[files.size()];
-        for (int pass = 0; pass < 2; pass++) {
+        for (int pass = 0; pass < 3; pass++) {
             for (int i = 0; i < files.size(); i++) {
                 LayerClassification c = classifications.get(i);
                 boolean early = c != null && (c.function().isDrill() || c.function() == LayerFunction.SOLDERMASK);
-                if (early == (pass == 0)) {
-                    layers[i] = measure(files.get(i), c, outline, usableOutline, depth, setHasDrill, dfm);
+                int when = early ? 0 : negative[i] ? 2 : 1;
+                if (when == pass) {
+                    layers[i] = measure(files.get(i), c, outline, usableOutline, depth, setHasDrill, dfm, planes);
                 }
             }
         }
@@ -195,6 +215,13 @@ public class PcbAnalyzer {
         boolean usableOutline = outline != null && outline.getWidth() > 0 && outline.getHeight() > 0;
         BoardProfile profile = usableOutline ? BoardProfile.of(spanningOutlines(outlineDocs, outline)) : null;
         DfmCollector dfm = new DfmCollector(profile, setHasDrill, floatingInClearance);
+        PlaneExtent planes = new PlaneExtent(outlineDocs, true);
+        for (ParsedLayer p : parsed) {
+            LayerClassification c = p.classification();
+            if (p.gerber() != null && c != null && c.function().isCopper()) {
+                planes.addCopper(p.gerber());
+            }
+        }
 
         AnalyzedLayer[] layers = new AnalyzedLayer[parsed.size()];
         for (int pass = 0; pass < 2; pass++) {
@@ -204,7 +231,7 @@ public class PcbAnalyzer {
                 boolean early = p.drill() != null
                         || c != null && (c.function().isDrill() || c.function() == LayerFunction.SOLDERMASK);
                 if (early == (pass == 0)) {
-                    layers[i] = measureParsed(p, usableOutline ? outline : null, dfm);
+                    layers[i] = measureParsed(p, usableOutline ? outline : null, dfm, planes);
                 }
             }
         }
@@ -213,7 +240,8 @@ public class PcbAnalyzer {
                 dfm.holeSpacing());
     }
 
-    private static AnalyzedLayer measureParsed(ParsedLayer p, BoundingBox outline, DfmCollector dfm) {
+    private static AnalyzedLayer measureParsed(ParsedLayer p, BoundingBox outline, DfmCollector dfm,
+                                               PlaneExtent planes) {
         LayerClassification c = p.classification();
         LayerFunction function = c == null ? LayerFunction.UNKNOWN : c.function();
         try {
@@ -221,9 +249,10 @@ public class PcbAnalyzer {
                 dfm.addDrill(p.drill(), function);
                 return measure(p.fileName(), p.drill(), c);
             }
-            dfm.addGerber(p.fileName(), c, function, p.gerber());
-            return measure(p.fileName(), p.gerber(), c, outline,
-                    function.isCopper() ? dfm.copperContext(c, p.gerber()) : null);
+            GerberDocument doc = planes.copperOf(function, p.gerber());
+            dfm.addGerber(p.fileName(), c, function, doc);
+            return measure(p.fileName(), doc, c, outline,
+                    function.isCopper() ? dfm.copperContext(c, doc) : null);
         } catch (RuntimeException e) {
             log.warn("Could not measure {}: {}", p.fileName(), e.toString());
             return AnalyzedLayer.builder(p.fileName()).classification(c).warnings(List.of(e.toString())).build();
@@ -419,7 +448,7 @@ public class PcbAnalyzer {
     /** Parse one file, take its measurements, and let the document go before the next one. */
     private AnalyzedLayer measure(PcbFile file, LayerClassification classification,
                                   BoundingBox outline, boolean usableOutline, AnalysisDepth depth,
-                                  boolean setHasDrill, DfmCollector dfm) {
+                                  boolean setHasDrill, DfmCollector dfm, PlaneExtent planes) {
         String content = file.getContent();
         if (content == null || content.isBlank()) {
             return AnalyzedLayer.builder(file.getFileName()).classification(classification).build();
@@ -444,7 +473,10 @@ public class PcbAnalyzer {
                 dfm.addDrill(doc, function);
                 return measure(file.getFileName(), doc, classification);
             }
-            GerberDocument doc = new GerberParser().parse(content);
+            GerberDocument doc = planes.copperOf(function, new GerberParser().parse(content));
+            if (function.isCopper()) {
+                planes.addCopper(doc);
+            }
             dfm.addGerber(file.getFileName(), classification, function, doc);
             return measure(file.getFileName(), doc, classification, outline,
                     function.isCopper() ? dfm.copperContext(classification, doc) : null);
@@ -454,6 +486,72 @@ public class PcbAnalyzer {
                     .classification(classification)
                     .warnings(List.of(e.toString()))
                     .build();
+        }
+    }
+
+    /**
+     * Where a negative copper image's copper stops: the board outline, resolved once and only if
+     * the set turns out to hold such a layer.
+     *
+     * <p>Altium's plane layers ({@code .GP1}) declare {@code .FilePolarity,Negative} and draw their
+     * clearances; {@link NegativeImage#toPositive} turns one into the copper it stands for, over
+     * the outline {@link MultiLayerSVGRenderer#resolveBoardOutline} settles from the set's profile
+     * layers — the one place the board edge is decided, so the analysis measures the same copper
+     * the realistic view draws. A set with no outline falls back to the plane's own extent.
+     */
+    private static final class PlaneExtent {
+        private final List<GerberDocument> outlines;
+        private final boolean wanted;
+        private final List<GerberDocument> coppers = new ArrayList<>();
+        private boolean resolved;
+        private Shape extent;
+
+        /**
+         * @param wanted whether the set has a negative copper image at all; when it has none, no
+         *               copper is retained and nothing is ever resolved
+         */
+        PlaneExtent(List<GerberDocument> outlines, boolean wanted) {
+            this.outlines = outlines == null ? List.of() : outlines;
+            this.wanted = wanted;
+        }
+
+        /**
+         * A positive copper layer, kept as evidence for the board edge until the extent is
+         * resolved. A negative one (or one already converted) is not evidence: what it draws is
+         * its clearances, and what it stands for is the extent itself.
+         */
+        void addCopper(GerberDocument doc) {
+            if (wanted && !resolved && doc != null && !NegativeImage.declaresNegative(doc)) {
+                coppers.add(doc);
+            }
+        }
+
+        /** {@code doc} as positive copper if it is a negative copper image; otherwise unchanged. */
+        GerberDocument copperOf(LayerFunction function, GerberDocument doc) {
+            if (doc == null || !function.isCopper() || !NegativeImage.isNegative(doc)) {
+                return doc;
+            }
+            Shape shape = extent();
+            return shape == null ? NegativeImage.toPositive(doc) : NegativeImage.toPositive(doc, shape);
+        }
+
+        private Shape extent() {
+            if (!resolved) {
+                resolved = true;
+                List<MultiLayerSVGRenderer.Layer> layers = new ArrayList<>(outlines.size() + coppers.size());
+                for (GerberDocument outline : outlines) {
+                    layers.add(new MultiLayerSVGRenderer.Layer(outline.getFileName(), outline)
+                            .setLayerType(LayerType.OUTLINE));
+                }
+                for (GerberDocument copper : coppers) {
+                    layers.add(new MultiLayerSVGRenderer.Layer(copper.getFileName(), copper)
+                            .setLayerType(LayerType.COPPER_INNER));
+                }
+                BoardOutline outline = new MultiLayerSVGRenderer().resolveBoardOutline(layers);
+                extent = outline.isEmpty() ? null : outline.toShape();
+                coppers.clear();
+            }
+            return extent;
         }
     }
 
@@ -608,6 +706,9 @@ public class PcbAnalyzer {
      * strongly non-rectangular board an edge trace can still slip through near the corners of the
      * box; it degrades to the unfiltered answer rather than to a wrong one.
      *
+     * <p>Only dark strokes are tracks. A clear stroke takes copper away — the pull-back a plane
+     * layer draws along the board edge — and its aperture says nothing about any conductor.
+     *
      * @param outlineMm board profile bounds in mm, or null to skip the filter
      * @return the minimum in µm, or null when the layer draws no circular-aperture track
      */
@@ -618,6 +719,9 @@ public class PcbAnalyzer {
         int insideDraws = 0;
 
         for (GraphicsObject object : document.getObjects()) {
+            if (object.getPolarity() == Polarity.CLEAR) {
+                continue;
+            }
             double startX;
             double startY;
             double endX;

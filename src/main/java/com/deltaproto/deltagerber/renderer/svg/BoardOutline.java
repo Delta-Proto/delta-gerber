@@ -1,5 +1,13 @@
 package com.deltaproto.deltagerber.renderer.svg;
 
+import org.apache.batik.parser.AWTPathProducer;
+
+import java.awt.Shape;
+import java.awt.geom.PathIterator;
+import java.io.IOException;
+import java.io.StringReader;
+import java.io.UncheckedIOException;
+
 /**
  * The board edge, however it was arrived at.
  *
@@ -69,5 +77,23 @@ public final class BoardOutline {
     /** True when no board edge was resolved and there is nothing to clip or extrude. */
     public boolean isEmpty() {
         return svgPath.isBlank();
+    }
+
+    /**
+     * The outline as a Java2D shape in the Gerber frame's millimetres, under {@link #getFillRule()},
+     * or null when unresolved. Batik parses the path — it is on the classpath for rasterising, and
+     * its arc handling is the one the browser applies to the realistic view — so the shape means
+     * exactly what the renderer means by the path.
+     */
+    public Shape toShape() {
+        if (isEmpty()) {
+            return null;
+        }
+        try {
+            return AWTPathProducer.createShape(new StringReader(svgPath),
+                "evenodd".equals(getFillRule()) ? PathIterator.WIND_EVEN_ODD : PathIterator.WIND_NON_ZERO);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to read board outline path", e);
+        }
     }
 }

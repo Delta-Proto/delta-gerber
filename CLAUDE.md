@@ -126,6 +126,35 @@ color the mask pairs with (white on everything but a white mask, which pairs bla
 caller names a `SilkscreenColor` a later `setSoldermaskColor` re-pairs nothing. Don't collapse this
 back to "mask setter also assigns silk" — call order would then decide the legend color.
 
+## Negative copper images (plane layers)
+
+Altium's plane layers (`.GP1`, `.GP2`) declare `.FilePolarity,Negative` and draw their
+**clearances** — the pull-back stroked along the board edge, the antipads, the thermals — so the
+copper is everything they leave untouched. `model.gerber.NegativeImage.toPositive(doc, extent)`
+rewrites one as the painter's model already says it: a dark region over the board outline, then
+every object with its polarity flipped. Nothing downstream — polarity masks, `CopperGeometry`, the
+DFM checks — knows about negativity; they see positive copper. The converted document is marked
+`isInvertedImage()` and still *declares* negative (the attribute describes the file), which is
+what keeps it from being inverted twice and out of the outline's evidence.
+
+**Which layers this applies to is decided by function, not by the attribute.** A solder-mask file
+is negative by the same convention — what it draws is the openings — and is already rendered that
+way, so only copper is converted. Both pipelines do it: `MultiLayerSVGRenderer.positiveImages`
+runs at the top of every render entry point, and `PcbAnalyzer` converts a copper document right
+after parsing it. The extent is `resolveBoardOutline`'s, the one place the board edge is decided,
+and a negative copper layer is **never evidence for it** (its drawing is clearances; its copper is
+the extent itself). A set with no resolvable edge falls back to the plane's own bounding box, which
+its pull-back bounds anyway. The analyzer therefore reads planes **last**, after every positive
+copper layer, and retains those layers as edge evidence only when the set's headers say a plane is
+present (`NegativeImage.headerDeclaresNegative`).
+
+Three consequences the detectors needed: a clear stroke is never a track (`minTrackWidthUm` skips
+clears — a plane's 1 mm pull-back is not its narrowest conductor); `CopperGeometry` keeps a clear
+stroke whose endpoints sit on the board edge, where it drops a dark one (dropping the pull-back
+would put copper back where the file took it away); and `ConductorWidthDetector` reads two clears
+within 10 µm as one clearance stated twice — Altium cuts a plane's clearance as a region *and*
+strokes its boundary, and the two differ by coordinate rounding, which read as 0.6 µm of copper.
+
 ## Layer colours in the layer view
 
 `renderer.svg.LayerPalette.colorOf(LayerType, innerNumber)` is the colour a layer gets when layers

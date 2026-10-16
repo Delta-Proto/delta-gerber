@@ -283,12 +283,12 @@ public final class CopperGeometry {
             if (obj instanceof Flash flash) {
                 addFlash(flash, clear);
             } else if (obj instanceof Draw draw) {
-                if (excluded(draw.getStartX(), draw.getStartY(), draw.getEndX(), draw.getEndY())) {
+                if (!clear && excluded(draw.getStartX(), draw.getStartY(), draw.getEndX(), draw.getEndY())) {
                     return;
                 }
                 addDraw(draw, clear);
             } else if (obj instanceof Arc arc) {
-                if (excluded(arc.getStartX(), arc.getStartY(), arc.getEndX(), arc.getEndY())) {
+                if (!clear && excluded(arc.getStartX(), arc.getStartY(), arc.getEndX(), arc.getEndY())) {
                     return;
                 }
                 addArc(arc, clear);
@@ -297,6 +297,11 @@ public final class CopperGeometry {
             }
         }
 
+        /**
+         * The board-edge trace stamped on a copper layer is left out — but only a dark one. A
+         * clear stroke along the edge is a plane's pull-back: dropping it would put copper back
+         * where the file took it away.
+         */
         private boolean excluded(double x1, double y1, double x2, double y2) {
             return insideOnly != null && !(inside(x1, y1) && inside(x2, y2));
         }
