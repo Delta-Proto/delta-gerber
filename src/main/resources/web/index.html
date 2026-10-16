@@ -12,7 +12,10 @@
             --bg: #f2f2f2;
             --bg-card: #ffffff;
             --bg-input: #ffffff;
-            --bg-viewer: #e8e8e8;
+            /* The layer canvas is KiCad's board background in both themes: the layer palette
+               (LayerPalette) is KiCad's, and its silkscreen, mask and outline pastels are
+               1.0–1.5:1 against a light grey. The chrome around it follows the theme. */
+            --bg-viewer: #001023;
             --fg: #262626;
             --fg-muted: #595959;
             --fg-faint: #999;
@@ -31,7 +34,9 @@
             --tooltip-shadow: rgba(0,0,0,0.1);
             --drag-tint: rgba(46,132,204,0.08);
             --loading-bg: rgba(255,255,255,0.95);
-            --grid-line: rgba(0,0,0,0.04);
+            /* KiCad's grid grey (LAYER_GRID, #848484) over the navy canvas: the canvas is the same
+               in both themes, so the grid must be too — a dark line at 4 % vanished on it. */
+            --grid-line: rgba(132,132,132,0.5);
             --checkbox-accent: #2e84cc;
             --progress-from: #2e84cc;
             --progress-to: #5ba3dd;
@@ -41,7 +46,7 @@
             --bg: #1a1a1a;
             --bg-card: #1f1f1f;
             --bg-input: #2a2a2a;
-            --bg-viewer: #141414;
+            --bg-viewer: #001023;
             --fg: #d9d9d9;
             --fg-muted: #8c8c8c;
             --fg-faint: #666;
@@ -60,7 +65,7 @@
             --tooltip-shadow: rgba(0,0,0,0.5);
             --drag-tint: rgba(46,132,204,0.1);
             --loading-bg: rgba(31,31,31,0.95);
-            --grid-line: rgba(255,255,255,0.03);
+            --grid-line: rgba(132,132,132,0.5);
             --checkbox-accent: #2e84cc;
             --progress-from: #2e84cc;
             --progress-to: #5ba3dd;
@@ -71,7 +76,7 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--bg); color: var(--fg); height: 100vh;
+            background: var(--bg); color: var(--fg); height: 100vh; height: 100dvh;
             display: flex; flex-direction: column; transition: background 0.2s, color 0.2s;
         }
 
@@ -141,7 +146,16 @@
         .sidebar {
             width: 280px; flex-shrink: 0; background: var(--bg-card);
             border-right: 1px solid var(--border);
-            padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px;
+            padding: 16px; display: flex; flex-direction: column; gap: 8px; min-height: 0;
+        }
+        .sidebar-head { flex-shrink: 0; }
+        .layers-heading { display: flex; align-items: center; gap: 8px; }
+        .layer-count { color: var(--fg-faint); font-weight: 400; }
+        .layer-count:empty { display: none; }
+        .sheet-grip, .sheet-chevron { display: none; }
+        .sidebar-body {
+            flex: 1; min-height: 0; overflow-y: auto;
+            display: flex; flex-direction: column; gap: 16px;
         }
         .sidebar-resizer {
             width: 5px; flex-shrink: 0; cursor: col-resize; background: transparent;
@@ -258,16 +272,23 @@
             font-size: 0.6875rem; color: var(--fg-faint); pointer-events: none;
             font-variant-numeric: tabular-nums;
         }
-        #svg-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: grab; }
+        #svg-container {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: grab;
+            touch-action: none; user-select: none; -webkit-user-select: none;
+        }
         #svg-container:active { cursor: grabbing; }
         #svg-content { transform-origin: 0 0; }
+        /* An opaque card on top of the grid: the canvas is navy in both themes, and faint,
+           translucent text on it read as part of the grid rather than as an invitation. */
         .drop-zone {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            text-align: center; color: var(--fg-faint);
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2;
+            text-align: center; color: var(--fg-muted);
+            background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+            padding: 36px 48px; box-shadow: 0 4px 12px var(--tooltip-shadow);
         }
-        .drop-zone svg { width: 80px; height: 80px; margin-bottom: 16px; opacity: 0.4; }
-        .drop-zone p { font-size: 1.1rem; margin-bottom: 8px; }
-        .drop-zone small { font-size: 0.85rem; color: var(--fg-faint); }
+        .drop-zone svg { width: 80px; height: 80px; margin-bottom: 16px; }
+        .drop-zone p { font-size: 1.1rem; margin-bottom: 8px; color: var(--fg); }
+        .drop-zone small { font-size: 0.85rem; color: var(--fg-muted); }
         .drag-over { background: var(--drag-tint) !important; }
         .loading {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -394,6 +415,75 @@
         .warnings-list li::before {
             content: '⚠'; color: #f59e0b; position: absolute; left: 9px; top: 7px; font-size: 0.75rem;
         }
+
+        /* ===== Phone layout =====
+           The sidebar becomes a sheet docked under the canvas: only its head shows (the grip and
+           the "Layers" row), and tapping or swiping that slides the sheet up over the board. Tabs
+           scroll sideways instead of wrapping, and everything tappable grows to a finger's size.
+           The canvas gets the whole width; the sheet's peek is kept clear of the grid caption. */
+        :root { --sheet-peek: 60px; }
+        @media (max-width: 768px) {
+            header { padding: 8px 12px; gap: 8px; height: 52px; }
+            .app-version { display: none; }
+            .upload-btn { padding: 9px 12px; white-space: nowrap; }
+            .example-btn { padding: 9px 2px; white-space: nowrap; }
+
+            .main-container { flex-direction: column; position: relative; }
+            .sidebar-resizer { display: none; }
+            .sidebar {
+                position: fixed; left: 0; right: 0; bottom: 0; width: auto !important;
+                height: 72vh; height: 72dvh; z-index: 20;
+                border-right: none; border-top: 1px solid var(--border);
+                border-radius: 14px 14px 0 0; padding: 0 12px 12px;
+                box-shadow: 0 -4px 16px var(--tooltip-shadow);
+                transform: translateY(calc(100% - var(--sheet-peek)));
+                transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+                gap: 0;
+            }
+            .sidebar.open { transform: translateY(0); }
+            .sidebar-head {
+                height: var(--sheet-peek); display: flex; flex-direction: column;
+                justify-content: center; gap: 6px; cursor: pointer; touch-action: none;
+                user-select: none; -webkit-user-select: none;
+            }
+            .sheet-grip {
+                display: block; width: 40px; height: 4px; border-radius: 2px;
+                background: var(--border); margin: 0 auto;
+            }
+            .sheet-chevron {
+                display: block; width: 20px; height: 20px; color: var(--fg-muted); flex-shrink: 0;
+                transition: transform 0.28s;
+            }
+            .sidebar.open .sheet-chevron { transform: rotate(180deg); }
+            .sidebar-body { padding-bottom: 8px; }
+            .layer-item { padding: 10px 10px; }
+            .layer-item .name { font-size: 0.875rem; }
+            .layer-item .name:hover::after { display: none; }
+            .layer-type-select { font-size: 0.8125rem; padding: 6px 4px; max-width: 120px; }
+            .side-btn { padding: 6px 10px; font-size: 0.75rem; }
+
+            .view-tabs {
+                flex-wrap: nowrap; overflow-x: auto; padding: 6px 8px; gap: 2px;
+                scrollbar-width: none; -webkit-overflow-scrolling: touch;
+            }
+            .view-tabs::-webkit-scrollbar { display: none; }
+            .view-tab { white-space: nowrap; flex-shrink: 0; padding: 9px 12px; }
+            .soldermask-swatches { flex-shrink: 0; }
+            .sm-swatch { width: 22px; height: 22px; }
+            .step-thickness { flex-shrink: 0; }
+
+            .zoom-controls { top: 8px; right: 8px; gap: 6px; }
+            .zoom-btn { width: 40px; height: 40px; font-size: 1.25rem; }
+            .zoom-level { padding: 10px 6px; min-width: 56px; }
+            .grid-hint { bottom: calc(var(--sheet-peek) + 8px); left: 10px; }
+            .drop-zone { padding: 24px 24px; width: min(86vw, 360px); margin-top: calc(var(--sheet-peek) / -2); }
+            .drop-zone svg { width: 64px; height: 64px; }
+            .loading { padding: 24px 28px; width: min(86vw, 360px); }
+            #centroid-panel, #warnings-panel, #pcbinfo-panel { padding-bottom: calc(var(--sheet-peek) + 16px); }
+        }
+        @media (max-width: 520px) {
+            header h1 { display: none; }
+        }
     </style>
 </head>
 <body class="dark">
@@ -437,27 +527,34 @@
     </header>
 
     <div class="main-container">
-        <aside class="sidebar">
-            <div>
-                <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+        <aside class="sidebar" id="sidebar">
+            <!-- On a phone the sidebar is a sheet docked under the canvas: this head is the part
+                 that stays visible, and tapping or swiping it slides the rest up over the board. -->
+            <div class="sidebar-head" id="sidebar-head" aria-expanded="false">
+                <div class="sheet-grip" aria-hidden="true"></div>
+                <div class="layers-heading">
                     <input type="checkbox" id="select-all-layers" onclick="toggleAllLayers()"
                         style="width:16px; height:16px; accent-color:var(--checkbox-accent);">
-                    <h2 style="margin-bottom:0;">Layers</h2>
+                    <h2 style="margin-bottom:0;">Layers <span class="layer-count" id="layer-count"></span></h2>
                     <div style="display:flex; gap:4px; margin-left:auto;">
                         <button class="side-btn" onclick="selectSide('top')" title="Show top layers only">Top</button>
                         <button class="side-btn" onclick="selectSide('bottom')" title="Show bottom layers only">Bot</button>
                     </div>
+                    <svg class="sheet-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 15 12 9 18 15"/></svg>
                 </div>
+            </div>
+            <div class="sidebar-body">
                 <div class="layer-list" id="layer-list">
                     <div class="no-layers">No layers loaded</div>
                 </div>
-            </div>
-            <div id="recent-section" class="hidden">
-                <div style="display:flex; align-items:center; justify-content:space-between;">
-                    <h2 style="margin-bottom:0;">Recent</h2>
-                    <button onclick="clearRecentProjects()" style="background:none; border:none; color:#666; font-size:0.75rem; cursor:pointer; padding:2px 6px;" title="Clear recent projects">clear</button>
+                <div id="recent-section" class="hidden">
+                    <div style="display:flex; align-items:center; justify-content:space-between;">
+                        <h2 style="margin-bottom:0;">Recent</h2>
+                        <button onclick="clearRecentProjects()" style="background:none; border:none; color:#666; font-size:0.75rem; cursor:pointer; padding:2px 6px;" title="Clear recent projects">clear</button>
+                    </div>
+                    <div id="recent-list"></div>
                 </div>
-                <div id="recent-list"></div>
             </div>
         </aside>
         <div class="sidebar-resizer" id="sidebar-resizer" title="Drag to resize"></div>
@@ -655,25 +752,9 @@
         }
 
 
-        const LAYER_COLORS = {
-            gtl:'#e94560', f_cu:'#e94560', cmp:'#e94560',
-            gbl:'#4169e1', b_cu:'#4169e1', sol:'#4169e1',
-            g1:'#ff6600', g2:'#ff8c00', g3:'#9932cc',
-            gts:'#00aa00', gbs:'#006600', f_mask:'#00aa00', b_mask:'#006600', stc:'#00aa00', sts:'#006600',
-            gto:'#ffffff', gbo:'#cccccc', f_silks:'#ffffff', b_silks:'#cccccc', plc:'#ffffff', pls:'#cccccc',
-            gtp:'#888888', gbp:'#666666',
-            gko:'#ffff00', gm1:'#ffff00', edge:'#ffff00',
-            drl:'#00ffff', xln:'#00ffff', drd:'#00ffff',
-            pnp:'#cc44cc'
-        };
-
-        function getLayerColor(name) {
-            const lower = name.toLowerCase();
-            for (const [key, color] of Object.entries(LAYER_COLORS)) {
-                if (lower.includes(key)) return color;
-            }
-            return '#aaaaaa';
-        }
+        // A layer's colour comes back from the server with its classification (LayerPalette):
+        // it follows the layer's type, not its file name, so the dot in the list and the fill in
+        // the SVG are always the same colour and both change when a layer is retyped.
 
         let commonPrefix = '';
         function computeCommonPrefix(names) {
@@ -1041,11 +1122,10 @@
                 projectName = file.name;
                 projectFiles = rawFiles.map(f => {
                     const fileType = detectFileType(f.name, f.content);
-                    const color = getLayerColor(f.name);
                     // No layerType: the server classifies. `userTyped` records whether the value
                     // that comes back was chosen by a person, so a later render can re-derive the
                     // machine's guess while leaving the person's decision alone.
-                    return {name: f.name, content: f.content, fileType, color,
+                    return {name: f.name, content: f.content, fileType,
                             layerType: null, layerNumber: null, userTyped: false};
                 }).filter(f => f.fileType !== 'unknown');
 
@@ -1078,6 +1158,7 @@
                 if (!r) continue;
                 layer.layerType = r.layerType;
                 layer.layerNumber = r.layerNumber;
+                layer.color = r.color;
                 layer.userTyped = typedByUser.get(layer.name) || false;
             }
             for (const f of projectFiles) {
@@ -1154,6 +1235,9 @@
         let visibilityBeforeHover = null; // saved state during hover-solo
 
         function renderLayerList() {
+            // The count is what the sheet's head shows while the list is tucked away on a phone.
+            const count = document.getElementById('layer-count');
+            if (count) count.textContent = layers.length ? '(' + layers.length + ')' : '';
             if (layers.length === 0) {
                 layerList.innerHTML = '<div class="no-layers">No layers loaded</div>';
                 return;
@@ -1224,6 +1308,8 @@
 
         function hoverLayerStart(index) {
             if (currentView !== 'layers') return;
+            // A touch screen has no hover: a tap would solo the layer it is about to toggle.
+            if (window.matchMedia('(hover: none)').matches) return;
             // Save current visibility state and solo the hovered layer
             visibilityBeforeHover = layers.map(l => l.visible);
             for (let i = 0; i < layers.length; i++) {
@@ -1399,41 +1485,93 @@
         })();
 
         // ===== Pan & Zoom =====
-        svgContainer.addEventListener('mousedown', (e) => {
-            if (e.button === 0) { isPanning = true; startX = e.clientX - panX; startY = e.clientY - panY; }
+        // Pointer events serve mouse, pen and touch alike: one pointer pans, two pinch-zoom about
+        // the point between them (the artwork under the fingers stays under the fingers), and a
+        // wheel zooms about the cursor. Pointer capture keeps a drag alive when it leaves the
+        // canvas, which is also what makes a pan survive crossing the floating buttons.
+        const MIN_SCALE = 0.1, MAX_SCALE = 50;
+        const pointers = new Map();     // pointerId -> {x, y}, every pointer currently down
+        let pinch = null;               // the pinch in progress: its start distance and anchor
+
+        function zoomAbout(cx, cy, ns) {
+            ns = Math.max(MIN_SCALE, Math.min(MAX_SCALE, ns));
+            panX = cx - (cx - panX) * (ns / scale);
+            panY = cy - (cy - panY) * (ns / scale);
+            scale = ns;
+            updateTransform();
+        }
+
+        function beginPan(p) { isPanning = true; startX = p.x - panX; startY = p.y - panY; }
+
+        svgContainer.addEventListener('pointerdown', (e) => {
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            svgContainer.setPointerCapture(e.pointerId);
+            pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
+            if (pointers.size === 1) {
+                beginPan(pointers.get(e.pointerId));
+            } else if (pointers.size === 2) {
+                isPanning = false;
+                const [a, b] = [...pointers.values()];
+                pinch = {dist: Math.hypot(a.x - b.x, a.y - b.y), scale, panX, panY,
+                         mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2};
+            }
+            e.preventDefault();
         });
-        document.addEventListener('mousemove', (e) => {
-            if (isPanning) { panX = e.clientX - startX; panY = e.clientY - startY; updateTransform(); }
+        svgContainer.addEventListener('pointermove', (e) => {
+            if (!pointers.has(e.pointerId)) return;
+            pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
+            if (pinch && pointers.size >= 2) {
+                const [a, b] = [...pointers.values()];
+                const rect = svgContainer.getBoundingClientRect();
+                const dist = Math.hypot(a.x - b.x, a.y - b.y);
+                if (dist < 1) return;
+                const ns = Math.max(MIN_SCALE, Math.min(MAX_SCALE, pinch.scale * dist / pinch.dist));
+                // The point that was under the initial midpoint follows the current midpoint.
+                const m0x = pinch.mx - rect.left, m0y = pinch.my - rect.top;
+                const mx = (a.x + b.x) / 2 - rect.left, my = (a.y + b.y) / 2 - rect.top;
+                panX = mx - (m0x - pinch.panX) * (ns / pinch.scale);
+                panY = my - (m0y - pinch.panY) * (ns / pinch.scale);
+                scale = ns;
+                updateTransform();
+            } else if (isPanning) {
+                panX = e.clientX - startX; panY = e.clientY - startY; updateTransform();
+            }
         });
-        document.addEventListener('mouseup', () => { isPanning = false; });
+        function endPointer(e) {
+            if (!pointers.has(e.pointerId)) return;
+            pointers.delete(e.pointerId);
+            if (pointers.size < 2) pinch = null;
+            if (pointers.size === 1) beginPan([...pointers.values()][0]);   // lift one finger, keep panning with the other
+            else if (pointers.size === 0) isPanning = false;
+        }
+        svgContainer.addEventListener('pointerup', endPointer);
+        svgContainer.addEventListener('pointercancel', endPointer);
 
         svgContainer.addEventListener('wheel', (e) => {
             e.preventDefault();
             const rect = svgContainer.getBoundingClientRect();
-            const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-            const delta = e.deltaY > 0 ? 0.9 : 1.1;
-            const ns = Math.max(0.1, Math.min(50, scale * delta));
-            panX = mx - (mx - panX) * (ns / scale);
-            panY = my - (my - panY) * (ns / scale);
-            scale = ns;
-            updateTransform();
-        });
+            zoomAbout(e.clientX - rect.left, e.clientY - rect.top, scale * (e.deltaY > 0 ? 0.9 : 1.1));
+        }, {passive: false});
 
         document.getElementById('zoom-in').addEventListener('click', () => {
             const r = svgContainer.getBoundingClientRect();
-            const cx = r.width/2, cy = r.height/2;
-            const ns = Math.min(50, scale * 1.25);
-            panX = cx - (cx - panX) * (ns / scale); panY = cy - (cy - panY) * (ns / scale);
-            scale = ns; updateTransform();
+            zoomAbout(r.width / 2, visibleHeight(r) / 2, scale * 1.25);
         });
         document.getElementById('zoom-out').addEventListener('click', () => {
             const r = svgContainer.getBoundingClientRect();
-            const cx = r.width/2, cy = r.height/2;
-            const ns = Math.max(0.1, scale * 0.8);
-            panX = cx - (cx - panX) * (ns / scale); panY = cy - (cy - panY) * (ns / scale);
-            scale = ns; updateTransform();
+            zoomAbout(r.width / 2, visibleHeight(r) / 2, scale * 0.8);
         });
         document.getElementById('zoom-fit').addEventListener('click', fitToView);
+
+        /** The phone layout docks the layer sheet over the canvas's bottom edge. */
+        const phoneLayout = window.matchMedia('(max-width: 768px)');
+        function sheetPeek() {
+            if (!phoneLayout.matches) return 0;
+            const v = getComputedStyle(document.documentElement).getPropertyValue('--sheet-peek');
+            return parseFloat(v) || 0;
+        }
+        /** The canvas height not covered by the sheet's peek. */
+        function visibleHeight(rect) { return rect.height - sheetPeek(); }
 
         function fitToView() {
             const svg = svgContent.querySelector('svg');
@@ -1443,10 +1581,11 @@
             if (!vb) return;
             const [,,w,h] = vb.split(' ').map(Number);
             const sw = w * PX_PER_MM, sh = h * PX_PER_MM;
-            const pad = 40;
-            scale = Math.min((rect.width - pad*2) / sw, (rect.height - pad*2) / sh, 10);
+            const pad = phoneLayout.matches ? 16 : 40;
+            const height = visibleHeight(rect);
+            scale = Math.min((rect.width - pad*2) / sw, (height - pad*2) / sh, 10);
             panX = (rect.width - sw * scale) / 2;
-            panY = (rect.height - sh * scale) / 2;
+            panY = (height - sh * scale) / 2;
             updateTransform();
         }
 
@@ -1869,6 +2008,47 @@
             a.remove();
             URL.revokeObjectURL(url);
         }
+
+        // ===== Layer sheet (phone) =====
+        // The head of the sidebar is the sheet's handle: a tap toggles it, a swipe up opens it and
+        // a swipe down closes it. Controls inside the head (the select-all box, Top/Bot) keep
+        // their own clicks. Nothing here runs in the desktop layout, where the sidebar is a column.
+        (function initLayerSheet() {
+            const sidebar = document.getElementById('sidebar');
+            const head = document.getElementById('sidebar-head');
+            if (!sidebar || !head) return;
+            const SWIPE_PX = 36;
+            let drag = null, swiped = false;
+
+            function setOpen(open) {
+                sidebar.classList.toggle('open', open);
+                head.setAttribute('aria-expanded', String(open));
+            }
+            head.addEventListener('click', (e) => {
+                if (!phoneLayout.matches) return;
+                if (e.target.closest('button, input, select, a')) return;
+                if (swiped) { swiped = false; return; }   // the swipe already decided
+                setOpen(!sidebar.classList.contains('open'));
+            });
+            head.addEventListener('pointerdown', (e) => {
+                if (!phoneLayout.matches || e.target.closest('button, input, select, a')) return;
+                drag = {id: e.pointerId, y: e.clientY};
+                swiped = false;
+                head.setPointerCapture(e.pointerId);
+            });
+            head.addEventListener('pointermove', (e) => {
+                if (!drag || e.pointerId !== drag.id) return;
+                const dy = e.clientY - drag.y;
+                if (dy > SWIPE_PX) { setOpen(false); swiped = true; drag = null; }
+                else if (dy < -SWIPE_PX) { setOpen(true); swiped = true; drag = null; }
+            });
+            const stop = (e) => { if (drag && e.pointerId === drag.id) drag = null; };
+            head.addEventListener('pointerup', stop);
+            head.addEventListener('pointercancel', stop);
+            // Back on a wide screen the sidebar is a column again and "open" means nothing.
+            phoneLayout.addEventListener('change', () => { if (!phoneLayout.matches) setOpen(false); });
+            window.toggleLayerSheet = () => setOpen(!sidebar.classList.contains('open'));
+        })();
 
         // ===== Sidebar resize =====
         (function initSidebarResize() {

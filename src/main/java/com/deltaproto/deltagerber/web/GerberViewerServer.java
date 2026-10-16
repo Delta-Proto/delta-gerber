@@ -14,6 +14,7 @@ import com.deltaproto.deltagerber.model.gerber.FormatSpec;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
 import com.deltaproto.deltagerber.parser.ExcellonParser;
 import com.deltaproto.deltagerber.parser.GerberParser;
+import com.deltaproto.deltagerber.renderer.svg.LayerPalette;
 import com.deltaproto.deltagerber.renderer.svg.LayerType;
 import com.deltaproto.deltagerber.renderer.svg.MultiLayerSVGRenderer;
 import com.deltaproto.deltagerber.renderer.svg.SilkscreenColor;
@@ -210,15 +211,15 @@ public class GerberViewerServer {
                         LayerClassification detected = LayerClassifier.classify(name, content);
                         LayerType layerType = resolveLayerType(layerTypeStr, fileType, detected, gerberDoc);
 
-                        String color = getLayerColor(name);
                         double opacity = (layerType == LayerType.PNP_TOP || layerType == LayerType.PNP_BOTTOM)
                             ? 0.45 : 0.85;
-                        layer.setColor(color).setOpacity(opacity).setLayerType(layerType);
+                        layer.setOpacity(opacity).setLayerType(layerType);
                         layers.add(layer);
                         // Classification waits for the whole set: an inner layer's index cannot
-                        // be normalized until every inner layer has been seen.
+                        // be normalized until every inner layer has been seen — and the colour
+                        // waits with it, since an inner layer is coloured by that index.
                         pending.add(new PendingLayer(name, fileType, layerTypeStr, clientNumber,
-                                detected, layerType, color));
+                                detected, layerType));
                     }
                 } catch (Exception e) {
                     log.warn("Failed to parse {}: {}", name, e.getMessage());
@@ -246,8 +247,12 @@ public class GerberViewerServer {
                 }
                 classifications.put(p.name(), classification);
 
+                // Coloured by what it is drawn as, so a retyped layer changes colour with its
+                // type and the layer list's dot always matches the fill in the SVG.
+                String color = LayerPalette.colorOf(p.layerType(), classification.number());
+                layers.get(i).setColor(color);
                 String id = p.name().replaceAll("[^a-zA-Z0-9._-]", "_");
-                layerMetas.add(new LayerMeta(p.name(), id, p.color(), p.fileType(),
+                layerMetas.add(new LayerMeta(p.name(), id, color, p.fileType(),
                         p.layerType().name(), classification.number()));
             }
 
@@ -354,7 +359,7 @@ public class GerberViewerServer {
          * file-by-file: an inner copper index is only meaningful relative to the other inner layers.
          */
         private record PendingLayer(String name, String fileType, String layerTypeStr, Integer clientNumber,
-                                    LayerClassification detected, LayerType layerType, String color) {
+                                    LayerClassification detected, LayerType layerType) {
         }
 
         /**
@@ -1102,7 +1107,7 @@ public class GerberViewerServer {
                 LayerType layerType = RenderHandler.resolveLayerType(
                         layerTypeStr, fileType, LayerClassifier.classify(name, content), gerberDoc);
                 if (layer != null) {
-                    layer.setColor(getLayerColor(name)).setOpacity(0.85).setLayerType(layerType);
+                    layer.setColor(LayerPalette.colorOf(layerType, null)).setOpacity(0.85).setLayerType(layerType);
                     layers.add(layer);
                 }
             } catch (Exception e) {
@@ -1136,31 +1141,6 @@ public class GerberViewerServer {
     }
 
     // --- Shared helpers ---
-
-    private static final Map<String, String> LAYER_COLORS = new LinkedHashMap<>();
-    static {
-        LAYER_COLORS.put("gtl", "#e94560"); LAYER_COLORS.put("f_cu", "#e94560"); LAYER_COLORS.put("cmp", "#e94560");
-        LAYER_COLORS.put("gbl", "#4169e1"); LAYER_COLORS.put("b_cu", "#4169e1"); LAYER_COLORS.put("sol", "#4169e1");
-        LAYER_COLORS.put("g2", "#ff8c00"); LAYER_COLORS.put("g1", "#ff6600"); LAYER_COLORS.put("g3", "#9932cc");
-        LAYER_COLORS.put("gts", "#00aa00"); LAYER_COLORS.put("gbs", "#006600");
-        LAYER_COLORS.put("f_mask", "#00aa00"); LAYER_COLORS.put("b_mask", "#006600");
-        LAYER_COLORS.put("stc", "#00aa00"); LAYER_COLORS.put("sts", "#006600");
-        LAYER_COLORS.put("gto", "#ffffff"); LAYER_COLORS.put("gbo", "#cccccc");
-        LAYER_COLORS.put("f_silks", "#ffffff"); LAYER_COLORS.put("b_silks", "#cccccc");
-        LAYER_COLORS.put("plc", "#ffffff"); LAYER_COLORS.put("pls", "#cccccc");
-        LAYER_COLORS.put("gtp", "#888888"); LAYER_COLORS.put("gbp", "#666666");
-        LAYER_COLORS.put("gko", "#ffff00"); LAYER_COLORS.put("gm1", "#ffff00"); LAYER_COLORS.put("edge", "#ffff00");
-        LAYER_COLORS.put("drl", "#00ffff"); LAYER_COLORS.put("xln", "#00ffff"); LAYER_COLORS.put("drd", "#00ffff");
-        LAYER_COLORS.put("pnp", "#cc44cc");
-    }
-
-    public static String getLayerColor(String filename) {
-        String lower = filename.toLowerCase();
-        for (Map.Entry<String, String> entry : LAYER_COLORS.entrySet()) {
-            if (lower.contains(entry.getKey())) return entry.getValue();
-        }
-        return "#aaaaaa";
-    }
 
     public static String renderRealisticSide(List<MultiLayerSVGRenderer.Layer> allLayers, boolean topSide) {
         return renderRealisticSide(allLayers, topSide, null, null);

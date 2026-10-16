@@ -126,6 +126,19 @@ color the mask pairs with (white on everything but a white mask, which pairs bla
 caller names a `SilkscreenColor` a later `setSoldermaskColor` re-pairs nothing. Don't collapse this
 back to "mask setter also assigns silk" — call order would then decide the legend color.
 
+## Layer colours in the layer view
+
+`renderer.svg.LayerPalette.colorOf(LayerType, innerNumber)` is the colour a layer gets when layers
+are viewed individually, and it is decided by the layer's **type**, never its file name — the
+shipped NUCLEO example is named in words ("top layer.gbr") and used to render in the fallback grey,
+with "bottom **sol**der mask" reading as EAGLE's `.sol` bottom copper. The palette is KiCad's
+default PCB theme, except that In7/In8 take the Eco1/Eco2 colours so no two layers share one.
+The palette is KiCad's and only reads on KiCad's near-black canvas (its silkscreen is 1.0:1 against
+a light grey), so the viewer draws the layer view on `#001023`, KiCad's board background, in **both**
+themes — `--bg-viewer` in `index.html`, pinned by `LayerPaletteTest`; only the chrome follows the
+theme. `GerberViewerServer` assigns the colour after inner-layer normalisation (an inner layer is
+coloured by its index) and sends it in the render response; the viewer has no colour table of its own.
+
 ## Polarity masks
 
 Gerber is a painter's model: a clear object erases everything drawn before it where it lies.
