@@ -254,7 +254,12 @@ becomes something a renderer can draw, and `getFunction()`/`getSide()` invert it
 
 Inner-layer numbering is a **set-level** question. Protel (`.G1`) and Allegro (`IN1`) count inner
 layers from 1; Gerber X2 (`Copper,L2,Inr`) states the absolute stack position, so KiCad's `In1_Cu`
-arrives as 2. `LayerClassifier.normalizeInnerCopperNumbers(List)` shifts a whole set so its lowest
+arrives as 2. Altium's Protel-extension export numbers signal (`.G<n>`) and **plane** (`.GP<n>`)
+layers as two separate series — a six-layer board ships `G1 G2 GP1 GP2`, and reading the digit
+would make G1 and GP1 the same layer — so the classifier takes the number from the
+`G04 Layer_Physical_Order=<p>*` comment Altium writes on every copper file, which counts like X2's
+`L<p>` (issue #9's 6-layer test set reported 4 copper layers before the planes were recognised).
+`LayerClassifier.normalizeInnerCopperNumbers(List)` shifts a whole set so its lowest
 inner layer is 1 — shifting, not densely renumbering, so a gap stays a gap (a missing file, not a
 shorter stack-up). `PcbAnalyzer` applies it to the classifications it derived; a classification
 supplied on a `PcbFile` is final and is never renumbered.

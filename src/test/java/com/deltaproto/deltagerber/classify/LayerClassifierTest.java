@@ -4,6 +4,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -143,6 +145,48 @@ class LayerClassifierTest {
             assertLayer(PREFIX + ".GTP", null, LayerFunction.PASTE, LayerSide.TOP, null);
             assertLayer(PREFIX + ".GKO", null, LayerFunction.OUTLINE, LayerSide.NA, null);
             assertLayer(PREFIX + ".GM", null, LayerFunction.OUTLINE, LayerSide.NA, null);
+        }
+
+        @Test
+        @DisplayName("Altium plane layers (.GP<n>) are inner copper, placed by Layer_Physical_Order")
+        void altiumPlaneLayers() {
+            // From the name alone a plane layer is inner copper in its own series.
+            assertLayer(PREFIX + ".GP1", null, LayerFunction.COPPER, LayerSide.INNER, 1);
+            assertLayer(PREFIX + ".GP2", null, LayerFunction.COPPER, LayerSide.INNER, 2);
+
+            // The header places it: on a six-layer board the stack is GTL, GP1, G1, G2, GP2, GBL,
+            // so G1 and GP1 both carry a 1 and only the physical order can tell them apart.
+            assertLayer(PREFIX + ".GP1", altiumHeader(2), LayerFunction.COPPER, LayerSide.INNER, 2);
+            assertLayer(PREFIX + ".G1", altiumHeader(3), LayerFunction.COPPER, LayerSide.INNER, 3);
+            assertLayer(PREFIX + ".G2", altiumHeader(4), LayerFunction.COPPER, LayerSide.INNER, 4);
+            assertLayer(PREFIX + ".GP2", altiumHeader(5), LayerFunction.COPPER, LayerSide.INNER, 5);
+            assertEquals("inner copper 5", LayerClassifier.classify(PREFIX + ".GP2", altiumHeader(5)).name());
+
+            // Outer copper states an order too, and keeps carrying no number.
+            assertLayer(PREFIX + ".GTL", altiumHeader(1), LayerFunction.COPPER, LayerSide.TOP, null);
+            assertLayer(PREFIX + ".GBL", altiumHeader(6), LayerFunction.COPPER, LayerSide.BOTTOM, null);
+
+            // Normalised as a set, the four inner layers are 1–4 in stack order, none shared.
+            List<LayerClassification> set = LayerClassifier.normalizeInnerCopperNumbers(List.of(
+                    LayerClassifier.classify(PREFIX + ".GTL", altiumHeader(1)),
+                    LayerClassifier.classify(PREFIX + ".GP1", altiumHeader(2)),
+                    LayerClassifier.classify(PREFIX + ".G1", altiumHeader(3)),
+                    LayerClassifier.classify(PREFIX + ".G2", altiumHeader(4)),
+                    LayerClassifier.classify(PREFIX + ".GP2", altiumHeader(5)),
+                    LayerClassifier.classify(PREFIX + ".GBL", altiumHeader(6))));
+            assertEquals(6, set.stream().filter(c -> c.function() == LayerFunction.COPPER).count());
+            assertEquals(List.of(1, 2, 3, 4), set.stream()
+                    .filter(LayerClassification::isInnerCopper).map(LayerClassification::number).toList());
+        }
+
+        /** The header Altium Designer 25 writes on a Protel-extension copper layer. */
+        private static String altiumHeader(int physicalOrder) {
+            return "G04*\n"
+                    + "G04 #@! TF.GenerationSoftware,Altium Limited,Altium Designer,25.8.1 (18)*\n"
+                    + "G04*\n"
+                    + "G04 Layer_Physical_Order=" + physicalOrder + "*\n"
+                    + "G04 Layer_Color=32768*\n"
+                    + "%FSLAX25Y25*%\n%MOIN*%\nG70*\n";
         }
 
         @Test

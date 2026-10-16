@@ -32,7 +32,7 @@ import java.util.regex.Pattern;
  * ---------------- ------------ ------- ----------------- ---------------- ------------------ ------------------- --------------------------------
  * Top copper       COPPER       TOP     .GTL              F.Cu / F_Cu      toplayer           Copper_Signal_Top   .cmp .top copper_top
  * Bottom copper    COPPER       BOTTOM  .GBL              B.Cu / B_Cu      bottomlayer        Copper_Signal_Bot   .sol .bot copper_bottom
- * Inner copper n   COPPER       INNER   .G&lt;n&gt;L / .G&lt;n&gt;    In&lt;n&gt;.Cu          internalplane&lt;n&gt;    Copper_Signal_&lt;n&gt;   .ly&lt;n&gt; .in&lt;n&gt;
+ * Inner copper n   COPPER       INNER   .G&lt;n&gt;L / .G&lt;n&gt; / .GP&lt;n&gt;  In&lt;n&gt;.Cu    internalplane&lt;n&gt;    Copper_Signal_&lt;n&gt;   .ly&lt;n&gt; .in&lt;n&gt;
  * Top soldermask   SOLDERMASK   TOP     .GTS              F.Mask           topsoldermask      Soldermask_Top      .stc .tsm .smt mask_top
  * Bot soldermask   SOLDERMASK   BOTTOM  .GBS              B.Mask           bottomsoldermask   Soldermask_Bot      .sts .bsm .smb mask_bottom
  * Top silkscreen   SILKSCREEN   TOP     .GTO              F.SilkS          topsilkscreen      Legend_Top          .plc .tsk .sst legend_top
@@ -63,7 +63,11 @@ public final class LayerClassifier {
     private static final List<LayerPattern> PROTEL = List.of(
         new LayerPattern("top copper", LayerFunction.COPPER, LayerSide.TOP, "\\.gtl$"),
         new LayerPattern("bottom copper", LayerFunction.COPPER, LayerSide.BOTTOM, "\\.gbl$"),
-        new LayerPattern("inner copper %d", LayerFunction.COPPER, LayerSide.INNER, "\\.(g\\d+l?|g\\d+)$", TRAILING_NUMBER),
+        // Altium numbers its signal (.G<n>) and plane (.GP<n>) inner layers in two separate
+        // series, so a six-layer board ships G1, G2, GP1 and GP2 — and the <n> alone cannot place
+        // them in the stack. The number here is corrected from the Layer_Physical_Order comment
+        // Altium writes on every copper layer; see classify().
+        new LayerPattern("inner copper %d", LayerFunction.COPPER, LayerSide.INNER, "\\.(g\\d+l?|gp\\d+)$", TRAILING_NUMBER),
         new LayerPattern("top soldermask", LayerFunction.SOLDERMASK, LayerSide.TOP, "\\.gts$"),
         new LayerPattern("bottom soldermask", LayerFunction.SOLDERMASK, LayerSide.BOTTOM, "\\.gbs$"),
         new LayerPattern("top silkscreen", LayerFunction.SILKSCREEN, LayerSide.TOP, "\\.gto$"),
@@ -206,8 +210,47 @@ public final class LayerClassifier {
         if (match == null && GERBER_DRAWING.matches(fileName)) {
             match = GERBER_DRAWING.classify(fileName);
         }
-        return match;
+        return withPhysicalOrder(match, fileContent);
     }
+
+    /**
+     * Replace an inner copper layer's number by the stack position its header states.
+     *
+     * <p>Altium's Protel-extension export numbers signal layers ({@code .G1 .G2}) and plane layers
+     * ({@code .GP1 .GP2}) as two separate series, so the digit in the name says nothing about where
+     * the layer sits: on a six-layer board the stack reads GTL, GP1, G1, G2, GP2, GBL. Each copper
+     * file carries {@code G04 Layer_Physical_Order=<p>*}, the absolute position counted from the
+     * top copper — the same convention as X2's {@code Copper,L<p>}, which
+     * {@link #normalizeInnerCopperNumbers} already brings back to 1. Without it, G1 and GP1 would
+     * both be inner layer 1 and the set would lose a layer.
+     */
+    private static LayerClassification withPhysicalOrder(LayerClassification match, String fileContent) {
+        if (match == null || !match.isInnerCopper()) {
+            return match;
+        }
+        Integer order = parseLayerPhysicalOrder(fileContent);
+        if (order == null || order.equals(match.number())) {
+            return match;
+        }
+        return new LayerClassification("inner copper " + order, LayerFunction.COPPER, LayerSide.INNER, order);
+    }
+
+    /**
+     * Parse Altium's {@code G04 Layer_Physical_Order=<p>*} header comment: the layer's absolute
+     * position in the copper stack, 1 being the top copper.
+     *
+     * @return the position, or null when the header does not state one
+     */
+    public static Integer parseLayerPhysicalOrder(String fileContent) {
+        if (fileContent == null || fileContent.isEmpty()) {
+            return null;
+        }
+        Matcher matcher = LAYER_PHYSICAL_ORDER.matcher(fileContent);
+        return matcher.find() ? Integer.valueOf(matcher.group(1)) : null;
+    }
+
+    private static final Pattern LAYER_PHYSICAL_ORDER = Pattern.compile(
+        "G04\\s+Layer_Physical_Order=(\\d+)\\s*\\*");
 
     /**
      * Formats that are never artwork, and whose extension must therefore not be stripped when
@@ -392,8 +435,10 @@ public final class LayerClassifier {
      * <p>Generators disagree on where to start counting. Protel names its inner layers
      * {@code .G1 .G2 …} and Cadence Allegro names them {@code IN1 IN2 …}, both counting the inner
      * layers themselves. Gerber X2 writes {@code Copper,L2,Inr} — the <em>absolute</em> stack
-     * position, where L1 is the top copper — so KiCad's {@code In1_Cu} arrives as 2. Left alone,
-     * the same four-inner-layer board is numbered 1–4 by one tool and 2–5 by another.
+     * position, where L1 is the top copper — so KiCad's {@code In1_Cu} arrives as 2, and Altium's
+     * {@code Layer_Physical_Order} (which {@link #classify} prefers over the digit in {@code .G1}
+     * or {@code .GP1}) counts the same way. Left alone, the same four-inner-layer board is
+     * numbered 1–4 by one tool and 2–5 by another.
      *
      * <p>Only a whole set can settle this: a single file cannot know whether its 2 means "second
      * inner layer" or "second layer of the stack". So every inner index is shifted by the same
