@@ -126,6 +126,18 @@ color the mask pairs with (white on everything but a white mask, which pairs bla
 caller names a `SilkscreenColor` a later `setSoldermaskColor` re-pairs nothing. Don't collapse this
 back to "mask setter also assigns silk" — call order would then decide the legend color.
 
+## Paste and stencil in the realistic view
+
+`renderRealistic` emits the side's solder paste twice, **hidden**: a `pcb-paste` group drawing the
+paste over the finished board, and a `pcb-stencil` group — a square foil `STENCIL_MARGIN_MM` (300 mm)
+beyond the board on every side, with the apertures cut out by the same artwork used in black in
+`stencil-mask`. Both sit outside the outline clip, because the sheet reaches far past the board, and
+both are `display="none"`, so a PNG thumbnail rasterised from the same SVG shows neither. The
+viewer's paste row (shown with Board Top / Board Bottom) switches one or the other on, previews it on
+hover, and sets its opacity — all client-side, no re-render. Only the side's own paste file goes in
+(`filterForSide` and the server's twin filter both pass `PASTE_TOP` to the top render), and a side
+without one gets no groups, which is what greys the row out.
+
 ## Negative copper images (plane layers)
 
 Altium's plane layers (`.GP1`, `.GP2`) declare `.FilePolarity,Negative` and draw their

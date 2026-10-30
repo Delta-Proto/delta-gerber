@@ -188,6 +188,17 @@
         .view-tab.has-warnings { color: #b45309; }
         .view-tab.has-warnings.active { color: #b45309; }
         .view-tab.has-warnings::before { content: '⚠ '; }
+        /* Paste row under the tabs, shown with the realistic views: paste on/off, as a stencil,
+           and how opaque. */
+        .paste-controls {
+            display: flex; align-items: center; gap: 18px; padding: 6px 16px;
+            background: var(--bg-card); border-bottom: 1px solid var(--border);
+            font-size: 0.8125rem; color: var(--fg-muted);
+        }
+        .paste-opt { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+        .paste-opt input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--checkbox-accent); margin: 0; }
+        .paste-opt input[type="range"] { width: 120px; accent-color: var(--primary); margin: 0; }
+        .paste-controls.unavailable .paste-opt { opacity: 0.4; cursor: not-allowed; }
         /* Soldermask color swatches — pick the realistic view's mask color. */
         .soldermask-swatches {
             display: inline-flex; align-items: center; gap: 5px;
@@ -230,7 +241,7 @@
             padding: 2px 8px; border-radius: 6px; cursor: pointer; font-size: 0.6875rem;
             transition: background 0.15s, color 0.15s; font-family: inherit; font-weight: 500;
         }
-        .side-btn:hover { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+        .side-btn:hover, .side-btn.active { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
         .layer-list { display: flex; flex-direction: column; gap: 3px; }
         .layer-item {
             display: flex; align-items: center; gap: 10px; padding: 8px 10px;
@@ -291,7 +302,7 @@
         .drop-zone small { font-size: 0.85rem; color: var(--fg-muted); }
         .drag-over { background: var(--drag-tint) !important; }
         .loading {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 3;
             text-align: center; background: var(--loading-bg); padding: 32px 48px;
             border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); border: 1px solid var(--border);
         }
@@ -472,6 +483,8 @@
             .view-tab { white-space: nowrap; flex-shrink: 0; padding: 9px 12px; }
             .soldermask-swatches { flex-shrink: 0; }
             .sm-swatch { width: 22px; height: 22px; }
+            .paste-controls { gap: 14px; padding: 6px 10px; flex-wrap: wrap; }
+            .paste-opt input[type="range"] { width: 90px; }
             .step-thickness { flex-shrink: 0; }
 
             .zoom-controls { top: 8px; right: 8px; gap: 6px; }
@@ -539,8 +552,8 @@
                         style="width:16px; height:16px; accent-color:var(--checkbox-accent);">
                     <h2 style="margin-bottom:0;">Layers <span class="layer-count" id="layer-count"></span></h2>
                     <div style="display:flex; gap:4px; margin-left:auto;">
-                        <button class="side-btn" onclick="selectSide('top')" title="Show top layers only">Top</button>
-                        <button class="side-btn" onclick="selectSide('bottom')" title="Show bottom layers only">Bot</button>
+                        <button class="side-btn" id="side-top" onclick="selectSide('top')" title="Show top layers only">Top</button>
+                        <button class="side-btn" id="side-bottom" onclick="selectSide('bottom')" title="Show bottom layers only">Bot</button>
                     </div>
                     <svg class="sheet-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
                         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 15 12 9 18 15"/></svg>
@@ -615,6 +628,17 @@
                     <span>STEP</span>
                 </button>
             </div>
+            <div class="paste-controls hidden" id="paste-controls">
+                <label class="paste-opt" id="paste-label" title="Show the solder paste of this side over the board">
+                    <input type="checkbox" id="paste-toggle" onchange="setPasteShown(this.checked)"> Paste
+                </label>
+                <label class="paste-opt" id="stencil-label" title="Show the paste as a stencil: a foil with the apertures cut out">
+                    <input type="checkbox" id="stencil-toggle" onchange="setStencil(this.checked)"> Stencil
+                </label>
+                <label class="paste-opt" title="Opacity of the paste or the stencil">
+                    Opacity <input type="range" id="paste-opacity" min="0" max="100" value="85" oninput="setPasteOpacity(this.value)">
+                </label>
+            </div>
             <div class="viewer-container" id="viewer-container">
                 <div class="zoom-controls">
                     <button class="zoom-btn" id="zoom-out" title="Zoom Out">-</button>
@@ -622,7 +646,7 @@
                     <button class="zoom-btn" id="zoom-in" title="Zoom In">+</button>
                     <button class="zoom-btn" id="zoom-fit" title="Fit to View">&#8644;</button>
                 </div>
-                <div class="grid-hint" id="grid-hint">Grid 10 &times; 10 mm</div>
+                <div class="grid-hint" id="grid-hint">Grid 10 &times; 10 mm<span id="view-hint"></span></div>
                 <div class="drop-zone" id="drop-zone">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
@@ -1087,6 +1111,7 @@
         async function loadExample() {
             const loadingStatus = document.getElementById('loading-status');
             const progressBar = document.querySelector('.progress-bar');
+            showCanvas();
             dropZone.classList.add('hidden');
             loading.classList.remove('hidden');
             progressBar.classList.add('progress-bar-indeterminate');
@@ -1111,6 +1136,7 @@
             if (!file.name.endsWith('.zip')) { alert('Please select a ZIP file'); return; }
             const loadingStatus = document.getElementById('loading-status');
             const progressBar = document.querySelector('.progress-bar');
+            showCanvas();
             dropZone.classList.add('hidden');
             loading.classList.remove('hidden');
             progressBar.classList.add('progress-bar-indeterminate');
@@ -1206,15 +1232,32 @@
 
             currentView = 'layers';
             document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.dataset.view === 'layers'));
+            document.getElementById('paste-controls').classList.add('hidden');
             renderSvg();
             renderLayerList();
             fitToView();
+        }
+
+        /**
+         * Bring the canvas forward so the Processing dialog on it can be seen: a panel view
+         * (centroid, warnings, PCB info) hides the canvas, and on a phone so does an open layer
+         * sheet — which is where the recent-project list lives.
+         */
+        function showCanvas() {
+            ['centroid-panel', 'warnings-panel', 'pcbinfo-panel'].forEach(id =>
+                document.getElementById(id).classList.add('hidden'));
+            document.getElementById('viewer-container').classList.remove('hidden');
+            const sidebar = document.getElementById('sidebar');
+            const head = document.getElementById('sidebar-head');
+            if (sidebar) sidebar.classList.remove('open');
+            if (head) head.setAttribute('aria-expanded', 'false');
         }
 
         // ===== Re-open from IndexedDB =====
         async function reopenProject(id) {
             const loadingStatus = document.getElementById('loading-status');
             const progressBar = document.querySelector('.progress-bar');
+            showCanvas();
             dropZone.classList.add('hidden');
             loading.classList.remove('hidden');
             progressBar.classList.add('progress-bar-indeterminate');
@@ -1264,6 +1307,7 @@
                 </div>`;
             }).join('');
             updateSelectAllCheckbox();
+            updateSideButtons();
         }
 
         function updateSelectAllCheckbox() {
@@ -1286,13 +1330,84 @@
         const BOTTOM_TYPES = ['COPPER_BOTTOM','SOLDERMASK_BOTTOM','SILKSCREEN_BOTTOM','PASTE_BOTTOM','PNP_BOTTOM'];
         const SHARED_TYPES = ['OUTLINE','DRILL','DRILL_PLATED','DRILL_NON_PLATED'];
 
-        function selectSide(side) {
+        /** The layers the Top or Bot button shows: that side's own, plus what both sides share. */
+        function sidePick(side) {
             const sideTypes = side === 'top' ? TOP_TYPES : BOTTOM_TYPES;
-            layers.forEach(l => {
-                l.visible = sideTypes.includes(l.layerType) || SHARED_TYPES.includes(l.layerType);
-            });
+            return layers.filter(l => sideTypes.includes(l.layerType) || SHARED_TYPES.includes(l.layerType));
+        }
+
+        function selectSide(side) {
+            const pick = sidePick(side);
+            layers.forEach(l => { l.visible = pick.includes(l); });
             applyLayerVisibility();
             renderLayerList();
+        }
+
+        /**
+         * The side whose button's selection the visible layers are, exactly — so the button stays
+         * lit after a click until a layer is toggled away from it — or null. A pick with none of
+         * the side's own layers in it (a set with no bottom files) names no side.
+         */
+        function selectedSide() {
+            const visible = layers.filter(l => l.visible);
+            for (const side of ['top', 'bottom']) {
+                const sideTypes = side === 'top' ? TOP_TYPES : BOTTOM_TYPES;
+                const pick = sidePick(side);
+                if (pick.some(l => sideTypes.includes(l.layerType))
+                    && pick.length === visible.length && pick.every(l => l.visible)) return side;
+            }
+            return null;
+        }
+
+        function updateSideButtons() {
+            const side = selectedSide();
+            document.getElementById('side-top').classList.toggle('active', side === 'top');
+            document.getElementById('side-bottom').classList.toggle('active', side === 'bottom');
+        }
+
+        /**
+         * Whether the layer view is looking at the board from below: every visible layer is a
+         * bottom layer. The outline and the drills belong to both sides, so they never decide it,
+         * and on their own they are not a bottom view either.
+         */
+        function bottomSideShown() {
+            const visible = layers.filter(l => l.visible);
+            return visible.some(l => BOTTOM_TYPES.includes(l.layerType))
+                && visible.every(l => BOTTOM_TYPES.includes(l.layerType) || SHARED_TYPES.includes(l.layerType));
+        }
+
+        /** Whether what is on the canvas is seen from below — and so drawn mirrored. */
+        function viewFlipped() {
+            return currentView === 'bottom' || (currentView === 'layers' && bottomSideShown());
+        }
+
+        /**
+         * Mirror the viewport group about the viewBox's vertical centre line, or put it back: the
+         * group's own transform is kept on it the first time, so the flip can be applied and
+         * undone in place, without re-parsing the SVG. The caption beside the grid says which
+         * way the board is being looked at.
+         */
+        function setViewportFlip(svg, flip) {
+            const vb = svg.getAttribute('viewBox');
+            const viewport = svg.querySelector('#viewport');
+            if (!vb || !viewport) return;
+            if (viewport.dataset.transform === undefined) {
+                viewport.dataset.transform = viewport.getAttribute('transform') || '';
+            }
+            const [vx,,vw] = vb.split(' ').map(Number);
+            const base = viewport.dataset.transform;
+            viewport.setAttribute('transform', flip ? `translate(${vx + vw + vx}, 0) scale(-1, 1) ${base}` : base);
+            setViewHint(flip ? 'Bottom view' : 'Top view');
+        }
+
+        function setViewHint(text) {
+            const hint = document.getElementById('view-hint');
+            if (hint) hint.textContent = text ? ' \u00b7 ' + text : '';
+        }
+
+        /** Where a Gerber x lands in the SVG's frame: mirrored when the board is seen from below. */
+        function viewX(x, vx, vw) {
+            return viewFlipped() ? 2 * vx + vw - x : x;
         }
 
         function toggleLayer(index) {
@@ -1306,6 +1421,12 @@
             for (const layer of layers) {
                 const el = svgContent.querySelector(`#${CSS.escape(layer.id)}`);
                 if (el) el.setAttribute('display', layer.visible ? 'inline' : 'none');
+            }
+            // A selection that has become (or stopped being) the bottom side turns the view over.
+            const svg = svgContent.querySelector('svg');
+            if (svg) {
+                setViewportFlip(svg, viewFlipped());
+                drawDfmMarker(svg);
             }
         }
 
@@ -1381,13 +1502,14 @@
 
         // ===== SVG rendering =====
         function renderSvg() {
-            let svgStr = null, flipX = false;
+            let svgStr = null;
             if (currentView === 'layers') svgStr = combinedSvg;
             else if (currentView === 'top') svgStr = realisticTopSvg;
-            else if (currentView === 'bottom') { svgStr = realisticBottomSvg; flipX = true; }
+            else if (currentView === 'bottom') svgStr = realisticBottomSvg;
 
             if (!svgStr) {
                 svgContent.innerHTML = '<div style="color:#666;text-align:center;padding:40px;">No realistic view available.<br><small>Ensure an Outline layer type is assigned.</small></div>';
+                setViewHint('');
                 return;
             }
             const parser = new DOMParser();
@@ -1401,15 +1523,9 @@
                     svg.setAttribute('height', h + 'mm');
                 }
                 svg.style.overflow = 'visible';
-                if (flipX && vb) {
-                    const [vx,,vw] = vb.split(' ').map(Number);
-                    const viewport = svg.querySelector('#viewport');
-                    if (viewport) {
-                        const t = viewport.getAttribute('transform') || '';
-                        viewport.setAttribute('transform', `translate(${vx + vw + vx}, 0) scale(-1, 1) ${t}`);
-                    }
-                }
+                setViewportFlip(svg, viewFlipped());
                 applySoldermaskColor(svg);
+                if (currentView === 'top' || currentView === 'bottom') applyPasteOverlay(svg);
                 svgContent.innerHTML = '';
                 svgContent.appendChild(svg);
                 drawDfmMarker(svg);
@@ -1440,8 +1556,8 @@
             const svg = svgContent.querySelector('svg');
             const vb = svg && svg.getAttribute('viewBox');
             if (!vb) return;
-            const [vx, vy, , vh] = vb.split(' ').map(Number);
-            const px = (x - vx) * PX_PER_MM;
+            const [vx, vy, vw, vh] = vb.split(' ').map(Number);
+            const px = (viewX(x, vx, vw) - vx) * PX_PER_MM;
             const py = (vy + vh - y) * PX_PER_MM;
             const rect = svgContainer.getBoundingClientRect();
             const height = visibleHeight(rect);
@@ -1453,11 +1569,12 @@
         }
 
         function drawDfmMarker(svg) {
+            svg.querySelectorAll('#dfm-marker').forEach(el => el.remove());
             if (!dfmMarker || currentView !== 'layers') return;
             const vb = svg.getAttribute('viewBox');
             if (!vb) return;
-            const [, vy, , vh] = vb.split(' ').map(Number);
-            const cx = dfmMarker.x, cy = 2 * vy + vh - dfmMarker.y;
+            const [vx, vy, vw, vh] = vb.split(' ').map(Number);
+            const cx = viewX(dfmMarker.x, vx, vw), cy = 2 * vy + vh - dfmMarker.y;
             const ns = 'http://www.w3.org/2000/svg';
             const g = document.createElementNS(ns, 'g');
             g.setAttribute('id', 'dfm-marker');
@@ -1513,6 +1630,70 @@
             });
         }
 
+        // ===== Paste and stencil (realistic views) =====
+        // The realistic SVG carries the side's paste twice, hidden: as paste (.pcb-paste) and as
+        // a stencil sheet with the apertures cut out (.pcb-stencil). Which one shows, and how
+        // opaque, is decided here and re-applied whenever the view is rendered. Hovering a
+        // checkbox's label previews it without committing.
+        const pasteView = {shown: false, stencil: false, opacity: 0.85, hover: null};
+
+        function applyPasteOverlay(svg) {
+            const controls = document.getElementById('paste-controls');
+            const paste = svg && svg.querySelector('.pcb-paste');
+            const stencil = svg && svg.querySelector('.pcb-stencil');
+            const available = !!paste;
+            controls.classList.toggle('unavailable', !available);
+            controls.querySelectorAll('input').forEach(i => i.disabled = !available);
+            controls.title = available ? '' : 'This side has no paste layer';
+            if (!available) return;
+            const shown = pasteView.shown || pasteView.hover !== null;
+            const asStencil = pasteView.hover !== null ? pasteView.hover === 'stencil' : pasteView.stencil;
+            paste.setAttribute('display', shown && !asStencil ? 'inline' : 'none');
+            paste.setAttribute('opacity', pasteView.opacity);
+            if (stencil) {
+                stencil.setAttribute('display', shown && asStencil ? 'inline' : 'none');
+                stencil.setAttribute('opacity', pasteView.opacity);
+            }
+        }
+
+        function refreshPasteOverlay() {
+            applyPasteOverlay(svgContent.querySelector('svg'));
+        }
+
+        function setPasteShown(on) {
+            pasteView.shown = on;
+            if (!on) {
+                pasteView.stencil = false;
+                document.getElementById('stencil-toggle').checked = false;
+            }
+            refreshPasteOverlay();
+        }
+
+        /** A stencil is the paste shown inverted, so asking for one shows the paste too. */
+        function setStencil(on) {
+            pasteView.stencil = on;
+            if (on && !pasteView.shown) {
+                pasteView.shown = true;
+                document.getElementById('paste-toggle').checked = true;
+            }
+            refreshPasteOverlay();
+        }
+
+        function setPasteOpacity(percent) {
+            pasteView.opacity = Math.max(0, Math.min(100, Number(percent))) / 100;
+            refreshPasteOverlay();
+        }
+
+        (function initPasteHover() {
+            // A touch screen has no hover; a tap would preview what it is about to toggle.
+            if (window.matchMedia('(hover: none)').matches) return;
+            for (const [id, mode] of [['paste-label', 'paste'], ['stencil-label', 'stencil']]) {
+                const label = document.getElementById(id);
+                label.addEventListener('mouseenter', () => { pasteView.hover = mode; refreshPasteOverlay(); });
+                label.addEventListener('mouseleave', () => { pasteView.hover = null; refreshPasteOverlay(); });
+            }
+        })();
+
         function switchView(view) {
             if (view === 'top' && !realisticTopSvg) return;
             if (view === 'bottom' && !realisticBottomSvg) return;
@@ -1521,6 +1702,7 @@
             if (view === 'pcbinfo' && !pcbInfo) return;
             currentView = view;
             document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
+            document.getElementById('paste-controls').classList.toggle('hidden', view !== 'top' && view !== 'bottom');
             const vc = document.getElementById('viewer-container');
             const cp = document.getElementById('centroid-panel');
             const wp = document.getElementById('warnings-panel');

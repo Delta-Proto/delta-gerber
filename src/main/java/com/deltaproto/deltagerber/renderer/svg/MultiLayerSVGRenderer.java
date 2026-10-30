@@ -626,6 +626,13 @@ public class MultiLayerSVGRenderer {
     private static final String COPPER_COLOR = "#cccccc";         // Silver/gray copper under soldermask
     private static final String COPPER_FINISH_COLOR = "#cc9933";  // Gold HASL/ENIG finish on exposed pads
     private static final double SOLDERMASK_DEFAULT_OPACITY = 0.75;
+    private static final String PASTE_COLOR = "#8d9499";          // Solder paste, a dull grey
+    private static final String STENCIL_COLOR = "#b7bcc1";        // Stainless stencil foil
+    /**
+     * The stencil sheet {@link #renderRealistic} draws extends this far beyond the board on
+     * every side; it is square, so the longer side of the board sets its size.
+     */
+    public static final double STENCIL_MARGIN_MM = 300;
 
     /**
      * Hard ceiling on either raster dimension, and on the total pixel count, handed to
@@ -839,6 +846,10 @@ public class MultiLayerSVGRenderer {
      *       <li>Silkscreen (white text/markings, only where soldermask is present)</li>
      *     </ul>
      *   </li>
+     *   <li>Solder paste and a stencil, both hidden ({@code display="none"}): the side's paste
+     *       as a {@code pcb-paste} group over the board, and a {@code pcb-stencil} group — a
+     *       square foil {@link #STENCIL_MARGIN_MM} beyond the board with the apertures cut
+     *       out. The viewer's paste row shows one or the other and sets its opacity.</li>
      * </ol>
      *
      * Colors can be overridden via {@link Layer#setColor(String)}. Soldermask opacity
@@ -857,12 +868,17 @@ public class MultiLayerSVGRenderer {
         List<Layer> copperLayers = new ArrayList<>();
         List<Layer> soldermaskLayers = new ArrayList<>();
         List<Layer> silkscreenLayers = new ArrayList<>();
+        List<Layer> pasteLayers = new ArrayList<>();
         List<Layer> drillLayers = new ArrayList<>();
 
         for (Layer layer : layers) {
             switch (layer.getLayerType()) {
                 case OUTLINE:
                     outlineLayer = layer;
+                    break;
+                case PASTE_TOP:
+                case PASTE_BOTTOM:
+                    if (layer.isGerber()) pasteLayers.add(layer);
                     break;
                 case COPPER_TOP:
                 case COPPER_BOTTOM:
@@ -961,6 +977,7 @@ public class MultiLayerSVGRenderer {
         gerberLayers.addAll(copperLayers);
         gerberLayers.addAll(soldermaskLayers);
         gerberLayers.addAll(silkscreenLayers);
+        gerberLayers.addAll(pasteLayers);
         // Gerber X2 drill files (e.g. KiCad's *-PTH-drl.gbr) are Gerber-backed but
         // classified as DRILL layers. They still need aperture defs so the mech-mask
         // can reference their flashes via <use>.
@@ -999,6 +1016,46 @@ public class MultiLayerSVGRenderer {
         for (Layer layer : silkscreenLayers) {
             generatePolarityMaskDefs(svg, layer, aperturePrefixes, layerIndexMap,
                 polarityGroups, maskRect);
+        }
+        for (Layer layer : pasteLayers) {
+            generatePolarityMaskDefs(svg, layer, aperturePrefixes, layerIndexMap,
+                polarityGroups, maskRect);
+        }
+
+        // Paste and stencil. The paste artwork is defined once, as a symbol the viewer can show
+        // over the finished board, and used a second time — in black — to cut the apertures out
+        // of a stencil sheet: a square foil STENCIL_MARGIN_MM beyond the board on every side,
+        // with the board showing through where paste would be printed. Both are emitted hidden
+        // (display="none"); the viewer's paste row switches them on and sets their opacity, so a
+        // PNG thumbnail, which rasterises this same SVG, never shows either.
+        BoundingBox boardBounds = (haveOutlineLayer && outlineLayer.getBoundingBox().isValid())
+            ? outlineLayer.getBoundingBox() : globalBounds;
+        double stencilSide = Math.max(boardBounds.getWidth(), boardBounds.getHeight())
+            + 2 * STENCIL_MARGIN_MM;
+        String stencilRectAttrs = String.format(Locale.US,
+            "x=\"%.6f\" y=\"%.6f\" width=\"%.6f\" height=\"%.6f\"",
+            boardBounds.getMinX() + boardBounds.getWidth() / 2 - stencilSide / 2,
+            boardBounds.getMinY() + boardBounds.getHeight() / 2 - stencilSide / 2,
+            stencilSide, stencilSide);
+        if (!pasteLayers.isEmpty()) {
+            for (Layer layer : pasteLayers) {
+                String apPrefix = aperturePrefixes.get(layer);
+                String maskPrefix = "L" + layerIndexMap.get(layer) + "_cm";
+                svg.append(String.format("  <g id=\"L%d_paste\">\n", layerIndexMap.get(layer)));
+                SvgOptions pasteOptions = svgOptions.copy()
+                    .setApertureIdPrefix(apPrefix)
+                    .setDarkColor("currentColor").setClearColor("currentColor").setFlipY(flipY);
+                PolarityMaskHelper.renderWithMasks(svg, polarityGroups.get(layer), maskPrefix, pasteOptions);
+                svg.append("  </g>\n");
+            }
+            svg.append(String.format("  <mask id=\"stencil-mask\" maskUnits=\"userSpaceOnUse\" %s>\n",
+                stencilRectAttrs));
+            svg.append(String.format("    <rect %s fill=\"white\"/>\n", stencilRectAttrs));
+            for (Layer layer : pasteLayers) {
+                svg.append(String.format("    <use href=\"#L%d_paste\" color=\"black\"/>\n",
+                    layerIndexMap.get(layer)));
+            }
+            svg.append("  </mask>\n");
         }
 
         // Soldermask masks (two per soldermask layer):
@@ -1206,6 +1263,22 @@ public class MultiLayerSVGRenderer {
         }
 
         svg.append("  </g>\n"); // close board-outline clip + mech-mask group
+
+        // 5. Paste and stencil, hidden until the viewer asks for them — outside the outline clip,
+        // because the stencil sheet reaches far beyond the board.
+        if (!pasteLayers.isEmpty()) {
+            svg.append(String.format(
+                "  <g class=\"pcb-paste\" display=\"none\" fill=\"currentColor\" color=\"%s\" " +
+                "stroke=\"none\" stroke-width=\"0\">\n", PASTE_COLOR));
+            for (Layer layer : pasteLayers) {
+                svg.append(String.format("    <use href=\"#L%d_paste\"/>\n", layerIndexMap.get(layer)));
+            }
+            svg.append("  </g>\n");
+            svg.append(String.format(
+                "  <g class=\"pcb-stencil\" display=\"none\">\n" +
+                "    <rect %s fill=\"%s\" mask=\"url(#stencil-mask)\"/>\n" +
+                "  </g>\n", stencilRectAttrs, STENCIL_COLOR));
+        }
 
         svg.append("</g>\n");
         svg.append("</svg>");
@@ -2484,11 +2557,13 @@ public class MultiLayerSVGRenderer {
                 out.add(layer);
                 hasOutline = true;
             } else if (side == Side.TOP && (lt == LayerType.COPPER_TOP
-                    || lt == LayerType.SOLDERMASK_TOP || lt == LayerType.SILKSCREEN_TOP)) {
+                    || lt == LayerType.SOLDERMASK_TOP || lt == LayerType.SILKSCREEN_TOP
+                    || lt == LayerType.PASTE_TOP)) {
                 out.add(layer);
                 if (lt == LayerType.COPPER_TOP) hasCopper = true;
             } else if (side == Side.BOTTOM && (lt == LayerType.COPPER_BOTTOM
-                    || lt == LayerType.SOLDERMASK_BOTTOM || lt == LayerType.SILKSCREEN_BOTTOM)) {
+                    || lt == LayerType.SOLDERMASK_BOTTOM || lt == LayerType.SILKSCREEN_BOTTOM
+                    || lt == LayerType.PASTE_BOTTOM)) {
                 out.add(layer);
                 if (lt == LayerType.COPPER_BOTTOM) hasCopper = true;
             } else if (lt == LayerType.COPPER_INNER) {

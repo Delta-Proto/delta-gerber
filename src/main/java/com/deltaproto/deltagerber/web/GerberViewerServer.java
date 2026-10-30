@@ -1163,10 +1163,10 @@ public class GerberViewerServer {
                 if (lt == LayerType.OUTLINE) {
                     sideLayers.add(layer);
                 } else if (topSide && (lt == LayerType.COPPER_TOP || lt == LayerType.SOLDERMASK_TOP
-                        || lt == LayerType.SILKSCREEN_TOP)) {
+                        || lt == LayerType.SILKSCREEN_TOP || lt == LayerType.PASTE_TOP)) {
                     sideLayers.add(layer);
                 } else if (!topSide && (lt == LayerType.COPPER_BOTTOM || lt == LayerType.SOLDERMASK_BOTTOM
-                        || lt == LayerType.SILKSCREEN_BOTTOM)) {
+                        || lt == LayerType.SILKSCREEN_BOTTOM || lt == LayerType.PASTE_BOTTOM)) {
                     sideLayers.add(layer);
                 } else if (lt == LayerType.DRILL || lt == LayerType.DRILL_PLATED
                         || lt == LayerType.DRILL_NON_PLATED) {
