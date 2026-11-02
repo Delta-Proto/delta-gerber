@@ -1,5 +1,6 @@
 package com.deltaproto.deltagerber.model.gerber.aperture.macro;
 
+import java.math.BigDecimal;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -41,10 +42,23 @@ public class MacroExpression {
             if (value == null) {
                 value = 0.0;
             }
-            matcher.appendReplacement(result, String.valueOf(value));
+            matcher.appendReplacement(result, plain(value));
         }
         matcher.appendTail(result);
         return result.toString();
+    }
+
+    /**
+     * A value written back into expression text, as digits only. {@code Double.toString} switches
+     * to an exponent below 1e-3 and from 1e7 ({@code 0.0001} is {@code "1.0E-4"}), and the
+     * exponent's '-' then reads as a subtraction. {@code BigDecimal.valueOf(double)} keeps the
+     * shortest round-trip digits; {@code toPlainString} drops the exponent.
+     */
+    private static String plain(double value) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            return Double.toString(value);
+        }
+        return BigDecimal.valueOf(value).toPlainString();
     }
 
     private double parseExpression(String expr) {
@@ -62,7 +76,7 @@ public class MacroExpression {
             }
             String inner = expr.substring(start + 1, end);
             double innerResult = parseAddSub(inner);
-            expr = expr.substring(0, start) + innerResult + expr.substring(end + 1);
+            expr = expr.substring(0, start) + plain(innerResult) + expr.substring(end + 1);
         }
 
         return parseAddSub(expr);
