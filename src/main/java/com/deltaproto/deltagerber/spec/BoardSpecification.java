@@ -10,6 +10,7 @@ import com.deltaproto.deltagerber.dfm.HoleSpacingResult;
 import com.deltaproto.deltagerber.dfm.ViaInPadGroup;
 import com.deltaproto.deltagerber.dfm.ViaInPadPolicy;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
+import com.deltaproto.deltagerber.dfm.ViaInPadSummary;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.FormatSpec;
 
@@ -418,7 +419,10 @@ public final class BoardSpecification {
         return viaInPad == null ? null : viaInPad.hasViaInPad();
     }
 
-    /** How many vias in pad were found; 0 when there are none or it was not determined. */
+    /**
+     * How many vias in pad were found — distinct hole locations, so a stacked microvia or a hole two
+     * drill files both carry counts once; 0 when there are none or it was not determined.
+     */
     public int getViaInPadCount() {
         return viaInPad == null ? 0 : viaInPad.getCount();
     }
@@ -455,6 +459,21 @@ public final class BoardSpecification {
      * The vias in pad grouped by the pad they sit in, each with its area, via count and hole
      * diameter — empty when there are none or via-in-pad was not determined.
      */
+    /**
+     * The evidence behind {@link #requiresFilledAndCappedVias()}: pads with a hole, how many are
+     * thermal and how many need fill, and the pads needing fill grouped by identical pad with their
+     * paste file and locations. {@code null} when via-in-pad was not determined. See
+     * {@link ViaInPadSummary}.
+     */
+    public ViaInPadSummary getViaInPadSummary() {
+        return viaInPad == null ? null : viaInPad.summarize();
+    }
+
+    /** As {@link #getViaInPadSummary()}, judged by {@code policy} and listing up to {@code maxKinds} kinds of fill pad. */
+    public ViaInPadSummary getViaInPadSummary(ViaInPadPolicy policy, int maxKinds) {
+        return viaInPad == null ? null : viaInPad.summarize(policy, maxKinds);
+    }
+
     public List<ViaInPadGroup> getViaInPadGroups() {
         return viaInPad == null ? List.of() : viaInPad.getGroups();
     }

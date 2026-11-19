@@ -679,6 +679,7 @@ public final class DrillGerberAlignment {
     private static DrillDocument translate(DrillDocument src, double dx, double dy) {
         DrillDocument out = new DrillDocument();
         out.setFileName(src.getFileName());
+        out.setSpan(src.getSpan());
         out.setUnit(src.getUnit());
         out.setCoordinateMode(src.getCoordinateMode());
         out.setIntegerDigits(src.getIntegerDigits());

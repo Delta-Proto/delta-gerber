@@ -139,6 +139,13 @@ public class ExcellonParser {
                 explicitFormatSet = true;
                 log.trace("Explicit FILE_FORMAT set to {}:{}", fileFormatMatcher.group(1), fileFormatMatcher.group(2));
             }
+            // KiCad repeats the X2 file function in a header comment, layer span included.
+            if (document.getSpan() == null) {
+                DrillSpan span = DrillSpan.ofComment(comment);
+                if (span != null) {
+                    document.setSpan(span);
+                }
+            }
             // Plating for the tools that follow (;TYPE=PLATED / ;TYPE=NON_PLATED)
             Matcher typeMatcher = TYPE_COMMENT.matcher(comment);
             if (typeMatcher.find()) {

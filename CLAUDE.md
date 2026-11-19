@@ -340,6 +340,26 @@ starve the joint. Either makes the pad thermal and needs no cap; anything else �
 fabricators disagree about exactly where it sits, so every judging method takes a `ViaInPadPolicy`
 overload.
 
+**A via is a hole location, and only one that reaches the pad's surface.** On an HDI board the same
+x,y arrives from several drill files — a stacked microvia is one hit per drill pair, and Altium writes
+every pair both as a Gerber X2 drill layer and as an NC drill file — so hits within
+`ViaInPadDetector.SAME_HOLE_MM` (10 µm) are one hole; counting hits made every 0.05 mm² BGA land a
+"via field" of four or six and called it thermal (a 12-layer set reported 0 pads needing fill where
+~300 did). And a hole wicks solder from a pad only if its drill ends on that pad's outer layer, so a
+drill's `model.drill.DrillSpan` decides: a top pad counts spans that include layer 1, a bottom pad
+spans that include the bottom layer (the copper count, or the deepest span when that is larger). The
+span comes from the X2 `.FileFunction,Plated,i,j,…` (set by `PcbAnalyzer.gerberDrill`) or KiCad's
+`; #@! TF.FileFunction` Excellon comment; a plain Excellon file has **none**, and its holes count as
+before, flagged by `ViaInPad.isSpanKnown()` — never inferred from the file being "plated", because
+Altium's `.TX3` is a buried pair classified `DRILL_PLATED`. An unstated hit coinciding with a stated
+one of the same diameter is the same hole exported twice and takes the stated answer.
+
+`ViaInPadSummary` (`BoardSpecification.getViaInPadSummary()`) is the evidence behind the boolean:
+pads with a hole, thermal, needing fill, and the fill pads grouped by identical pad with their paste
+file and first locations. One marginal pad still flips `requiresFilledAndCappedVias()` — that is
+policy, and a calculator prices on it — but the summary is what lets a reviewer see "1 of 56" or a
+paste file from another design.
+
 `spec.BoardStack` is the board's physical build-up **and** its finished thickness — one value,
 because the two come from the same file and a total taken from a different file than the layers is a
 bug. Its entries are `spec.StackEntry` rows (dense ordinal, `StackFunction`, name, thickness in

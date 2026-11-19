@@ -38,6 +38,7 @@ public class DrillDocument {
     private final List<String> warnings = new ArrayList<>();
 
     private BoundingBox boundingBox;
+    private DrillSpan span;
 
     public DrillDocument() {
     }
@@ -124,6 +125,18 @@ public class DrillDocument {
     }
 
     // Getters and setters
+
+    /**
+     * The copper layers this program's holes connect, or {@code null} when the file does not say —
+     * which is the case for most Excellon files. See {@link DrillSpan}.
+     */
+    public DrillSpan getSpan() {
+        return span;
+    }
+
+    public void setSpan(DrillSpan span) {
+        this.span = span;
+    }
 
     public String getFileName() {
         return fileName;

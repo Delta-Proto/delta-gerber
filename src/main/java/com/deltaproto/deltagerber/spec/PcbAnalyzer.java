@@ -23,6 +23,7 @@ import com.deltaproto.deltagerber.dfm.geometry.CopperNets;
 import com.deltaproto.deltagerber.dfm.ViaInPadDetector;
 import com.deltaproto.deltagerber.dfm.ViaInPadResult;
 import com.deltaproto.deltagerber.model.drill.DrillDocument;
+import com.deltaproto.deltagerber.model.drill.DrillSpan;
 import com.deltaproto.deltagerber.model.drill.DrillHit;
 import com.deltaproto.deltagerber.model.drill.DrillSlot;
 import com.deltaproto.deltagerber.model.drill.Tool;
@@ -475,6 +476,7 @@ public class PcbAnalyzer {
                 return measure(file.getFileName(), doc, classification);
             }
             GerberDocument doc = planes.copperOf(function, new GerberParser().parse(content));
+            doc.setFileName(file.getFileName());
             if (function.isCopper()) {
                 planes.addCopper(doc);
             }
@@ -1031,6 +1033,8 @@ public class PcbAnalyzer {
             DrillDocument out = new DrillDocument();
             out.setFileName(fileName);
             out.setUnit(Unit.MM);
+            // %TF.FileFunction,Plated,1,2,Blind*% — the one place a drill states its layers.
+            out.setSpan(DrillSpan.ofFileFunction(doc.getFileFunctionValues()));
             Map<Double, Tool> tools = new LinkedHashMap<>();
             for (GraphicsObject obj : doc.getObjects()) {
                 if (!(obj instanceof Flash flash)
@@ -1083,7 +1087,7 @@ public class PcbAnalyzer {
             List<DrillDocument> aligned =
                 DrillGerberAlignment.alignedAll(drills, copperBounds, copperFlashCenters);
             if (!topPaste.isEmpty() || !bottomPaste.isEmpty()) {
-                viaInPad = ViaInPadDetector.detect(topPaste, bottomPaste, aligned);
+                viaInPad = ViaInPadDetector.detect(topPaste, bottomPaste, aligned, copperPads.size());
             }
             if (!copperPads.isEmpty()) {
                 annularRing = AnnularRingDetector.detect(copperPads, aligned);

@@ -29,10 +29,17 @@ public final class ViaInPadGroup {
     private final String padShape;
     private final boolean top;
     private final boolean bottom;
+    private final String pasteFileName;
     private final List<ViaInPad> vias;
 
     ViaInPadGroup(double padAreaMm2, double padCenterX, double padCenterY, String padShape,
                   boolean top, boolean bottom, List<ViaInPad> vias) {
+        this(padAreaMm2, padCenterX, padCenterY, padShape, top, bottom, null, vias);
+    }
+
+    ViaInPadGroup(double padAreaMm2, double padCenterX, double padCenterY, String padShape,
+                  boolean top, boolean bottom, String pasteFileName, List<ViaInPad> vias) {
+        this.pasteFileName = pasteFileName;
         this.padAreaMm2 = padAreaMm2;
         this.padCenterX = padCenterX;
         this.padCenterY = padCenterY;
@@ -75,12 +82,24 @@ public final class ViaInPadGroup {
         return bottom;
     }
 
-    /** The holes inside this pad, in the order they were read from the drill file. */
+    /**
+     * The paste file the pad was read from — {@link com.deltaproto.deltagerber.model.gerber.GerberDocument#getFileName()},
+     * or {@code null} when the document carried no name. A verdict resting on a paste file that
+     * belongs to another design is the first thing a reviewer should be able to see.
+     */
+    public String getPasteFileName() {
+        return pasteFileName;
+    }
+
+    /**
+     * The holes inside this pad — one per hole <em>location</em>, however many drill files repeat
+     * it — in the order they were read from the drill files.
+     */
     public List<ViaInPad> getVias() {
         return vias;
     }
 
-    /** How many holes land in this pad. */
+    /** How many distinct holes land in this pad (a location drilled by several files is one). */
     public int getViaCount() {
         return vias.size();
     }
@@ -145,6 +164,11 @@ public final class ViaInPadGroup {
      */
     public boolean requiresFilledAndCapped(ViaInPadPolicy policy) {
         return !isLikelyThermal(policy);
+    }
+
+    /** False when any hole in the pad counts only because its drill file stated no layer span. */
+    public boolean isSpanKnown() {
+        return vias.stream().allMatch(ViaInPad::isSpanKnown);
     }
 
     @Override

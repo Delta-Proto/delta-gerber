@@ -13,9 +13,10 @@ import java.util.List;
  * <p>That single orientation rule is what lets a width measurement tell copper from air without a
  * boolean: the copper-side normal of an edge is its left normal, on every ring, in every polygon.
  *
- * <p>Point containment is by ray parity over a band index — the edges bucketed by the horizontal
- * strip they cross — so a query against a 40 000-edge plane touches a few hundred edges, not all
- * of them. A point within {@link #EDGE_EPSILON_MM} of an edge is never "strictly inside".
+ * <p>Point containment is by ray parity over two axis indexes — the edges bucketed by the
+ * horizontal band and the vertical column they cross — casting the ray in whichever direction
+ * meets fewest edges, so a query against a 40 000-edge plane touches a handful of edges, not the
+ * thousands packed along the board edge. A point within {@link #EDGE_EPSILON_MM} of an edge is never "strictly inside".
  */
 public final class PolygonShape {
 
@@ -24,16 +25,17 @@ public final class PolygonShape {
 
     private final double[][] rings;
     private final BoundingBox bounds;
-    private final int edgeCount;
 
-    // Band index: edges (ring, k) encoded as edgeId, listed per horizontal band they cross.
-    private final int bandCount;
-    private final double bandY0;
-    private final double bandHeight;
-    private final int[] bandStart;
-    private final int[] bandEdges;
+    // Two axis indexes over the edges (ring, k), encoded as edge ids. Horizontal bands list every
+    // edge whose y-range meets the band, columns every edge whose x-range meets the column, each
+    // range grown by EDGE_EPSILON_MM so an edge near a query point is always in its list. Within a
+    // band the ids are held twice, ordered by max x descending and by min x ascending, so a ray to
+    // +x or -x visits only the edges on its side; the columns likewise for y.
+    private final int edgeCount;
     private final int[] edgeRing;
     private final int[] edgeIndex;
+    private final AxisIndex bands;
+    private final AxisIndex columns;
 
     private PolygonShape(double[][] rings) {
         this.rings = rings;
@@ -58,31 +60,9 @@ public final class PolygonShape {
             }
         }
 
-        this.bandCount = Math.max(1, Math.min(4096, (int) Math.sqrt(edges)));
-        this.bandY0 = b.getMinY();
-        double height = Math.max(b.getHeight(), 1e-9);
-        this.bandHeight = height / bandCount;
-        int[] counts = new int[bandCount + 1];
-        for (int e = 0; e < edges; e++) {
-            int lo = bandOf(Math.min(y1(e), y2(e)));
-            int hi = bandOf(Math.max(y1(e), y2(e)));
-            for (int band = lo; band <= hi; band++) {
-                counts[band + 1]++;
-            }
-        }
-        for (int band = 0; band < bandCount; band++) {
-            counts[band + 1] += counts[band];
-        }
-        this.bandStart = counts;
-        this.bandEdges = new int[counts[bandCount]];
-        int[] fill = new int[bandCount];
-        for (int e = 0; e < edges; e++) {
-            int lo = bandOf(Math.min(y1(e), y2(e)));
-            int hi = bandOf(Math.max(y1(e), y2(e)));
-            for (int band = lo; band <= hi; band++) {
-                bandEdges[bandStart[band] + fill[band]++] = e;
-            }
-        }
+        int cells = Math.max(1, Math.min(4096, (int) Math.sqrt(edges)));
+        this.bands = new AxisIndex(this, true, b.getMinY(), b.getHeight(), cells);
+        this.columns = new AxisIndex(this, false, b.getMinX(), b.getWidth(), cells);
     }
 
     /**
@@ -182,22 +162,60 @@ public final class PolygonShape {
         return sum;
     }
 
-    /** Whether the point is strictly inside the material — on an edge counts as outside. */
+    /**
+     * Whether the point is strictly inside the material — on an edge counts as outside.
+     *
+     * <p>Ray parity, cast along whichever of the four axis directions crosses the fewest edges. A
+     * board-sized plane clearance is tens of thousands of edges, most of them packed along the
+     * board edge, so a horizontal ray from a point near the top edge would walk every edge of that
+     * strip while the ray straight up meets a handful. Every direction gives the same parity for a
+     * point off the boundary, and a point within {@link #EDGE_EPSILON_MM} of an edge is outside
+     * whichever is cast: each direction's list holds every edge that near.
+     */
     public boolean contains(double px, double py) {
         if (px < bounds.getMinX() || px > bounds.getMaxX() || py < bounds.getMinY() || py > bounds.getMaxY()) {
             return false;
         }
-        int band = bandOf(py);
+        int band = bands.cellOf(py);
+        int column = columns.cellOf(px);
+        int plusX = bands.countUp(band, px), minusX = bands.countDown(band, px);
+        int plusY = columns.countUp(column, py), minusY = columns.countDown(column, py);
+        int best = Math.min(Math.min(plusX, minusX), Math.min(plusY, minusY));
+        if (best == plusX) {
+            return cast(bands, band, plusX, true, true, px, py);
+        } else if (best == minusX) {
+            return cast(bands, band, minusX, true, false, px, py);
+        } else if (best == plusY) {
+            return cast(columns, column, plusY, false, true, px, py);
+        }
+        return cast(columns, column, minusY, false, false, px, py);
+    }
+
+    /**
+     * Parity of a ray from the point along one axis direction, over the first {@code count} edges of
+     * the cell's list for that direction — exactly the edges that reach the ray's side.
+     */
+    private boolean cast(AxisIndex index, int cell, int count, boolean horizontal, boolean up,
+                         double px, double py) {
+        int[] order = up ? index.byMaxDesc : index.byMinAsc;
+        int start = index.start[cell];
         int crossings = 0;
-        for (int i = bandStart[band]; i < bandStart[band + 1]; i++) {
-            int e = bandEdges[i];
+        for (int i = start; i < start + count; i++) {
+            int e = order[i];
             double ax = x1(e), ay = y1(e), bx = x2(e), by = y2(e);
             if (nearEdge(px, py, ax, ay, bx, by)) {
                 return false;
             }
-            if ((ay > py) != (by > py)) {
-                double x = ax + (py - ay) / (by - ay) * (bx - ax);
-                if (x > px) {
+            if (horizontal) {
+                if ((ay > py) != (by > py)) {
+                    double x = ax + (py - ay) / (by - ay) * (bx - ax);
+                    if (up ? x > px : x < px) {
+                        crossings++;
+                    }
+                }
+            } else if ((ax > px) != (bx > px)) {
+                double y = ay + (px - ax) / (bx - ax) * (by - ay);
+                if (up ? y > py : y < py) {
                     crossings++;
                 }
             }
@@ -227,11 +245,6 @@ public final class PolygonShape {
         double l2 = vx * vx + vy * vy;
         double t = l2 == 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / l2));
         return Math.hypot(px - (ax + t * vx), py - (ay + t * vy));
-    }
-
-    private int bandOf(double y) {
-        int band = (int) ((y - bandY0) / bandHeight);
-        return Math.max(0, Math.min(bandCount - 1, band));
     }
 
     private double x1(int e) {
@@ -305,5 +318,121 @@ public final class PolygonShape {
             out[2 * k + 1] = ring[2 * (n - 1 - k) + 1];
         }
         return out;
+    }
+
+    /**
+     * Edges bucketed along one axis — horizontal bands (by y) or vertical columns (by x) — and,
+     * within each cell, ordered twice by their extent across the other axis: by its maximum
+     * descending, so the edges reaching past a coordinate are a prefix, and by its minimum
+     * ascending, so the edges reaching before it are a prefix too.
+     */
+    private static final class AxisIndex {
+        private final double origin;
+        private final double cellSize;
+        private final int cellCount;
+        private final int[] start;
+        private final int[] byMaxDesc;
+        private final int[] byMinAsc;
+        private final double[] maxDesc;
+        private final double[] minAsc;
+
+        AxisIndex(PolygonShape shape, boolean bands, double origin, double extent, int cellCount) {
+            this.origin = origin;
+            this.cellCount = cellCount;
+            this.cellSize = Math.max(extent, 1e-9) / cellCount;
+            int edges = shape.edgeCount;
+            int[] counts = new int[cellCount + 1];
+            for (int e = 0; e < edges; e++) {
+                int lo = cellOf(along(shape, e, bands, false) - EDGE_EPSILON_MM);
+                int hi = cellOf(along(shape, e, bands, true) + EDGE_EPSILON_MM);
+                for (int c = lo; c <= hi; c++) {
+                    counts[c + 1]++;
+                }
+            }
+            for (int c = 0; c < cellCount; c++) {
+                counts[c + 1] += counts[c];
+            }
+            this.start = counts;
+            int total = counts[cellCount];
+            int[] members = new int[total];
+            int[] fill = new int[cellCount];
+            for (int e = 0; e < edges; e++) {
+                int lo = cellOf(along(shape, e, bands, false) - EDGE_EPSILON_MM);
+                int hi = cellOf(along(shape, e, bands, true) + EDGE_EPSILON_MM);
+                for (int c = lo; c <= hi; c++) {
+                    members[start[c] + fill[c]++] = e;
+                }
+            }
+            this.byMaxDesc = new int[total];
+            this.byMinAsc = new int[total];
+            this.maxDesc = new double[total];
+            this.minAsc = new double[total];
+            for (int c = 0; c < cellCount; c++) {
+                int from = start[c], to = start[c + 1];
+                Integer[] ids = new Integer[to - from];
+                for (int i = from; i < to; i++) {
+                    ids[i - from] = members[i];
+                }
+                java.util.Arrays.sort(ids, (a, b) -> Double.compare(across(shape, b, bands, true), across(shape, a, bands, true)));
+                for (int i = 0; i < ids.length; i++) {
+                    byMaxDesc[from + i] = ids[i];
+                    maxDesc[from + i] = across(shape, ids[i], bands, true);
+                }
+                java.util.Arrays.sort(ids, (a, b) -> Double.compare(across(shape, a, bands, false), across(shape, b, bands, false)));
+                for (int i = 0; i < ids.length; i++) {
+                    byMinAsc[from + i] = ids[i];
+                    minAsc[from + i] = across(shape, ids[i], bands, false);
+                }
+            }
+        }
+
+        int cellOf(double v) {
+            int c = (int) ((v - origin) / cellSize);
+            return Math.max(0, Math.min(cellCount - 1, c));
+        }
+
+        /** Edges of the cell whose extent reaches {@code v - ε} or beyond: a ray towards +. */
+        int countUp(int cell, double v) {
+            double limit = v - EDGE_EPSILON_MM;
+            int lo = start[cell], hi = start[cell + 1];
+            while (lo < hi) {               // first index whose max is below the limit
+                int mid = (lo + hi) >>> 1;
+                if (maxDesc[mid] >= limit) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            return lo - start[cell];
+        }
+
+        /** Edges of the cell whose extent reaches {@code v + ε} or before: a ray towards −. */
+        int countDown(int cell, double v) {
+            double limit = v + EDGE_EPSILON_MM;
+            int lo = start[cell], hi = start[cell + 1];
+            while (lo < hi) {
+                int mid = (lo + hi) >>> 1;
+                if (minAsc[mid] <= limit) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            return lo - start[cell];
+        }
+
+        /** The edge's extent along the indexed axis (y for bands, x for columns). */
+        private static double along(PolygonShape s, int e, boolean bands, boolean max) {
+            double a = bands ? s.y1(e) : s.x1(e);
+            double b = bands ? s.y2(e) : s.x2(e);
+            return max ? Math.max(a, b) : Math.min(a, b);
+        }
+
+        /** The edge's extent across it — the direction a ray in this index travels. */
+        private static double across(PolygonShape s, int e, boolean bands, boolean max) {
+            double a = bands ? s.x1(e) : s.y1(e);
+            double b = bands ? s.x2(e) : s.y2(e);
+            return max ? Math.max(a, b) : Math.min(a, b);
+        }
     }
 }

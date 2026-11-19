@@ -4,6 +4,7 @@ import com.deltaproto.deltagerber.align.DrillGerberAlignment;
 import com.deltaproto.deltagerber.model.drill.DrillDocument;
 import com.deltaproto.deltagerber.model.drill.DrillHit;
 import com.deltaproto.deltagerber.model.drill.DrillOperation;
+import com.deltaproto.deltagerber.model.drill.DrillSpan;
 import com.deltaproto.deltagerber.model.gerber.BoundingBox;
 import com.deltaproto.deltagerber.model.gerber.GerberDocument;
 import com.deltaproto.deltagerber.model.gerber.Polarity;
@@ -51,10 +52,24 @@ public final class ViaInPadDetector {
     }
 
     /**
+     * How close two drill hits must be to be one hole, in mm. The same hole arrives more than once
+     * in real sets — a stacked microvia is one hit per drill pair, and Altium writes every pair
+     * both as a Gerber X2 drill layer and as an NC drill file — while two holes that are really
+     * distinct are at least a drill bit apart. The copies agree to the coordinate grid (well under
+     * a micrometre); 10 µm leaves room for a coarse export without ever merging two real holes.
+     */
+    static final double SAME_HOLE_MM = 0.01;
+
+    /** Two diameters closer than this are one tool — the same hole exported twice. */
+    private static final double SAME_TOOL_MM = 0.001;
+
+    /**
      * Detect vias in pad from the paste layers (split by side) and drill files.
      *
      * <p>The drills must already share the paste's coordinate origin; see {@link #detectAligned}
-     * when that is not guaranteed. A {@code null} collection is treated as empty.
+     * when that is not guaranteed. A {@code null} collection is treated as empty. Without a copper
+     * layer count the bottom of the stack is taken as the deepest layer any drill's
+     * {@link DrillSpan} reaches; see {@link #detect(Collection, Collection, Collection, int)}.
      *
      * @param topPaste    top-side solder-paste layers (usually one)
      * @param bottomPaste bottom-side solder-paste layers (usually one)
@@ -65,6 +80,35 @@ public final class ViaInPadDetector {
     public static ViaInPadResult detect(Collection<GerberDocument> topPaste,
                                         Collection<GerberDocument> bottomPaste,
                                         Collection<DrillDocument> drills) {
+        return detect(topPaste, bottomPaste, drills, 0);
+    }
+
+    /**
+     * Detect vias in pad, counting each <em>hole location</em> once and only the holes that reach
+     * the pad's own surface.
+     *
+     * <p><strong>A pad's via count is the number of distinct hole locations in it</strong>, not the
+     * number of drill hits: hits within {@value #SAME_HOLE_MM} mm of each other are one hole (a
+     * stacked microvia, or the same hole in a Gerber X2 drill layer and again in an NC file).
+     *
+     * <p><strong>A hole wicks solder from a pad only if its drill reaches that pad's surface.</strong>
+     * A drill whose {@link DrillDocument#getSpan() span} is known counts in a top pad only when it
+     * includes layer 1, and in a bottom pad only when it includes the bottom layer — so a buried
+     * 3–10 via or a microvia on the far side lying under a pad is left out (and counted in
+     * {@link ViaInPadResult#getExcludedBySpanCount()}). A drill whose span is unknown — most
+     * Excellon files — counts as before, and the result says so
+     * ({@link ViaInPad#isSpanKnown()}, {@link ViaInPadResult#hasUnknownSpan()}); the one exception is
+     * a hit of unknown span that coincides with a hit of known span and the same diameter, which is
+     * the same hole exported twice and takes the known hit's answer.
+     *
+     * @param copperLayerCount how many copper layers the stack has, which numbers the bottom layer;
+     *                         {@code 0} when unknown. The deepest layer any drill span reaches is
+     *                         used when it is larger.
+     */
+    public static ViaInPadResult detect(Collection<GerberDocument> topPaste,
+                                        Collection<GerberDocument> bottomPaste,
+                                        Collection<DrillDocument> drills,
+                                        int copperLayerCount) {
         List<Pad> pads = new ArrayList<>();
         collectPads(topPaste, true, false, pads);
         collectPads(bottomPaste, false, true, pads);
@@ -72,39 +116,162 @@ public final class ViaInPadDetector {
             return ViaInPadResult.empty();
         }
 
+        List<Hole> holes = holes(drills);
+        int bottomLayer = Math.max(copperLayerCount, 0);
+        for (Hole hole : holes) {
+            for (Hit hit : hole.hits) {
+                if (hit.span != null) {
+                    bottomLayer = Math.max(bottomLayer, hit.span.to());
+                }
+            }
+        }
+
         PadIndex index = new PadIndex(pads);
-        List<ViaInPad> hits = new ArrayList<>();
+        List<ViaInPad> found = new ArrayList<>();
+        int excludedBySpan = 0;
+        for (Hole hole : holes) {
+            List<Pad> in = null;
+            for (Pad pad : index.candidates(hole.x, hole.y)) {
+                if (pad.contains(hole.x, hole.y)) {
+                    (in == null ? in = new ArrayList<>() : in).add(pad);
+                }
+            }
+            if (in == null) {
+                continue;
+            }
+            Reach top = null;
+            Reach bottom = null;
+            boolean outOfReach = false;
+            for (Pad pad : in) {
+                Reach reach = hole.reach(pad.top ? 1 : bottomLayer);
+                if (reach == null) {
+                    outOfReach = true;
+                } else if (pad.top) {
+                    top = reach;
+                } else {
+                    bottom = reach;
+                }
+            }
+            if (top == null && bottom == null) {
+                excludedBySpan += outOfReach ? 1 : 0;
+                continue;
+            }
+            // One ViaInPad per hole, shared by every pad it lands in, so a hole in a top and a
+            // bottom pad is one hole in two groups rather than two.
+            ViaInPad via = ViaInPad.of(hole.x, hole.y, top, bottom);
+            found.add(via);
+            for (Pad pad : in) {
+                if (pad.top ? top != null : bottom != null) {
+                    pad.vias.add(via);
+                }
+            }
+        }
+        return new ViaInPadResult(found, groups(pads), excludedBySpan);
+    }
+
+    /** Every drill hit, merged into holes: hits within {@link #SAME_HOLE_MM} are one hole. */
+    private static List<Hole> holes(Collection<DrillDocument> drills) {
+        List<Hole> holes = new ArrayList<>();
+        Map<Long, List<Hole>> grid = new HashMap<>();
         for (DrillDocument drill : drills) {
             if (drill == null) {
                 continue;
             }
+            DrillSpan span = drill.getSpan();
             for (DrillOperation op : drill.getOperations()) {
                 if (!(op instanceof DrillHit hit)) {
                     continue;   // slots are routed, not drilled vias
                 }
-                boolean top = false;
-                boolean bottom = false;
-                List<Pad> in = null;
-                for (Pad pad : index.candidates(hit.getX(), hit.getY())) {
-                    if (pad.contains(hit.getX(), hit.getY())) {
-                        top |= pad.top;
-                        bottom |= pad.bottom;
-                        (in == null ? in = new ArrayList<>() : in).add(pad);
+                Hit h = new Hit(hit.getTool().getDiameter(), span);
+                long cx = (long) Math.floor(hit.getX() / SAME_HOLE_MM);
+                long cy = (long) Math.floor(hit.getY() / SAME_HOLE_MM);
+                Hole same = null;
+                for (long dx = -1; dx <= 1 && same == null; dx++) {
+                    for (long dy = -1; dy <= 1 && same == null; dy++) {
+                        for (Hole hole : grid.getOrDefault(cellKey(cx + dx, cy + dy), List.of())) {
+                            if (Math.hypot(hole.x - hit.getX(), hole.y - hit.getY()) <= SAME_HOLE_MM) {
+                                same = hole;
+                                break;
+                            }
+                        }
                     }
                 }
-                if (in != null) {
-                    // One ViaInPad per hole, shared by every pad it lands in, so a hole in a
-                    // top and a bottom pad is one hit in two groups rather than two hits.
-                    ViaInPad via = new ViaInPad(hit.getX(), hit.getY(),
-                            hit.getTool().getDiameter(), top, bottom);
-                    hits.add(via);
-                    for (Pad pad : in) {
-                        pad.vias.add(via);
-                    }
+                if (same == null) {
+                    same = new Hole(hit.getX(), hit.getY());
+                    holes.add(same);
+                    grid.computeIfAbsent(cellKey(cx, cy), k -> new ArrayList<>()).add(same);
                 }
+                same.hits.add(h);
             }
         }
-        return new ViaInPadResult(hits, groups(pads));
+        return holes;
+    }
+
+    private static long cellKey(long cx, long cy) {
+        return (cx << 32) ^ (cy & 0xffffffffL);
+    }
+
+    /** One drill hit: the tool that drilled it and the span of the file it came from. */
+    private record Hit(double diameter, DrillSpan span) {
+    }
+
+    /**
+     * What a hole presents to one surface layer: the largest diameter among the hits that reach it,
+     * how many hits that is, the spans they stated, and whether any of them counted only because
+     * its span is unknown.
+     */
+    record Reach(double diameterMm, int drillHits, List<DrillSpan> spans, boolean spanKnown) {
+    }
+
+    /** One hole location and every drill hit that landed on it. */
+    private static final class Hole {
+        final double x;
+        final double y;
+        final List<Hit> hits = new ArrayList<>(2);
+
+        Hole(double x, double y) {
+            this.x = x;
+            this.y = y;
+        }
+
+        /**
+         * The hits that reach copper layer {@code layer}, or {@code null} when none does. A hit of
+         * stated span counts when the span includes the layer; a hit of unknown span counts unless a
+         * hit of stated span and the same diameter sits here too — the same hole exported twice,
+         * which has already answered.
+         */
+        Reach reach(int layer) {
+            double diameter = 0;
+            int count = 0;
+            boolean unknown = false;
+            List<DrillSpan> spans = new ArrayList<>(2);
+            for (Hit hit : hits) {
+                if (hit.span != null) {
+                    if (!hit.span.reaches(layer)) {
+                        continue;
+                    }
+                    if (!spans.contains(hit.span)) {
+                        spans.add(hit.span);
+                    }
+                } else if (explained(hit)) {
+                    continue;
+                } else {
+                    unknown = true;
+                }
+                diameter = Math.max(diameter, hit.diameter);
+                count++;
+            }
+            return count == 0 ? null : new Reach(diameter, count, List.copyOf(spans), !unknown);
+        }
+
+        private boolean explained(Hit unknown) {
+            for (Hit hit : hits) {
+                if (hit.span != null && Math.abs(hit.diameter - unknown.diameter) < SAME_TOOL_MM) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     /** The pads that caught at least one hole, each measured, in the order the paste declared them. */
@@ -113,7 +280,7 @@ public final class ViaInPadDetector {
         for (Pad pad : pads) {
             if (!pad.vias.isEmpty()) {
                 groups.add(new ViaInPadGroup(pad.area(), pad.centerX(), pad.centerY(), pad.shape(),
-                        pad.top, pad.bottom, pad.vias));
+                        pad.top, pad.bottom, pad.file, pad.vias));
             }
         }
         return groups;
@@ -150,7 +317,8 @@ public final class ViaInPadDetector {
             }
         }
         return detect(topPaste, bottomPaste,
-            DrillGerberAlignment.alignedAll(new ArrayList<>(drills), bounds, padCenters));
+            DrillGerberAlignment.alignedAll(new ArrayList<>(drills), bounds, padCenters),
+            copperLayers == null ? 0 : (int) copperLayers.stream().filter(c -> c != null).count());
     }
 
     // ------------------------------------------------------------------------
@@ -173,9 +341,9 @@ public final class ViaInPadDetector {
                     continue;
                 }
                 if (object instanceof Flash flash) {
-                    out.add(new Pad(flash, top, bottom));
+                    out.add(new Pad(flash, top, bottom, paste.getFileName()));
                 } else if (object instanceof Region region && !region.getContours().isEmpty()) {
-                    out.add(new Pad(region, top, bottom));
+                    out.add(new Pad(region, top, bottom, paste.getFileName()));
                 }
             }
         }
@@ -242,17 +410,19 @@ public final class ViaInPadDetector {
         private final Region region;
         private final boolean top;
         private final boolean bottom;
+        private final String file;
         private final double minX;
         private final double minY;
         private final double maxX;
         private final double maxY;
         private final List<ViaInPad> vias = new ArrayList<>();
 
-        Pad(Flash flash, boolean top, boolean bottom) {
+        Pad(Flash flash, boolean top, boolean bottom, String file) {
             this.flash = flash;
             this.region = null;
             this.top = top;
             this.bottom = bottom;
+            this.file = file;
             // Circumscribe the aperture with a circle so the box holds the pad at any rotation.
             BoundingBox ab = flash.getAperture().getBoundingBox();
             double halfDiag = Math.hypot(
@@ -265,11 +435,12 @@ public final class ViaInPadDetector {
             this.maxY = flash.getY() + halfDiag;
         }
 
-        Pad(Region region, boolean top, boolean bottom) {
+        Pad(Region region, boolean top, boolean bottom, String file) {
             this.flash = null;
             this.region = region;
             this.top = top;
             this.bottom = bottom;
+            this.file = file;
             BoundingBox b = region.getBoundingBox();
             this.minX = b.getMinX();
             this.maxX = b.getMaxX();

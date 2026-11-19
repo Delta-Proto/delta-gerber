@@ -24,14 +24,20 @@ import java.util.List;
  */
 public final class ViaInPadResult {
 
-    private static final ViaInPadResult EMPTY = new ViaInPadResult(List.of(), List.of());
+    private static final ViaInPadResult EMPTY = new ViaInPadResult(List.of(), List.of(), 0);
 
     private final List<ViaInPad> viaInPads;
     private final List<ViaInPadGroup> groups;
+    private final int excludedBySpan;
 
     ViaInPadResult(List<ViaInPad> viaInPads, List<ViaInPadGroup> groups) {
+        this(viaInPads, groups, 0);
+    }
+
+    ViaInPadResult(List<ViaInPad> viaInPads, List<ViaInPadGroup> groups, int excludedBySpan) {
         this.viaInPads = List.copyOf(viaInPads);
         this.groups = List.copyOf(groups);
+        this.excludedBySpan = excludedBySpan;
     }
 
     /** A result with no vias in pad — also what detection returns when there is nothing to check. */
@@ -44,7 +50,10 @@ public final class ViaInPadResult {
         return !viaInPads.isEmpty();
     }
 
-    /** How many holes land inside a pad. */
+    /**
+     * How many holes land inside a pad — distinct hole locations, so a stacked microvia or a hole
+     * that two drill files both carry counts once.
+     */
     public int getCount() {
         return viaInPads.size();
     }
@@ -70,6 +79,38 @@ public final class ViaInPadResult {
      */
     public List<ViaInPadGroup> getGroups() {
         return groups;
+    }
+
+    /**
+     * How many holes sit inside a paste pad but were left out because their drill's stated span
+     * does not reach that pad's surface — a buried via, or a microvia on the far side.
+     */
+    public int getExcludedBySpanCount() {
+        return excludedBySpan;
+    }
+
+    /**
+     * True when at least one via in pad counts only because its drill file did not state which
+     * layers it connects (a plain Excellon file); it was then assumed to reach the pad. A caller
+     * showing the verdict should say so — on an HDI board such a hole may be buried.
+     */
+    public boolean hasUnknownSpan() {
+        return viaInPads.stream().anyMatch(v -> !v.isSpanKnown());
+    }
+
+    /** As {@link #summarize(ViaInPadPolicy, int)} under {@link ViaInPadPolicy#DEFAULT}, listing up to {@value ViaInPadSummary#DEFAULT_MAX_KINDS} kinds of fill pad. */
+    public ViaInPadSummary summarize() {
+        return summarize(ViaInPadPolicy.DEFAULT, ViaInPadSummary.DEFAULT_MAX_KINDS);
+    }
+
+    /**
+     * The evidence behind {@link #requiresFilledAndCapped(ViaInPadPolicy)}, compact enough to show:
+     * how many pads have a hole, how many of those are thermal and how many need fill, and the pads
+     * needing fill grouped into kinds of identical pad (side, paste file, shape, area, hole, via
+     * count), most numerous first, at most {@code maxKinds} of them.
+     */
+    public ViaInPadSummary summarize(ViaInPadPolicy policy, int maxKinds) {
+        return ViaInPadSummary.of(this, policy, maxKinds);
     }
 
     /** As {@link #requiresFilledAndCapped(ViaInPadPolicy)}, under {@link ViaInPadPolicy#DEFAULT}. */
@@ -121,6 +162,8 @@ public final class ViaInPadResult {
     @Override
     public String toString() {
         return "ViaInPadResult[count=" + viaInPads.size() + ", pads=" + groups.size()
-                + ", fillAndCap=" + getFilledAndCappedGroups().size() + "]";
+                + ", fillAndCap=" + getFilledAndCappedGroups().size()
+                + (excludedBySpan > 0 ? ", excludedBySpan=" + excludedBySpan : "")
+                + (hasUnknownSpan() ? ", spanUnknown" : "") + "]";
     }
 }
