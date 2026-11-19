@@ -28,12 +28,23 @@ import java.util.Locale;
  */
 public final class ViaInPadPolicy {
 
-    /** The default judgement: 2 vias in a pad, or a pad ≥ 2.0 mm² and ≥ 25× the hole area. */
+    /**
+     * The default judgement: 2 vias in a pad, or a pad ≥ 2.0 mm² and ≥ 25× the hole area; and at
+     * most 2 fill pads within a factor 2 of those thresholds make a {@link ViaInPadVerdict#REVIEW}.
+     */
     public static final ViaInPadPolicy DEFAULT = new ViaInPadPolicy(2, 25.0, 2.0);
+
+    /** Default for {@link #getMaxReviewFillPads()}. */
+    public static final int DEFAULT_MAX_REVIEW_FILL_PADS = 2;
+
+    /** Default for {@link #getReviewMarginFactor()}. */
+    public static final double DEFAULT_REVIEW_MARGIN_FACTOR = 2.0;
 
     private final int minViasForThermal;
     private final double minPadToViaAreaRatio;
     private final double minThermalPadAreaMm2;
+    private final int maxReviewFillPads;
+    private final double reviewMarginFactor;
 
     /**
      * @param minViasForThermal    how many vias in one pad make it thermal regardless of size (≥ 2;
@@ -44,6 +55,31 @@ public final class ViaInPadPolicy {
      */
     public ViaInPadPolicy(int minViasForThermal, double minPadToViaAreaRatio,
                           double minThermalPadAreaMm2) {
+        this(minViasForThermal, minPadToViaAreaRatio, minThermalPadAreaMm2,
+                DEFAULT_MAX_REVIEW_FILL_PADS, DEFAULT_REVIEW_MARGIN_FACTOR);
+    }
+
+    /**
+     * As {@link #ViaInPadPolicy(int, double, double)}, with where a fill verdict becomes a review.
+     *
+     * @param maxReviewFillPads  at most this many fill pads, all marginal, make the board
+     *                           {@link ViaInPadVerdict#REVIEW} rather than {@link ViaInPadVerdict#FILL}
+     *                           ({@code 0} switches review off)
+     * @param reviewMarginFactor a fill pad is marginal when its area is at least the area floor
+     *                           divided by this, and its pad-to-hole ratio at least the ratio
+     *                           threshold divided by this (≥ 1)
+     */
+    public ViaInPadPolicy(int minViasForThermal, double minPadToViaAreaRatio,
+                          double minThermalPadAreaMm2, int maxReviewFillPads,
+                          double reviewMarginFactor) {
+        if (maxReviewFillPads < 0) {
+            throw new IllegalArgumentException("maxReviewFillPads must not be negative, was " + maxReviewFillPads);
+        }
+        if (!(reviewMarginFactor >= 1)) {
+            throw new IllegalArgumentException("reviewMarginFactor must be at least 1, was " + reviewMarginFactor);
+        }
+        this.maxReviewFillPads = maxReviewFillPads;
+        this.reviewMarginFactor = reviewMarginFactor;
         if (minViasForThermal < 2) {
             throw new IllegalArgumentException("minViasForThermal must be at least 2, was "
                     + minViasForThermal);   // 1 would call every via in pad thermal
@@ -71,9 +107,32 @@ public final class ViaInPadPolicy {
         return minThermalPadAreaMm2;
     }
 
+    /** At most this many fill pads, every one marginal, make a {@link ViaInPadVerdict#REVIEW}. */
+    public int getMaxReviewFillPads() {
+        return maxReviewFillPads;
+    }
+
+    /** How far below the area floor and the ratio threshold a fill pad may sit and still be marginal. */
+    public double getReviewMarginFactor() {
+        return reviewMarginFactor;
+    }
+
+    /**
+     * Whether a pad that needs fill only just does: its area is at least the area floor and its
+     * pad-to-hole ratio at least the ratio threshold, each divided by {@link #getReviewMarginFactor()}.
+     * A 1.35 mm² land with one ⌀0.3 mm via (ratio 19) is marginal under the defaults; a 0.05 mm²
+     * ball land is not.
+     */
+    public boolean isMarginal(double padAreaMm2, double padToViaAreaRatio) {
+        return padAreaMm2 >= minThermalPadAreaMm2 / reviewMarginFactor
+                && padToViaAreaRatio >= minPadToViaAreaRatio / reviewMarginFactor;
+    }
+
     @Override
     public String toString() {
-        return String.format(Locale.US, "ViaInPadPolicy[vias>=%d or (area>=%.2fmm2 and ratio>=%.1f)]",
-                minViasForThermal, minThermalPadAreaMm2, minPadToViaAreaRatio);
+        return String.format(Locale.US,
+                "ViaInPadPolicy[vias>=%d or (area>=%.2fmm2 and ratio>=%.1f); review <=%d pads within x%.1f]",
+                minViasForThermal, minThermalPadAreaMm2, minPadToViaAreaRatio, maxReviewFillPads,
+                reviewMarginFactor);
     }
 }

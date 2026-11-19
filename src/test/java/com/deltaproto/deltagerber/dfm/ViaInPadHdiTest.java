@@ -311,6 +311,137 @@ class ViaInPadHdiTest {
         assertEquals(1, s.getExcludedBySpan());
         assertFalse(s.isSpanUnknown());
         assertEquals("board-F_Paste.gbr", s.getFillPadKinds().get(0).getPasteFileName());
+        assertEquals(ViaInPadVerdict.FILL, spec.getViaInPadVerdict(), "a ball land is no marginal pad");
+    }
+
+    @Test
+    void aSetWithoutPasteHasNoVerdict() {
+        BoardSpecification spec = new PcbAnalyzer().analyze(List.of(
+                PcbFile.of("board-PTH-drl.gbr", x2Drill("Plated,1,4,PTH", 25, 15))), AnalysisDepth.SPECIFICATION);
+        assertEquals(null, spec.getViaInPadVerdict());
+    }
+
+    // ------------------------------------------------------------------------
+    // The three-way verdict: one or two marginal fill pads are a review, not a fill
+    // ------------------------------------------------------------------------
+
+    /** ⌀0.3 mm via in a 1.2 mm square land: 1.44 mm² and ratio 20 — fill, but only just. */
+    private static final double MARGINAL_SIDE = 1.2;
+    /** ⌀0.3 mm via in a 0.5 mm square land: 0.25 mm², nowhere near thermal. */
+    private static final double SMALL_SIDE = 0.5;
+
+    /** One rectangular top land per entry {@code {side, x, y}}, a ⌀0.3 mm via in each, plus a thermal 5 mm land. */
+    private static ViaInPadSummary lands(DrillSpan span, double[]... lands) {
+        StringBuilder body = new StringBuilder("%FSLAX46Y46*%\n%MOMM*%\n%ADD10R,5.000000X5.000000*%\n"
+                + "D10*\nX80000000Y80000000D03*\n");
+        List<double[]> holes = new ArrayList<>();
+        holes.add(p(80, 80));
+        int code = 11;
+        for (double[] land : lands) {
+            body.append(String.format(Locale.US, "%%ADD%dR,%.6fX%.6f*%%\nD%d*\nX%dY%dD03*\n", code, land[0], land[0],
+                    code, Math.round(land[1] * 1e6), Math.round(land[2] * 1e6)));
+            holes.add(p(land[1], land[2]));
+            code++;
+        }
+        GerberDocument top = new GerberParser().parse(body + "M02*\n");
+        top.setFileName("top.gtp");
+        return ViaInPadDetector.detect(List.of(top), List.of(),
+                List.of(drill(span, 0.3, holes.toArray(double[][]::new))), 4).summarize();
+    }
+
+    private static final DrillSpan THROUGH = new DrillSpan(1, 4);
+
+    @Test
+    void onlyThermalPadsAreNoFill() {
+        ViaInPadSummary s = lands(THROUGH);
+        assertEquals(ViaInPadVerdict.NO_FILL, s.getVerdict());
+        assertFalse(s.requiresFilledAndCapped());
+        assertEquals(ViaInPadVerdict.NO_FILL, ViaInPadResult.empty().summarize().getVerdict());
+    }
+
+    @Test
+    void oneMarginalPadIsAReview() {
+        ViaInPadSummary s = lands(THROUGH, new double[]{MARGINAL_SIDE, 10, 10});
+        assertEquals(ViaInPadVerdict.REVIEW, s.getVerdict());
+        assertTrue(s.requiresFilledAndCapped(), "the strict boolean keeps its meaning");
+        assertTrue(s.getFillPadKinds().get(0).isMarginal());
+    }
+
+    @Test
+    void twoMarginalPadsAreStillAReview() {
+        ViaInPadSummary s = lands(THROUGH, new double[]{MARGINAL_SIDE, 10, 10}, new double[]{MARGINAL_SIDE, 20, 10});
+        assertEquals(2, s.getFillPads());
+        assertEquals(ViaInPadVerdict.REVIEW, s.getVerdict());
+    }
+
+    @Test
+    void threeMarginalPadsAreFill() {
+        ViaInPadSummary s = lands(THROUGH, new double[]{MARGINAL_SIDE, 10, 10},
+                new double[]{MARGINAL_SIDE, 20, 10}, new double[]{MARGINAL_SIDE, 30, 10});
+        assertEquals(ViaInPadVerdict.FILL, s.getVerdict());
+    }
+
+    @Test
+    void oneClearlySmallPadIsFill() {
+        ViaInPadSummary s = lands(THROUGH, new double[]{SMALL_SIDE, 10, 10});
+        assertEquals(1, s.getFillPads());
+        assertEquals(ViaInPadVerdict.FILL, s.getVerdict());
+        assertFalse(s.getFillPadKinds().get(0).isMarginal());
+    }
+
+    @Test
+    void aSmallPadBesideAMarginalOneIsFill() {
+        ViaInPadSummary s = lands(THROUGH, new double[]{MARGINAL_SIDE, 10, 10}, new double[]{SMALL_SIDE, 20, 10});
+        assertEquals(ViaInPadVerdict.FILL, s.getVerdict());
+    }
+
+    @Test
+    void theVerdictJudgesPadsTheListingLeftOut() {
+        GerberDocument top = paste("top.gtp", 0.25, p(10, 10));
+        ViaInPadResult r = ViaInPadDetector.detect(List.of(top), List.of(),
+                List.of(drill(THROUGH, MICRO, p(10, 10))), 4);
+        assertEquals(ViaInPadVerdict.FILL, r.summarize(ViaInPadPolicy.DEFAULT, 0).getVerdict());
+        assertTrue(r.summarize(ViaInPadPolicy.DEFAULT, 0).getFillPadKinds().isEmpty());
+    }
+
+    @Test
+    void thePolicyHoldsWhereAReviewEnds() {
+        ViaInPadPolicy wide = new ViaInPadPolicy(2, 25.0, 2.0, 2, 10.0);
+        assertEquals(ViaInPadPolicy.DEFAULT_MAX_REVIEW_FILL_PADS, ViaInPadPolicy.DEFAULT.getMaxReviewFillPads());
+        assertEquals(ViaInPadPolicy.DEFAULT_REVIEW_MARGIN_FACTOR, ViaInPadPolicy.DEFAULT.getReviewMarginFactor());
+        assertTrue(ViaInPadPolicy.DEFAULT.isMarginal(1.35, 19));
+        assertFalse(ViaInPadPolicy.DEFAULT.isMarginal(0.05, 6));
+        assertFalse(ViaInPadPolicy.DEFAULT.isMarginal(1.35, 12), "both numbers have to be close");
+
+        GerberDocument top = paste("top.gtp", 0.6, p(10, 10));     // 0.28 mm², ratio 4
+        ViaInPadResult r = ViaInPadDetector.detect(List.of(top), List.of(),
+                List.of(drill(THROUGH, 0.3, p(10, 10))), 4);
+        assertEquals(ViaInPadVerdict.FILL, r.summarize().getVerdict());
+        assertEquals(ViaInPadVerdict.REVIEW, r.summarize(wide, 10).getVerdict());
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new ViaInPadPolicy(2, 25.0, 2.0, -1, 2.0));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new ViaInPadPolicy(2, 25.0, 2.0, 2, 0.5));
+    }
+
+    @Test
+    void reviewOffMakesEveryFillPadAFill() {
+        ViaInPadPolicy noReview = new ViaInPadPolicy(2, 25.0, 2.0, 0, 2.0);
+        GerberDocument top = new GerberParser().parse(
+                "%FSLAX46Y46*%\n%MOMM*%\n%ADD10R,1.200000X1.200000*%\nD10*\nX10000000Y10000000D03*\nM02*\n");
+        ViaInPadResult r = ViaInPadDetector.detect(List.of(top), List.of(),
+                List.of(drill(THROUGH, 0.3, p(10, 10))), 4);
+        assertEquals(ViaInPadVerdict.REVIEW, r.summarize().getVerdict());
+        assertEquals(ViaInPadVerdict.FILL, r.summarize(noReview, 10).getVerdict());
+    }
+
+    @Test
+    void aVerdictRestingOnUnstatedSpansCanBeToldApart() {
+        ViaInPadSummary unknown = lands(null, new double[]{MARGINAL_SIDE, 10, 10});
+        assertEquals(ViaInPadVerdict.REVIEW, unknown.getVerdict());
+        assertEquals(1, unknown.getFillPadsWithUnknownSpan());
+        assertEquals(unknown.getFillPads(), unknown.getFillPadsWithUnknownSpan());
+        assertEquals(0, lands(THROUGH, new double[]{SMALL_SIDE, 10, 10}).getFillPadsWithUnknownSpan());
     }
 
     /** A Gerber X2 drill layer: each hole a flashed ⌀0.1 mm circle. */

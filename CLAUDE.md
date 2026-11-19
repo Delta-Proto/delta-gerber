@@ -356,9 +356,14 @@ one of the same diameter is the same hole exported twice and takes the stated an
 
 `ViaInPadSummary` (`BoardSpecification.getViaInPadSummary()`) is the evidence behind the boolean:
 pads with a hole, thermal, needing fill, and the fill pads grouped by identical pad with their paste
-file and first locations. One marginal pad still flips `requiresFilledAndCappedVias()` — that is
-policy, and a calculator prices on it — but the summary is what lets a reviewer see "1 of 56" or a
-paste file from another design.
+file and first locations — what lets a reviewer see "1 of 56", or a paste file from another design.
+`requiresFilledAndCappedVias()` stays the strict boolean (any fill pad). The answer to quote off is
+`getViaInPadVerdict()` (`ViaInPadVerdict`: `NO_FILL`, `REVIEW`, `FILL`): at most
+`ViaInPadPolicy.getMaxReviewFillPads()` fill pads (2), every one **marginal** — area and pad-to-hole
+ratio each within `getReviewMarginFactor()` (2×) of the thresholds — is `REVIEW`, not `FILL`. The
+model case is a set whose 56 holed pads are thermal but one: a 1.35 mm² land with one ⌀0.3 mm via
+(ratio 19), built without fill. The verdict judges every fill pad, not just the ones the summary
+lists, and `getFillPadsWithUnknownSpan()` says when it rests on holes of unstated span.
 
 `spec.BoardStack` is the board's physical build-up **and** its finished thickness — one value,
 because the two come from the same file and a total taken from a different file than the layers is a

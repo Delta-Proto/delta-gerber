@@ -39,10 +39,15 @@ public final class ViaInPadSummary {
     private final ViaInPadPolicy policy;
     private final List<PadKind> fillPadKinds;
     private final int omittedFillPadKinds;
+    private final int fillPadsWithUnknownSpan;
+    private final ViaInPadVerdict verdict;
 
     private ViaInPadSummary(int padsWithHole, int thermalPads, int fillPads, int holes,
                             int excludedBySpan, boolean spanUnknown, ViaInPadPolicy policy,
-                            List<PadKind> fillPadKinds, int omittedFillPadKinds) {
+                            List<PadKind> fillPadKinds, int omittedFillPadKinds,
+                            int fillPadsWithUnknownSpan, ViaInPadVerdict verdict) {
+        this.fillPadsWithUnknownSpan = fillPadsWithUnknownSpan;
+        this.verdict = verdict;
         this.padsWithHole = padsWithHole;
         this.thermalPads = thermalPads;
         this.fillPads = fillPads;
@@ -57,16 +62,20 @@ public final class ViaInPadSummary {
     static ViaInPadSummary of(ViaInPadResult result, ViaInPadPolicy policy, int maxKinds) {
         Objects.requireNonNull(policy, "policy");
         int thermal = 0;
+        int unknownSpan = 0;
+        boolean allMarginal = true;
         Map<String, KindBuilder> kinds = new LinkedHashMap<>();
         for (ViaInPadGroup g : result.getGroups()) {
             if (g.isLikelyThermal(policy)) {
                 thermal++;
                 continue;
             }
+            unknownSpan += g.isSpanKnown() ? 0 : 1;
+            allMarginal &= policy.isMarginal(g.getPadAreaMm2(), g.getPadToViaAreaRatio());
             String key = String.format(Locale.US, "%b|%b|%s|%s|%.4f|%.4f|%d", g.isTop(), g.isBottom(),
                     g.getPasteFileName(), g.getPadShape(), g.getPadAreaMm2(), g.getViaDiameterMm(),
                     g.getViaCount());
-            kinds.computeIfAbsent(key, k -> new KindBuilder(g)).add(g);
+            kinds.computeIfAbsent(key, k -> new KindBuilder(g, policy)).add(g);
         }
         int fill = result.getGroups().size() - thermal;
         List<PadKind> list = new ArrayList<>();
@@ -77,9 +86,13 @@ public final class ViaInPadSummary {
         list.sort(Comparator.comparingInt(PadKind::getPadCount).reversed()
                 .thenComparingDouble(PadKind::getPadAreaMm2));
         int keep = Math.max(0, Math.min(maxKinds, list.size()));
+        // Judged over every fill pad, not just the kinds the cap lets through.
+        ViaInPadVerdict verdict = fill == 0 ? ViaInPadVerdict.NO_FILL
+                : fill <= policy.getMaxReviewFillPads() && allMarginal ? ViaInPadVerdict.REVIEW
+                : ViaInPadVerdict.FILL;
         return new ViaInPadSummary(result.getGroups().size(), thermal, fill, result.getCount(),
                 result.getExcludedBySpanCount(), result.hasUnknownSpan(), policy,
-                list.subList(0, keep), list.size() - keep);
+                list.subList(0, keep), list.size() - keep, unknownSpan, verdict);
     }
 
     /** Pads with at least one hole in them. */
@@ -117,9 +130,33 @@ public final class ViaInPadSummary {
         return policy;
     }
 
-    /** The board-level verdict: at least one pad needs fill. */
+    /**
+     * The strict board-level answer: at least one pad needs fill. The same as
+     * {@link ViaInPadResult#requiresFilledAndCapped(ViaInPadPolicy)}; see {@link #getVerdict()} for
+     * the answer that sets one or two marginal pads apart.
+     */
     public boolean requiresFilledAndCapped() {
         return fillPads > 0;
+    }
+
+    /**
+     * {@link ViaInPadVerdict#NO_FILL} when no pad needs fill; {@link ViaInPadVerdict#REVIEW} when at
+     * most {@link ViaInPadPolicy#getMaxReviewFillPads()} do and every one of them is
+     * {@linkplain ViaInPadPolicy#isMarginal marginal}; {@link ViaInPadVerdict#FILL} otherwise. Every
+     * fill pad is judged, including those past the listing cap.
+     */
+    public ViaInPadVerdict getVerdict() {
+        return verdict;
+    }
+
+    /**
+     * How many of the {@link #getFillPads() fill pads} count a hole only because its drill file
+     * stated no layer span. When it equals {@link #getFillPads()} the verdict rests entirely on such
+     * holes — on an HDI board they may be buried and the verdict wrong. {@link #isSpanUnknown()} is
+     * broader: any hole in any pad.
+     */
+    public int getFillPadsWithUnknownSpan() {
+        return fillPadsWithUnknownSpan;
     }
 
     /** The pads needing fill, one entry per kind of identical pad, most numerous first. */
@@ -139,8 +176,8 @@ public final class ViaInPadSummary {
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();
-        sb.append(String.format(Locale.US, "Via in pad: %d hole(s) in %d pad(s); %d thermal, %d need fill and cap",
-                holes, padsWithHole, thermalPads, fillPads));
+        sb.append(String.format(Locale.US, "Via in pad %s: %d hole(s) in %d pad(s); %d thermal, %d need fill and cap",
+                verdict, holes, padsWithHole, thermalPads, fillPads));
         if (excludedBySpan > 0) {
             sb.append(String.format(Locale.US, "; %d hole(s) under a pad left out (drill span does not reach it)",
                     excludedBySpan));
@@ -172,10 +209,13 @@ public final class ViaInPadSummary {
         private final int viaCount;
         private final double padToViaAreaRatio;
         private final boolean spanKnown;
+        private final boolean marginal;
         private final int padCount;
         private final List<double[]> locations;
 
-        private PadKind(ViaInPadGroup g, boolean spanKnown, int padCount, List<double[]> locations) {
+        private PadKind(ViaInPadGroup g, boolean spanKnown, boolean marginal, int padCount,
+                        List<double[]> locations) {
+            this.marginal = marginal;
             this.top = g.isTop();
             this.bottom = g.isBottom();
             this.pasteFileName = g.getPasteFileName();
@@ -234,6 +274,11 @@ public final class ViaInPadSummary {
             return spanKnown;
         }
 
+        /** Whether these pads only just need fill — see {@link ViaInPadPolicy#isMarginal}. */
+        public boolean isMarginal() {
+            return marginal;
+        }
+
         /** How many pads are of this kind. */
         public int getPadCount() {
             return padCount;
@@ -256,19 +301,21 @@ public final class ViaInPadSummary {
             String side = top && bottom ? "top+bottom" : top ? "top" : "bottom";
             return String.format(Locale.US, "%dx %s %s pad %.3f mm2, %d hole(s) of %.3f mm, ratio %.1f%s, %s at %s",
                     padCount, side, padShape, padAreaMm2, viaCount, holeDiameterMm, padToViaAreaRatio,
-                    spanKnown ? "" : " (span unknown)",
+                    (marginal ? " marginal" : "") + (spanKnown ? "" : " (span unknown)"),
                     pasteFileName == null ? "unnamed paste" : pasteFileName, at);
         }
     }
 
     private static final class KindBuilder {
         private final ViaInPadGroup first;
+        private final ViaInPadPolicy policy;
         private int count;
         private boolean spanKnown = true;
         private final List<double[]> locations = new ArrayList<>();
 
-        KindBuilder(ViaInPadGroup first) {
+        KindBuilder(ViaInPadGroup first, ViaInPadPolicy policy) {
             this.first = first;
+            this.policy = policy;
         }
 
         void add(ViaInPadGroup g) {
@@ -280,7 +327,8 @@ public final class ViaInPadSummary {
         }
 
         PadKind build() {
-            return new PadKind(first, spanKnown, count, locations);
+            return new PadKind(first, spanKnown,
+                    policy.isMarginal(first.getPadAreaMm2(), first.getPadToViaAreaRatio()), count, locations);
         }
     }
 }
