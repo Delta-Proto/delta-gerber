@@ -331,6 +331,34 @@ class LayerClassifierTest {
         }
     }
 
+    @Nested
+    @DisplayName("Cadence Allegro NC drill Holesize table")
+    class AllegroHolesize {
+
+        private static String drill(String... platings) {
+            StringBuilder content = new StringBuilder(
+                    ";LEADER: 12 \r\n;HEADER: \r\n;CODE  : ASCII \r\n;FILE  : demo-1-4.drl for  ... layers TOP and BOTTOM\r\n");
+            for (int i = 0; i < platings.length; i++) {
+                content.append(";   Holesize ").append(i + 1).append(". = 0.300000 Tolerance = +0.000000/-0.000000 ")
+                        .append(platings[i]).append(" MM Quantity = 1\r\n");
+            }
+            return content.append("%\r\nG90\r\nX01000000Y01000000\r\nM30\r\n").toString();
+        }
+
+        @Test
+        @DisplayName("A table that agrees on plating says what the drill file is, whatever its name")
+        void platingFromTheTable() {
+            assertLayer("demo-1-1-np.drl", drill("NON_PLATED"), LayerFunction.DRILL_NONPLATED, LayerSide.NA, null);
+            assertLayer("demo.drl", drill("PLATED", "PLATED"), LayerFunction.DRILL_PLATED, LayerSide.NA, null);
+        }
+
+        @Test
+        @DisplayName("A mixed table is left to the filename")
+        void mixedTableFallsBackToTheName() {
+            assertLayer("demo-1-4.drl", drill("PLATED", "NON_PLATED"), LayerFunction.DRILL, LayerSide.NA, null);
+        }
+    }
+
     @Test
     void unrecognisedFilesClassifyToNull() {
         assertNull(LayerClassifier.classify("board.DRR", null));

@@ -65,7 +65,7 @@ public class ExcellonParser {
 
     // Holesize comment: ;   Holesize N. = X.XXXXXX ... PLATED|NON_PLATED MM|INCH Quantity = N
     private static final Pattern HOLESIZE_COMMENT = Pattern.compile(
-        "Holesize\\s+(\\d+)\\.\\s*=\\s*([\\d.]+).*?(PLATED|NON_PLATED)\\s+(MM|INCH)\\s+Quantity\\s*=\\s*(\\d+)");
+        "Holesize\\s+(\\d+)\\.\\s*=\\s*([\\d.]+).*?\\b(NON_PLATED|PLATED)\\s+(MM|INCH)\\s+Quantity\\s*=\\s*(\\d+)");
 
     // Format specification patterns
     // ;TYPE=PLATED / ;TYPE=NON_PLATED, the only place Excellon states plating.
@@ -105,6 +105,11 @@ public class ExcellonParser {
 
         String[] lines = content.split("\n");
         log.trace("Processing {} lines", lines.length);
+
+        if (toolSizesSayInch(lines)) {
+            document.setUnit(Unit.INCH);
+            document.addWarning("No unit stated; tool sizes (all under 0.3) read as inch");
+        }
 
         for (String line : lines) {
             line = line.trim();
@@ -164,7 +169,8 @@ public class ExcellonParser {
                     holesizeMetric = true;
                 }
                 Tool tool = new Tool(toolNum, diameter);
-                tool.setPlated(currentPlating);
+                // Allegro states plating per tool, which is better evidence than any ;TYPE=.
+                tool.setPlated(!"NON_PLATED".equals(holesizeMatcher.group(3)));
                 document.addTool(tool);
                 holesizeTools.add(tool);
                 log.trace("Holesize tool T{}: {}mm", toolNum, diameter);
@@ -210,14 +216,22 @@ public class ExcellonParser {
             return;
         }
 
-        // Handle tool definition in header
+        // Handle tool definition. In the body it is also a tool change: a file with no M48 header
+        // (Allegro's bare tool table: "%", then "T1C.028F197S55" before the T1 holes) defines each
+        // tool where it starts using it.
         Matcher toolDefMatcher = TOOL_DEF.matcher(line);
         if (toolDefMatcher.find()) {
             int toolNum = Integer.parseInt(toolDefMatcher.group(1));
-            double rawDia = safeParseDouble(toolDefMatcher.group(2), 0, "tool T" + toolNum + " diameter");
-            Tool tool = new Tool(toolNum, document.getUnit().toMm(rawDia));
-            tool.setPlated(currentPlating);
-            document.addTool(tool);
+            Tool tool = inHeader ? null : document.getTool(toolNum);
+            if (tool == null) {
+                double rawDia = safeParseDouble(toolDefMatcher.group(2), 0, "tool T" + toolNum + " diameter");
+                tool = new Tool(toolNum, document.getUnit().toMm(rawDia));
+                tool.setPlated(currentPlating);
+                document.addTool(tool);
+            }
+            if (!inHeader) {
+                currentTool = tool;
+            }
             return;
         }
 
@@ -513,6 +527,49 @@ public class ExcellonParser {
             DrillHit hit = new DrillHit(currentTool, currentX, currentY);
             document.addOperation(hit);
         }
+    }
+
+    /** Largest tool size a file stating no unit may give for its sizes to be read as inch. */
+    static final double UNSTATED_UNIT_INCH_BELOW = 0.3;
+
+    private static final Pattern TOOL_DEF_LINE = Pattern.compile("^T(\\d+)[^C]*C([\\d.]+)");
+
+    /**
+     * Whether a file that never states its unit has tool sizes only inch can explain. Excellon's
+     * default is inch, but this parser's is mm, and a file without a header (Allegro's bare tool
+     * table, {@code T1C.028F197S55}) says neither: a 0.028 mm drill does not exist, while every
+     * size such a file writes, read as inch, is a real drill. A file that states a unit anywhere
+     * (METRIC, INCH, M71, M72, an Allegro Holesize table) is left to that statement.
+     */
+    private static boolean toolSizesSayInch(String[] lines) {
+        boolean anyTool = false;
+        for (String raw : lines) {
+            String line = raw.trim();
+            if (line.startsWith(";")) {
+                if (line.contains("Holesize")) {
+                    return false;
+                }
+                continue;
+            }
+            if (line.startsWith("METRIC") || line.startsWith("INCH")
+                    || line.startsWith("M71") || line.startsWith("M72")) {
+                return false;
+            }
+            Matcher m = TOOL_DEF_LINE.matcher(line);
+            if (m.find()) {
+                double size;
+                try {
+                    size = Double.parseDouble(m.group(2));
+                } catch (NumberFormatException e) {
+                    return false;
+                }
+                if (!(size > 0 && size < UNSTATED_UNIT_INCH_BELOW)) {
+                    return false;
+                }
+                anyTool = true;
+            }
+        }
+        return anyTool;
     }
 
     // A Cadence Allegro R<count> repeat replays a hit count times; a corrupt huge count

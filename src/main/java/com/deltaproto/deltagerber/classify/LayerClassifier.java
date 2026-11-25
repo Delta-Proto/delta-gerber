@@ -18,7 +18,8 @@ import java.util.regex.Pattern;
  * <ol>
  *   <li>the Gerber X2 {@code .FileFunction} attribute — the file says what it is;
  *   <li>Cadence Allegro's proprietary {@code FILE IDENTIFICATION RECORD} comment block;
- *   <li>an Excellon {@code ;TYPE=PLATED} / {@code ;TYPE=NON_PLATED} header comment;
+ *   <li>an Excellon {@code ;TYPE=PLATED} / {@code ;TYPE=NON_PLATED} header comment, or the plating
+ *       column of a Cadence Allegro {@code ; Holesize} table;
  *   <li>filename patterns, ordered by the CAD tool detected from {@code .GenerationSoftware}.
  * </ol>
  *
@@ -190,6 +191,9 @@ public final class LayerClassifier {
             }
             if (declared == null) {
                 declared = parseExcellonDrillType(fileContent);
+            }
+            if (declared == null) {
+                declared = parseAllegroHolesizePlating(fileContent);
             }
             if (declared != null) {
                 return declared;
@@ -713,6 +717,38 @@ public final class LayerClassifier {
                 ? new LayerClassification("non-plated drill", LayerFunction.DRILL_NONPLATED, LayerSide.NA)
                 : new LayerClassification("plated drill", LayerFunction.DRILL_PLATED, LayerSide.NA);
     }
+
+    /**
+     * Read plating from a Cadence Allegro NC drill header, which has no M48 and no {@code ;TYPE=}
+     * but states every tool as {@code ;   Holesize 1. = 3.700000 ... NON_PLATED MM Quantity = 4}.
+     * A file whose tools all agree is that kind of drill; a mixed one (Allegro puts the odd
+     * non-plated tool in the plated file) is left to the filename.
+     *
+     * @return the classification, or null when there is no Holesize table or it is mixed
+     */
+    private static LayerClassification parseAllegroHolesizePlating(String fileContent) {
+        String scanned = fileContent.substring(0, Math.min(fileContent.length(), 16384));
+        Matcher matcher = ALLEGRO_HOLESIZE_PLATING.matcher(scanned);
+        int plated = 0;
+        int nonPlated = 0;
+        while (matcher.find()) {
+            if (matcher.group(1).equals("NON_PLATED")) {
+                nonPlated++;
+            } else {
+                plated++;
+            }
+        }
+        if (plated > 0 && nonPlated == 0) {
+            return new LayerClassification("plated drill", LayerFunction.DRILL_PLATED, LayerSide.NA);
+        }
+        if (nonPlated > 0 && plated == 0) {
+            return new LayerClassification("non-plated drill", LayerFunction.DRILL_NONPLATED, LayerSide.NA);
+        }
+        return null;
+    }
+
+    private static final Pattern ALLEGRO_HOLESIZE_PLATING = Pattern.compile(
+        "(?m)^\\s*;\\s*Holesize\\s+\\d+\\.\\s*=.*?\\b(NON_PLATED|PLATED)\\s+(?:MM|INCH)\\b");
 
     private static final Pattern EXCELLON_TYPE = Pattern.compile(
         "(?m)^\\s*;\\s*TYPE\\s*=\\s*(NON[_\\- ]?PLATED|PLATED)", Pattern.CASE_INSENSITIVE);

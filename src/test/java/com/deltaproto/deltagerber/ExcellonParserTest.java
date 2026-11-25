@@ -454,6 +454,72 @@ public class ExcellonParserTest {
     }
 
     @Test
+    void allegroHolesizeStatesPlatingPerTool() {
+        // The full Allegro header, CRLF and all; no M48, no T lines, M00 changes tool.
+        String drill = ";LEADER: 12 \r\n;HEADER: \r\n;CODE  : ASCII \r\n"
+                + ";FILE  : demo-1-4.drl for  ... layers TOP and BOTTOM\r\n;DESIGN: demo.brd\r\n"
+                + ";   Holesize 1. = 0.250000 Tolerance = +0.000000/-0.000000 PLATED MM Quantity = 2\r\n"
+                + ";   Holesize 2. = 3.200000 Tolerance = +0.000000/-0.000000 NON_PLATED MM Quantity = 1\r\n"
+                + "%\r\nG90\r\nX01000000Y01000000\r\nX01254000Y01000000\r\nM00\r\nX04000000Y03000000\r\nM30\r\n";
+
+        DrillDocument doc = parser.parse(drill);
+
+        assertEquals(Boolean.TRUE, doc.getTool(1).getPlated());
+        assertEquals(Boolean.FALSE, doc.getTool(2).getPlated());
+        assertEquals(3, doc.getOperations().size());
+        DrillHit second = (DrillHit) doc.getOperations().get(1);
+        assertEquals(12.54, second.getX(), 1e-9);
+        DrillHit mounting = (DrillHit) doc.getOperations().get(2);
+        assertEquals(3.2, mounting.getTool().getDiameter(), 1e-9);
+        assertEquals(40.0, mounting.getX(), 1e-9);
+        assertTrue(doc.getWarnings().isEmpty(), doc.getWarnings().toString());
+    }
+
+    @Test
+    void bareToolTableWithoutHeaderIsReadInInch() {
+        // No M48 and no unit: each tool is defined where it starts drilling. A 0.028 mm drill does
+        // not exist, so sizes like these are inch, and the coordinates (2:4, leading zeros kept)
+        // follow.
+        String drill = "%\r\nT1C.028F197S55\r\nX03005Y0173\r\nX0435Y02555\r\n"
+                + "T2C.05F107S55\r\nX02505Y01865G85X02505Y01965\r\nT3C.14F035S9\r\nM30\r\n";
+
+        DrillDocument doc = parser.parse(drill);
+
+        assertEquals(Unit.INCH, doc.getSourceUnit());
+        assertEquals(0.028 * 25.4, doc.getTool(1).getDiameter(), 1e-9);
+        assertEquals(0.05 * 25.4, doc.getTool(2).getDiameter(), 1e-9);
+        assertEquals(3, doc.getOperations().size());
+        DrillHit first = (DrillHit) doc.getOperations().get(0);
+        assertSame(doc.getTool(1), first.getTool());
+        assertEquals(3.005 * 25.4, first.getX(), 1e-9);
+        assertEquals(1.73 * 25.4, first.getY(), 1e-9);
+        DrillSlot slot = (DrillSlot) doc.getOperations().get(2);
+        assertSame(doc.getTool(2), slot.getTool());
+        assertEquals(1.965 * 25.4, slot.getEndY(), 1e-9);
+    }
+
+    @Test
+    void statedUnitWinsOverSmallToolSizes() {
+        // A metric file of microvias is small, not inch.
+        String drill = "M48\nMETRIC,LZ\nT1C0.100\n%\nT1\nX010000Y010000\nM30\n";
+
+        DrillDocument doc = parser.parse(drill);
+
+        assertEquals(Unit.MM, doc.getSourceUnit());
+        assertEquals(0.1, doc.getTool(1).getDiameter(), 1e-9);
+    }
+
+    @Test
+    void toolRedefinedInTheBodyKeepsTheHeaderSize() {
+        String drill = "M48\nMETRIC,TZ\nT1C0.800\n%\nT1C0.800\nX10.0Y10.0\nM30\n";
+
+        DrillDocument doc = parser.parse(drill);
+
+        assertEquals(1, doc.getOperations().size());
+        assertEquals(0.8, ((DrillHit) doc.getOperations().get(0)).getTool().getDiameter(), 1e-9);
+    }
+
+    @Test
     void testCoordinateParsing() {
         // Test implicit decimal point based on format
         String drill = """

@@ -454,7 +454,12 @@ buried via whose layers are absent — or a plated hole that lost its pad, which
 through a plane is exempt rather than a spectacular breakout. Plating rides on `Tool.getPlated()`
 (`Boolean`, null = the file did not say), read from Excellon's `;TYPE=PLATED` / `;TYPE=NON_PLATED`
 comments — which apply to the tools *after* them, since one Altium file routinely holds both and
-switches partway down its tool table — and set from the classification for a file named non-plated.
+switches partway down its tool table — and set from the classification for a file named non-plated. Cadence
+Allegro's NC drill has no M48 at all: its tool table is the `; Holesize N. = <dia> ... PLATED|NON_PLATED
+MM|INCH` comments (per-tool plating, and the classifier's answer when every tool agrees), M00 changes
+tool in table order, and coordinates are fixed-width 3:5 mm. A file that states no unit anywhere and
+whose tool sizes are all under 0.3 is read as inch — Allegro's bare `T1C.028F197S55` table — since no
+0.028 mm drill exists.
 No stack-up span is needed for a blind or buried drill: it finds pads on the layers it reaches and
 none on the others, which is the truth without anything declaring it. The drill program itself can
 arrive as Excellon or as a Gerber X2 drill layer (KiCad's `*-PTH-drl.gbr`, each hole a flashed
