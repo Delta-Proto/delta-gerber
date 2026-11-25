@@ -33,6 +33,11 @@ public class MacroAperture extends Aperture {
         this.unitFactor = unitFactor;
     }
 
+    /** The factor that turns the template's numbers into mm (25.4 for a macro stated in inch). */
+    public double getUnitFactor() {
+        return unitFactor;
+    }
+
     public MacroTemplate getTemplate() {
         return template;
     }

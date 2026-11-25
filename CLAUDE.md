@@ -479,6 +479,33 @@ costs memory proportional to what it draws — a 27 MB silkscreen needs ~1 GB of
 contributes nothing once the set has an outline. `FULL` (the default) measures every layer, and is
 what you want if you are going to keep the per-layer bounds to align rendered SVGs.
 
+## Writing Gerber, and exact pad outlines (stencil editing)
+
+`writer.GerberWriter.write(doc)` writes any `GerberDocument` — parsed or built by hand — as RS-274X
+with its X2 attributes, always mm in 4.6 (`%FSLAX46Y46*%`): the unit every parsed document is in,
+at a 1 nm grid. It promises the same **image**, not the same text: comments, the source format and
+step-and-repeat (already expanded by the parser) are gone. A macro aperture is written as a template
+of its own with every expression **evaluated** (`MacroPrimitive.toGerber`), named
+`<template>_D<code>`: that is what makes an inch macro come out right in mm, and the suffix is not
+appended twice, so writing is stable from the second round trip on. A draw with a stroke scale gets
+an aperture of the scaled size, because the parser never applies `%LS%` to a draw while another
+reader may — which is also why the flash transform is reset before every draw, arc and region. A
+region carries the aperture attributes in force at its `G36` (`Region.getApertureAttributes()`,
+filled by the parser) so a pad drawn as a region keeps its `.AperFunction`. `GerberRoundTripTest`
+checks object by object and as a whole image (dark added, clear subtracted, XOR ≈ 0) on a fixture
+with every construct and on `test-gerber-suite`.
+
+`edit.PadOutlines.of(doc)` is the **true** inked boundary of each dark object, which
+`GerberShapes` deliberately is not (it boxes non-round apertures): macros from `getShape()`, flash
+placement through `GraphicsTransform` (the renderer's mirror · rotate · scale), curves flattened to
+`FLATNESS_MM` (5 µm), draws and arcs as their swept band, holes left out of the ring. One entry per
+separate piece — a thermal is four — sorted largest first and then by position, because ties
+otherwise reorder on floating-point noise between a document and its round trip. Standard flashes
+report the aperture's own width/height and the angle its X axis ends up at; anything else gets its
+minimum-area box, with a quarter turn always reported as 0° and the sides swapped. A shape is
+`RECTANGLE` only if it has no hole and fills its minimum box with four corners. `edit.StrokeText`
+exposes the STEP export's single-stroke font as segments for a stencil legend.
+
 ## Clearance and conductor width (issues #9 and #11)
 
 `dfm.ClearanceDetector` (tightest gap between two nets on a layer) and `dfm.ConductorWidthDetector`

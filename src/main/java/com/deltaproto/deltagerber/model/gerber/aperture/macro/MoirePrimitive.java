@@ -194,4 +194,9 @@ public class MoirePrimitive implements MacroPrimitive {
     public boolean isExposed(Map<Integer, Double> variables) {
         return true;
     }
+
+    @Override
+    public String toGerber(Map<Integer, Double> v, double f) {
+        return "6," + MacroPrimitive.num(centerX.evaluate(v) * f) + "," + MacroPrimitive.num(centerY.evaluate(v) * f) + "," + MacroPrimitive.num(outerDiameter.evaluate(v) * f) + "," + MacroPrimitive.num(ringThickness.evaluate(v) * f) + "," + MacroPrimitive.num(ringGap.evaluate(v) * f) + "," + String.valueOf((int) Math.round(maxRings.evaluate(v))) + "," + MacroPrimitive.num(crosshairThickness.evaluate(v) * f) + "," + MacroPrimitive.num(crosshairLength.evaluate(v) * f) + "," + MacroPrimitive.num(rotation.evaluate(v));
+    }
 }

@@ -76,4 +76,24 @@ public interface MacroPrimitive {
      * Get the exposure of this primitive (1=on/dark, 0=off/clear).
      */
     boolean isExposed(Map<Integer, Double> variables);
+
+    /**
+     * This primitive as one macro statement with every expression evaluated against
+     * {@code variables} and every length scaled by {@code unitFactor} — no variables, no
+     * trailing {@code *}. Rotation, exposure and counts are written unscaled.
+     */
+    String toGerber(Map<Integer, Double> variables, double unitFactor);
+
+    /** A number as Gerber writes it: plain decimal, at most 6 decimals, no trailing zeros. */
+    static String num(double value) {
+        if (!Double.isFinite(value)) {
+            throw new IllegalArgumentException("non-finite macro value " + value);
+        }
+        java.math.BigDecimal d = java.math.BigDecimal.valueOf(value)
+                .setScale(6, java.math.RoundingMode.HALF_UP).stripTrailingZeros();
+        if (d.signum() == 0) {
+            return "0";
+        }
+        return d.toPlainString();
+    }
 }

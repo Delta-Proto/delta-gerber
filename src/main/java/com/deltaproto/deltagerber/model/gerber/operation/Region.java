@@ -5,7 +5,10 @@ import com.deltaproto.deltagerber.model.gerber.Polarity;
 import com.deltaproto.deltagerber.renderer.svg.SvgOptions;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Region (G36/G37) - filled area defined by contours.
@@ -13,8 +16,23 @@ import java.util.List;
 public class Region extends GraphicsObject {
 
     private final List<Contour> contours = new ArrayList<>();
+    private Map<String, List<String>> apertureAttributes = Map.of();
 
     public Region() {
+    }
+
+    /**
+     * The aperture attributes in force when the region was drawn ({@code .AperFunction} above all).
+     * Gerber attaches them to a region the way it does to an aperture, since a region has none.
+     */
+    public Map<String, List<String>> getApertureAttributes() {
+        return apertureAttributes;
+    }
+
+    public void setApertureAttributes(Map<String, List<String>> attrs) {
+        this.apertureAttributes = attrs == null || attrs.isEmpty()
+                ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(attrs));
     }
 
     public void addContour(Contour contour) {
@@ -65,6 +83,7 @@ public class Region extends GraphicsObject {
     public GraphicsObject translate(double offsetX, double offsetY) {
         Region translated = new Region();
         copyMetaTo(translated);
+        translated.apertureAttributes = this.apertureAttributes;
         for (Contour contour : contours) {
             translated.addContour(contour.translate(offsetX, offsetY));
         }
@@ -75,6 +94,7 @@ public class Region extends GraphicsObject {
     public GraphicsObject transform(GraphicsTransform t) {
         Region out = new Region();
         copyMetaTo(out);
+        out.apertureAttributes = this.apertureAttributes;
         for (Contour contour : contours) {
             out.addContour(contour.transform(t));
         }

@@ -18,7 +18,7 @@ import java.util.Map;
  * <p>Glyphs are drawn on a 6 × 10 grid with the baseline at y=0, and {@link #strokes} scales that
  * to the requested cap height. Unknown characters draw nothing.
  */
-final class StrokeFont {
+public final class StrokeFont {
 
     /** Glyph advance and grid width, in grid units — one unit of space between letters. */
     private static final double GRID_WIDTH = 6;
@@ -78,7 +78,7 @@ final class StrokeFont {
     private StrokeFont() {}
 
     /** Width of {@code text} at the given cap height, in the same units. */
-    static double width(String text, double capHeight) {
+    public static double width(String text, double capHeight) {
         if (text == null || text.isEmpty()) return 0;
         double scale = capHeight / GRID_HEIGHT;
         return (ADVANCE * (text.length() - 1) + GRID_WIDTH) * scale;
@@ -91,7 +91,7 @@ final class StrokeFont {
      * @param mirrorX mirror each point about the text's own centre line, so a label on the
      *                underside of a board reads correctly when the board is viewed from below
      */
-    static List<double[][]> strokes(String text, double x, double y, double capHeight, boolean mirrorX) {
+    public static List<double[][]> strokes(String text, double x, double y, double capHeight, boolean mirrorX) {
         List<double[][]> out = new ArrayList<>();
         if (text == null || text.isEmpty()) return out;
         double scale = capHeight / GRID_HEIGHT;

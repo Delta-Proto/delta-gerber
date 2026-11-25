@@ -832,6 +832,7 @@ public class GerberParser {
         inRegion = true;
         currentRegion = new Region();
         currentRegion.setPolarity(currentPolarity);
+        currentRegion.setApertureAttributes(apertureAttribs);
         currentContour = null;
     }
 

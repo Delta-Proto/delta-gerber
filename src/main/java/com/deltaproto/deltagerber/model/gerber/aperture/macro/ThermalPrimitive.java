@@ -144,4 +144,9 @@ public class ThermalPrimitive implements MacroPrimitive {
     public boolean isExposed(Map<Integer, Double> variables) {
         return true;
     }
+
+    @Override
+    public String toGerber(Map<Integer, Double> v, double f) {
+        return "7," + MacroPrimitive.num(centerX.evaluate(v) * f) + "," + MacroPrimitive.num(centerY.evaluate(v) * f) + "," + MacroPrimitive.num(outerDiameter.evaluate(v) * f) + "," + MacroPrimitive.num(innerDiameter.evaluate(v) * f) + "," + MacroPrimitive.num(gapWidth.evaluate(v) * f) + "," + MacroPrimitive.num(rotation.evaluate(v));
+    }
 }

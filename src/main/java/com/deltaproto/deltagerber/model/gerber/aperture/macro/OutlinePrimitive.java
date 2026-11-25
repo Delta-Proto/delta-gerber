@@ -145,4 +145,16 @@ public class OutlinePrimitive implements MacroPrimitive {
     public boolean isExposed(Map<Integer, Double> variables) {
         return exposure.evaluate(variables) >= 1;
     }
+
+    @Override
+    public String toGerber(Map<Integer, Double> v, double f) {
+        int points = Math.min(verticesX.size(), verticesY.size());
+        StringBuilder sb = new StringBuilder("4,")
+                .append(exposure.evaluate(v) >= 1 ? "1" : "0").append(',').append(points - 1);
+        for (int i = 0; i < points; i++) {
+            sb.append(',').append(MacroPrimitive.num(verticesX.get(i).evaluate(v) * f))
+              .append(',').append(MacroPrimitive.num(verticesY.get(i).evaluate(v) * f));
+        }
+        return sb.append(',').append(MacroPrimitive.num(rotation.evaluate(v))).toString();
+    }
 }

@@ -113,4 +113,9 @@ public class PolygonPrimitive implements MacroPrimitive {
     public boolean isExposed(Map<Integer, Double> variables) {
         return exposure.evaluate(variables) >= 1;
     }
+
+    @Override
+    public String toGerber(Map<Integer, Double> v, double f) {
+        return "5," + (exposure.evaluate(v) >= 1 ? "1" : "0") + "," + String.valueOf((int) Math.round(vertexCount.evaluate(v))) + "," + MacroPrimitive.num(centerX.evaluate(v) * f) + "," + MacroPrimitive.num(centerY.evaluate(v) * f) + "," + MacroPrimitive.num(diameter.evaluate(v) * f) + "," + MacroPrimitive.num(rotation.evaluate(v));
+    }
 }

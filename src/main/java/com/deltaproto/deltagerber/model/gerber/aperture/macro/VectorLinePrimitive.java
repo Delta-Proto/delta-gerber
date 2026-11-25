@@ -182,4 +182,9 @@ public class VectorLinePrimitive implements MacroPrimitive {
     public boolean isExposed(Map<Integer, Double> variables) {
         return exposure.evaluate(variables) >= 1;
     }
+
+    @Override
+    public String toGerber(Map<Integer, Double> v, double f) {
+        return "20," + (exposure.evaluate(v) >= 1 ? "1" : "0") + "," + MacroPrimitive.num(width.evaluate(v) * f) + "," + MacroPrimitive.num(startX.evaluate(v) * f) + "," + MacroPrimitive.num(startY.evaluate(v) * f) + "," + MacroPrimitive.num(endX.evaluate(v) * f) + "," + MacroPrimitive.num(endY.evaluate(v) * f) + "," + MacroPrimitive.num(rotation.evaluate(v));
+    }
 }
