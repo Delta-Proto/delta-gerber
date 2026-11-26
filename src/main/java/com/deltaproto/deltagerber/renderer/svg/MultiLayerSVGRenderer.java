@@ -62,6 +62,8 @@ public class MultiLayerSVGRenderer {
     // so off-board silkscreen/marks don't shrink the board into a corner of the image; the
     // interactive SVG path keeps union bounds so a separate paste overlay shares its frame.
     private boolean preferOutlineBoundsForViewBox = false;
+    // Prepended to every id the renderer emits and every reference to one; "" = none.
+    private String idPrefix = "";
 
     // Soldermask + silkscreen colors for renderRealistic, held per side so a board masked
     // green on top and black underneath renders as one. Default to the realistic dark green
@@ -196,6 +198,59 @@ public class MultiLayerSVGRenderer {
     public MultiLayerSVGRenderer setFlipY(boolean flipY) {
         this.flipY = flipY;
         return this;
+    }
+
+    /**
+     * Namespace every id this renderer emits — and every reference to one ({@code href="#…"},
+     * {@code url(#…)}) — with {@code prefix}, in {@link #render}, {@link #renderInverse},
+     * {@link #renderRealistic} and everything built on them.
+     *
+     * <p>Ids are unique per HTML <em>page</em>, not per {@code <svg>}. Two of these documents
+     * inlined into one page — a realistic board with a paste overlay from {@code render} stacked
+     * on it — both name apertures {@code L<n>_ap<dcode>} and count {@code n} differently, so the
+     * overlay's {@code <use>} resolves to the board's copper aperture. Give each inlined document
+     * its own prefix and they cannot collide.
+     *
+     * <p>The per-layer group id in {@link #render} (the sanitised file name) is prefixed too, so
+     * a caller matching layer groups to files must strip the prefix. {@code null} or empty (the
+     * default) leaves the output byte-identical to a renderer without a prefix.
+     *
+     * @param prefix letters, digits, {@code _ - .}, not starting with a digit, {@code -} or
+     *               {@code .}; anything else is rejected, since it lands inside attribute values
+     * @throws IllegalArgumentException if {@code prefix} is not a valid id prefix
+     */
+    public MultiLayerSVGRenderer setIdPrefix(String prefix) {
+        if (prefix == null || prefix.isEmpty()) {
+            this.idPrefix = "";
+        } else if (ID_PREFIX.matcher(prefix).matches()) {
+            this.idPrefix = prefix;
+        } else {
+            throw new IllegalArgumentException("Not a valid SVG id prefix: " + prefix);
+        }
+        return this;
+    }
+
+    public String getIdPrefix() {
+        return idPrefix;
+    }
+
+    private static final java.util.regex.Pattern ID_PREFIX =
+        java.util.regex.Pattern.compile("[A-Za-z_][A-Za-z0-9_.-]*");
+    // An id attribute (whitespace before it, so data-id="…" is untouched), a fragment href
+    // (xlink:href included) and a url(#…) reference — every way the renderer names an element.
+    private static final java.util.regex.Pattern ID_OR_REFERENCE =
+        java.util.regex.Pattern.compile("(\\sid=\"|href=\"#|url\\(#)");
+
+    /**
+     * Apply {@link #setIdPrefix} to a finished document. Done once on the output rather than at
+     * each emitter (aperture defs, polarity masks, drill tools, macro clip paths, the realistic
+     * view's masks), so an id added later cannot be missed. The renderer writes no text content,
+     * so these three patterns only ever occur as attributes.
+     */
+    private String namespaceIds(String svg) {
+        if (idPrefix.isEmpty()) return svg;
+        return ID_OR_REFERENCE.matcher(svg)
+            .replaceAll(m -> java.util.regex.Matcher.quoteReplacement(m.group(1) + idPrefix));
     }
 
     public MultiLayerSVGRenderer setSvgOptions(SvgOptions options) {
@@ -429,7 +484,7 @@ public class MultiLayerSVGRenderer {
         emitViewportGroup(svg, layers, allLayerGroups, minX, minY, width, height, null);
 
         svg.append("</svg>");
-        return svg.toString();
+        return namespaceIds(svg.toString());
     }
 
     /**
@@ -482,7 +537,7 @@ public class MultiLayerSVGRenderer {
             + "mask=\"url(#layer-knockout)\"/>\n",
             minX, minY, width, height, sanitizeColor(sheetColor)));
         svg.append("</svg>");
-        return svg.toString();
+        return namespaceIds(svg.toString());
     }
 
     private void appendSvgHeader(StringBuilder svg, double minX, double minY, double width, double height) {
@@ -1283,7 +1338,7 @@ public class MultiLayerSVGRenderer {
         svg.append("</g>\n");
         svg.append("</svg>");
 
-        return svg.toString();
+        return namespaceIds(svg.toString());
     }
 
     /**
@@ -1894,7 +1949,7 @@ public class MultiLayerSVGRenderer {
         if (sideLayers == null) return null;
         String svg = renderRealistic(sideLayers);
         if (mirrorBottom && side == Side.BOTTOM) {
-            svg = applyHorizontalFlip(svg);
+            svg = applyHorizontalFlip(svg, idPrefix);
         }
         return svg;
     }
@@ -2308,14 +2363,14 @@ public class MultiLayerSVGRenderer {
      * real underside view. Modifies the {@code #viewport} group's {@code transform}
      * so downstream rasterisation sees a properly flipped image.
      */
-    private static String applyHorizontalFlip(String svg) {
+    private static String applyHorizontalFlip(String svg, String idPrefix) {
         double[] vb = parseViewBox(svg);
         if (vb == null) return svg;
         // Mirror x around (minX + width/2): maps x -> 2*minX + width - x.
         double tx = 2 * vb[0] + vb[2];
         String mirror = String.format(Locale.US, "translate(%.6f,0) scale(-1,1)", tx);
 
-        int vpStart = svg.indexOf("<g id=\"viewport\"");
+        int vpStart = svg.indexOf("<g id=\"" + idPrefix + "viewport\"");
         if (vpStart < 0) return svg;
         int vpEnd = svg.indexOf('>', vpStart);
         if (vpEnd < 0) return svg;

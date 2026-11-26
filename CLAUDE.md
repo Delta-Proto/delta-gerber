@@ -126,6 +126,19 @@ color the mask pairs with (white on everything but a white mask, which pairs bla
 caller names a `SilkscreenColor` a later `setSoldermaskColor` re-pairs nothing. Don't collapse this
 back to "mask setter also assigns silk" — call order would then decide the legend color.
 
+## Id namespacing (two SVGs in one page)
+
+Ids are unique per HTML page, not per `<svg>`, and `render`/`renderInverse` number aperture defs
+`L<n>_ap<dcode>` by input position while `renderRealistic` numbers them by layer role — so a paste
+overlay inlined over the realistic board resolved `#L0_ap10` to the board's *copper* aperture.
+`MultiLayerSVGRenderer.setIdPrefix(String)` prefixes every id and every `href="#…"` / `url(#…)`
+in all three, applied once to the finished document (`namespaceIds`) rather than at each emitter, so
+a new id cannot escape it. Unset, the output is byte-identical; set, the per-layer group id in
+`render` becomes `<prefix><sanitised file name>`. The thermal macro's clip path is scoped to its
+aperture def and primitive index — keyed on the centre alone, every thermal in a document declared
+`thermal-clip-0-0` and clipped to the first one's circle. `SvgIdPrefixTest` pins both. The library's
+viewer shows one SVG at a time and is unaffected.
+
 ## Paste and stencil in the realistic view
 
 `renderRealistic` emits the side's solder paste twice, **hidden**: a `pcb-paste` group drawing the

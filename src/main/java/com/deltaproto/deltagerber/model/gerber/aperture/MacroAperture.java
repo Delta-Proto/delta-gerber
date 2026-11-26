@@ -91,9 +91,15 @@ public class MacroAperture extends Aperture {
         StringBuilder svg = new StringBuilder();
         svg.append(String.format("<g id=\"%s\">", id));
 
+        int index = 0;
         for (MacroPrimitive primitive : template.getPrimitives()) {
             String primSvg = primitive.toSvg(evaluatedVariables, options, unitFactor);
+            int primitiveIndex = index++;
             if (primSvg != null && !primSvg.isEmpty()) {
+                // A thermal names its clip path after its centre alone, which is (0,0) in nearly
+                // every macro — so every thermal aperture in a document declared the same id and
+                // all of them clipped to whichever came first. Scope it to this def and primitive.
+                primSvg = primSvg.replace("thermal-clip-", id + "_p" + primitiveIndex + "_thermal-clip-");
                 // Primitives render fill="currentColor" (the sentinel used for defs).
                 // In SVG, currentColor reads the CSS `color` property — not `fill` — so
                 // fill="white" on a <use> element does NOT cascade into the shapes.
