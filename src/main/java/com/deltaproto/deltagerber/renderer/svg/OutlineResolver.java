@@ -196,8 +196,40 @@ final class OutlineResolver {
     private static final double PROFILE_TIE_FRACTION = 0.01;
 
     /**
+     * Fraction of a profile layer's own extent its material must cover before the layer can be the
+     * board. A board edge encloses the board, so its material is most of its extent even with an
+     * odd shape or a dimension drawn beside it; a layer of stroked lettering or dimension figures
+     * encloses nothing but its own strokes, a fraction of a percent.
+     */
+    private static final double BOARD_FILL_FRACTION = 0.05;
+
+    /**
+     * Whether these loops enclose a board at all, as opposed to drawing only lines. An Allegro
+     * {@code BOARD GEOMETRY/DIMENSION} film routinely ships as the outline with nothing on it but
+     * the dimension figures — "311.65" and "234" stroked beside a board that is not drawn — and
+     * accepted as the edge, those figures became the board: the realistic view clipped everything
+     * to the digits and the specification measured the text. Decided from the layer alone, with no
+     * copper, so the analyzer and the renderer reach the same verdict on the same file.
+     */
+    static boolean enclosesBoard(List<Loop> loops) {
+        Area material = resolve(loops, CopperProbe.of(List.of()));
+        if (material == null) return false;
+        Rectangle2D extent = null;
+        for (Loop loop : loops) {
+            Area a = toArea(loop);
+            if (a == null || a.isEmpty()) continue;
+            if (extent == null) extent = a.getBounds2D();
+            else extent.add(a.getBounds2D());
+        }
+        if (extent == null) return false;
+        double extentArea = extent.getWidth() * extent.getHeight();
+        return extentArea > 0 && areaOf(material) >= BOARD_FILL_FRACTION * extentArea;
+    }
+
+    /**
      * Combine the loops of several profile layers into one set, or {@code null} when none of them
-     * looks like a board edge.
+     * looks like a board edge. Only a layer marked {@code eligible} can be the board; the others
+     * can still contribute regions, as any losing layer does.
      *
      * <p>The board is the <b>tightest</b> candidate that holds as much of the copper as any of
      * them does. Holding the copper is what disqualifies a note or a dimension detail drawn on a
@@ -212,11 +244,12 @@ final class OutlineResolver {
      * that renders correctly today, which is a worse failure than the missing cut-out this is here
      * to fix, so the benefit of the doubt goes the other way.
      */
-    static List<Loop> merge(List<List<Loop>> perLayer, CopperProbe copper) {
+    static List<Loop> merge(List<List<Loop>> perLayer, boolean[] eligible, CopperProbe copper) {
         Area[] hulls = new Area[perLayer.size()];
         double[] held = new double[perLayer.size()];
         double bestHeld = -1;
         for (int i = 0; i < perLayer.size(); i++) {
+            if (!eligible[i]) continue;
             hulls[i] = hull(perLayer.get(i));
             if (hulls[i] == null || hulls[i].isEmpty()) continue;
             held[i] = copper.fractionInside(hulls[i]);
@@ -443,7 +476,7 @@ final class OutlineResolver {
     }
 
     /** Serialise a resolved area back to an SVG path, in millimetres with Y up. */
-    static String toSvgPath(Area area) {
+    static String toSvgPath(Shape area) {
         StringBuilder sb = new StringBuilder();
         double[] c = new double[6];
         for (PathIterator it = area.getPathIterator(null); !it.isDone(); it.next()) {

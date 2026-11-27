@@ -237,6 +237,16 @@ you get by joining its ends (which is what turned a C-shaped slot into a filled 
 exception is a chain spanning most of the layer: that is the board edge with a piece missing, and
 closing it is the only reading that yields a board at all.
 
+**A profile layer must enclose a board to be one.** Allegro's `BOARD GEOMETRY/DIMENSION` film can
+ship as the outline with nothing on it but the dimension figures ("311.65", "234") stroked beside a
+board drawn nowhere in the file; taken as the edge, the realistic view showed only the digits and the
+specification measured the text. `OutlineResolver.enclosesBoard` asks whether the layer's own
+material covers at least 5% of its own extent — decided from the layer alone, no copper, so
+`MultiLayerSVGRenderer.enclosesBoard(doc)` gives the renderer and `PcbAnalyzer` the same verdict. A
+layer that fails never wins the edge (it can still lend regions as a loser); with none left the edge
+is derived from copper, and the analyzer reclassifies the file `MECHANICAL_DRAWING` "(no board edge)"
+so its extent is never the board's size. An outline that draws nothing is left alone, as before.
+
 **A set routinely ships more than one profile layer** — a quarter of the real sets in `excluded/`
 carry two or three, because the fabrication guidance itself is split between "put the edge on the
 keep-out layer" and "put it on a mechanical layer", so tools emit both. When they do, the edge and
@@ -250,6 +260,19 @@ winner still calls material: a G36 region states an area outright, a closed run 
 mechanical layer is as likely to be a component box (one set here has 178), and a region landing in
 a hole the winner already cut is the same slot said twice — which, left in, reads as an island of
 material and fills the slot back in.
+
+**The board is the piece with the pads.** A stack-up table, title block or drill legend drawn as
+closed shapes beside the board resolves into a second piece of material — on the profile layer (an
+Altium "Board Layer Stack" table under a round board) or in a derived silhouette (a title block drawn
+in the soldermask). `resolveBoardOutline` ends in `renderer.svg.BoardPieces.select`: each island (an
+outer loop with its holes) is scored by the dark copper **flash** centres inside it — pads and vias;
+a table's lettering and rules are draws — and only pieces holding at least 20% of the best score are
+kept (every board of a panel), holes travelling with their island. A derived edge only drops pieces
+with no flash at all, because a board without a pour derives as fragments. With no flash in any piece
+nothing is dropped and `BoardOutline.isSelectedBySizeOnly()` says so; `getIslandCount()`,
+`getPieceCount()` and `droppedPieces()` report the rest, and
+`MultiLayerSVGRenderer.setBoardPieceSelection(false)` gives the outline as resolved. When pieces were
+dropped the raster thumbnail frames to what is left, so the PNG's mm rectangle is the board's.
 
 **A nested loop full of copper is not a cut-out.** Nothing is routed over a hole, so copper inside a
 loop means it is a second outline of a board that is already there — the individual board keep-outs

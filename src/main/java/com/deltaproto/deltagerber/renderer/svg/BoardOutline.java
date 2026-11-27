@@ -38,10 +38,60 @@ public final class BoardOutline {
 
     private final String svgPath;
     private final boolean fromProfileLayer;
+    private final int islandCount;
+    private final int pieceCount;
+    private final boolean selectedBySizeOnly;
 
     BoardOutline(String svgPath, boolean fromProfileLayer) {
+        this(svgPath, fromProfileLayer, -1, -1, false);
+    }
+
+    private BoardOutline(String svgPath, boolean fromProfileLayer, int islandCount, int pieceCount,
+                         boolean selectedBySizeOnly) {
         this.svgPath = svgPath == null ? "" : svgPath;
         this.fromProfileLayer = fromProfileLayer;
+        this.islandCount = islandCount;
+        this.pieceCount = pieceCount;
+        this.selectedBySizeOnly = selectedBySizeOnly;
+    }
+
+    /** This outline, carrying what {@link BoardPieces} found. */
+    BoardOutline withSelection(int islands, int pieces, boolean bySizeOnly) {
+        return new BoardOutline(svgPath, fromProfileLayer, islands, pieces, bySizeOnly);
+    }
+
+    /**
+     * Separate pieces the resolved edge held before the board was picked out of them: the board,
+     * the further boards of a panel, and a stack-up table or title block drawn beside it. A loop
+     * smaller than {@link BoardPieces#MIN_ISLAND_AREA_FRACTION} of the largest is not counted.
+     * {@code -1} when no selection ran ({@link MultiLayerSVGRenderer#setBoardPieceSelection} off,
+     * or nothing resolved).
+     */
+    public int getIslandCount() {
+        return islandCount;
+    }
+
+    /**
+     * Pieces kept as the board — one, or every board of a panel. Fewer than
+     * {@link #getIslandCount()} when something beside the board was dropped. {@code -1} when no
+     * selection ran.
+     */
+    public int getPieceCount() {
+        return pieceCount;
+    }
+
+    /**
+     * True when the edge holds several pieces and no copper flash in any of them to tell the board
+     * from a drawing. Nothing is dropped then — every piece is kept, as without selection — so this
+     * says the outline may still include a table or title block, not that one was removed.
+     */
+    public boolean isSelectedBySizeOnly() {
+        return selectedBySizeOnly;
+    }
+
+    /** True when pieces beside the board were dropped from this outline. */
+    public boolean droppedPieces() {
+        return pieceCount >= 0 && pieceCount < islandCount;
     }
 
     /** No board edge could be resolved — the set has neither a profile layer nor copper. */

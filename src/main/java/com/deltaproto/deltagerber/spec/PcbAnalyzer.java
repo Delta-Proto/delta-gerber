@@ -144,7 +144,7 @@ public class PcbAnalyzer {
         // The outline governs the rest: it is the board size, it decides which copper features are
         // tracks, and it decides whether any other layer's extent matters. So it is resolved
         // across the whole set before any single layer is measured.
-        List<GerberDocument> outlineDocs = outlineDocuments(files, classifications);
+        List<GerberDocument> outlineDocs = outlineDocuments(files, classifications);  // may reclassify
         BoundingBox outline = outlineBounds(outlineDocs);
         boolean usableOutline = outline != null && outline.getWidth() > 0 && outline.getHeight() > 0;
         BoardProfile profile = usableOutline ? BoardProfile.of(spanningOutlines(outlineDocs, outline)) : null;
@@ -204,12 +204,18 @@ public class PcbAnalyzer {
         if (parsed == null || parsed.isEmpty()) {
             return BoardSpecification.from(List.of());
         }
+        parsed = new ArrayList<>(parsed);
         List<GerberDocument> outlineDocs = new ArrayList<>();
         boolean setHasDrill = false;
-        for (ParsedLayer p : parsed) {
+        for (int i = 0; i < parsed.size(); i++) {
+            ParsedLayer p = parsed.get(i);
             LayerClassification c = p.classification();
             if (p.gerber() != null && c != null && c.function() == LayerFunction.OUTLINE) {
-                outlineDocs.add(p.gerber());
+                if (drawsNoBoard(p.gerber())) {
+                    parsed.set(i, ParsedLayer.of(p.fileName(), notABoardEdge(c), p.gerber()));
+                } else {
+                    outlineDocs.add(p.gerber());
+                }
             }
             setHasDrill |= p.drill() != null || c != null && c.function().isDrill();
         }
@@ -396,6 +402,8 @@ public class PcbAnalyzer {
      * them for the edge-clearance check and parsing them twice both cost next to nothing.
      */
     private static List<GerberDocument> outlineDocuments(List<PcbFile> files, List<LayerClassification> classifications) {
+        // An outline that encloses no board is reclassified in place, so the layer it becomes is
+        // what the specification reports and its extent is never the board's size.
         List<GerberDocument> docs = new ArrayList<>();
         for (int i = 0; i < files.size(); i++) {
             LayerClassification classification = classifications.get(i);
@@ -405,12 +413,36 @@ public class PcbAnalyzer {
                 continue;
             }
             try {
-                docs.add(new GerberParser().parse(content));
+                GerberDocument doc = new GerberParser().parse(content);
+                if (drawsNoBoard(doc)) {
+                    classifications.set(i, notABoardEdge(classification));
+                } else {
+                    docs.add(doc);
+                }
             } catch (RuntimeException e) {
                 log.warn("Could not parse outline {}: {}", files.get(i).getFileName(), e.toString());
             }
         }
         return docs;
+    }
+
+    /**
+     * True when a layer filed as the outline draws something but encloses no board: dimension
+     * figures, lettering, an open route. Cadence Allegro's {@code BOARD GEOMETRY/DIMENSION} film
+     * ships that way — the figures "311.65" and "234" stroked beside a board drawn nowhere in the
+     * file — and measured as the edge it made a 234 × 311.65 mm board 128 × 162 mm, the extent of
+     * the text. The renderer applies the same test ({@link MultiLayerSVGRenderer#enclosesBoard})
+     * and derives the edge from the copper instead. An outline that draws nothing is left alone:
+     * it measures zero and is already ignored.
+     */
+    private static boolean drawsNoBoard(GerberDocument outline) {
+        return !outline.getObjects().isEmpty() && !new MultiLayerSVGRenderer().enclosesBoard(outline);
+    }
+
+    /** What a layer filed as the outline is once it turns out to enclose no board. */
+    private static LayerClassification notABoardEdge(LayerClassification outline) {
+        return new LayerClassification(outline.name() + " (no board edge)",
+                LayerFunction.MECHANICAL_DRAWING, outline.side());
     }
 
     /**

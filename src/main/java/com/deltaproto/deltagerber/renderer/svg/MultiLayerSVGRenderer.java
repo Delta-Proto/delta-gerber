@@ -62,6 +62,8 @@ public class MultiLayerSVGRenderer {
     // so off-board silkscreen/marks don't shrink the board into a corner of the image; the
     // interactive SVG path keeps union bounds so a separate paste overlay shares its frame.
     private boolean preferOutlineBoundsForViewBox = false;
+    // Drop a stack-up table / title block resolved as a second board piece (see BoardPieces).
+    private boolean boardPieceSelection = true;
     // Prepended to every id the renderer emits and every reference to one; "" = none.
     private String idPrefix = "";
 
@@ -228,6 +230,24 @@ public class MultiLayerSVGRenderer {
             throw new IllegalArgumentException("Not a valid SVG id prefix: " + prefix);
         }
         return this;
+    }
+
+    /**
+     * Whether {@link #resolveBoardOutline} keeps only the pieces of the edge that are the board.
+     * On by default: a stack-up table, title block or drill legend drawn as closed shapes beside
+     * the board otherwise resolves into a second piece of board, which the realistic view paints
+     * green and the raster frames along with the board. The board is told apart by its copper
+     * flashes (pads and vias); every board of a panel is kept, and without a flash in any piece
+     * nothing is dropped ({@link BoardOutline#isSelectedBySizeOnly()}). Off gives the outline as
+     * resolved, every piece included.
+     */
+    public MultiLayerSVGRenderer setBoardPieceSelection(boolean enabled) {
+        this.boardPieceSelection = enabled;
+        return this;
+    }
+
+    public boolean isBoardPieceSelection() {
+        return boardPieceSelection;
     }
 
     public String getIdPrefix() {
@@ -784,15 +804,19 @@ public class MultiLayerSVGRenderer {
         }
 
         String path = resolveProfilePath(outlineLayers, copperDocs);
+        BoardOutline outline;
         if (path != null && !path.isBlank()) {
-            return new BoardOutline(path, true);
+            outline = new BoardOutline(path, true);
+        } else {
+            if (silhouetteDocs.isEmpty()) return BoardOutline.none();
+            String derived = OutlineDeriver.deriveOutlineSvgPath(
+                silhouetteDocs, DERIVED_OUTLINE_CLOSE_MM, DERIVED_OUTLINE_OUTSET_MM);
+            if (derived == null || derived.isBlank()) return BoardOutline.none();
+            outline = new BoardOutline(derived, false);
         }
-        if (silhouetteDocs.isEmpty()) return BoardOutline.none();
-        String derived = OutlineDeriver.deriveOutlineSvgPath(
-            silhouetteDocs, DERIVED_OUTLINE_CLOSE_MM, DERIVED_OUTLINE_OUTSET_MM);
-        return derived == null || derived.isBlank()
-            ? BoardOutline.none()
-            : new BoardOutline(derived, false);
+        return boardPieceSelection
+            ? BoardPieces.select(outline, BoardPieces.flashCentres(copperDocs))
+            : outline;
     }
 
     /**
@@ -853,19 +877,38 @@ public class MultiLayerSVGRenderer {
      * The board edge as resolved material, from every profile layer in the set. Returns
      * {@code null} when the set has no profile layer, or none of them described anything.
      */
+    /**
+     * Whether a profile layer encloses a board, rather than drawing only lines — dimension figures,
+     * lettering, an open route. {@link #resolveBoardOutline} never takes the edge from a layer that
+     * does not, and {@code PcbAnalyzer} does not measure the board's size from one.
+     */
+    public boolean enclosesBoard(GerberDocument outlineDoc) {
+        if (outlineDoc == null || outlineDoc.getObjects().isEmpty()) return false;
+        return OutlineResolver.enclosesBoard(
+            extractOutlineLoops(outlineDoc, svgOptions.copy().setFlipY(flipY)));
+    }
+
     private String resolveProfilePath(List<Layer> outlineLayers, List<GerberDocument> copperDocs) {
         if (outlineLayers.isEmpty()) return null;
         SvgOptions options = svgOptions.copy().setFlipY(flipY);
 
         List<List<OutlineResolver.Loop>> perLayer = new ArrayList<>();
-        for (Layer layer : outlineLayers) {
-            perLayer.add(extractOutlineLoops(layer.getGerberDoc(), options));
+        boolean[] eligible = new boolean[outlineLayers.size()];
+        int first = -1;
+        for (int i = 0; i < outlineLayers.size(); i++) {
+            List<OutlineResolver.Loop> layerLoops = extractOutlineLoops(outlineLayers.get(i).getGerberDoc(), options);
+            perLayer.add(layerLoops);
+            eligible[i] = OutlineResolver.enclosesBoard(layerLoops);
+            if (eligible[i] && first < 0) first = i;
         }
+        // No profile layer encloses a board — only dimension figures or lettering were filed as
+        // the outline. The caller derives the edge from the copper, as for a set with no outline.
+        if (first < 0) return null;
 
         OutlineResolver.CopperProbe copper = OutlineResolver.CopperProbe.of(copperDocs);
-        List<OutlineResolver.Loop> loops = perLayer.get(0);
+        List<OutlineResolver.Loop> loops = perLayer.get(first);
         if (perLayer.size() > 1 && !copper.isEmpty()) {
-            List<OutlineResolver.Loop> merged = OutlineResolver.merge(perLayer, copper);
+            List<OutlineResolver.Loop> merged = OutlineResolver.merge(perLayer, eligible, copper);
             if (merged != null) loops = merged;
         }
 
@@ -974,10 +1017,19 @@ public class MultiLayerSVGRenderer {
         // OUTLINE — content is clipped to the outline anyway, and off-board silkscreen/marks
         // would otherwise shrink the board into a corner of a much larger image. Falls back
         // to the union when there is no usable outline.
-        BoundingBox globalBounds = (preferOutlineBoundsForViewBox && haveOutlineLayer
-                && outlineLayer.getBoundingBox().isValid())
-            ? outlineLayer.getBoundingBox()
-            : computeGlobalBounds(layers);
+        // Resolved once, here: the clip path below uses it, and when pieces beside the board were
+        // dropped the raster frames to what is left rather than to the drawing it came with.
+        BoardOutline outline = resolveBoardOutline(layers);
+        BoundingBox globalBounds;
+        if (preferOutlineBoundsForViewBox && outline.droppedPieces()) {
+            java.awt.geom.Rectangle2D kept = outline.toShape().getBounds2D();
+            globalBounds = new BoundingBox(kept.getMinX(), kept.getMinY(), kept.getMaxX(), kept.getMaxY());
+        } else if (preferOutlineBoundsForViewBox && haveOutlineLayer
+                && outlineLayer.getBoundingBox().isValid()) {
+            globalBounds = outlineLayer.getBoundingBox();
+        } else {
+            globalBounds = computeGlobalBounds(layers);
+        }
         if (!globalBounds.isValid()) {
             return createEmptySvg();
         }
@@ -1002,7 +1054,6 @@ public class MultiLayerSVGRenderer {
 
         // Board outline path for the clipPath and the soldermask mask base — resolved by the
         // same method the STEP export uses, so a board is clipped and extruded to one edge.
-        BoardOutline outline = resolveBoardOutline(layers);
         String outlinePath = outline.getSvgPath();
         boolean hasOutlinePath = !outline.isEmpty();
         String outlineFillRule = outline.getFillRule();

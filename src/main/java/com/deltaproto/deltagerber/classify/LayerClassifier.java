@@ -285,11 +285,30 @@ public final class LayerClassifier {
                         && fileContent != null && !hasDrawCommands(fileContent)) {
                     return null;
                 }
+                if (classification.function().isDrill()
+                        && fileContent != null && !fileContent.isBlank() && !hasDrillCommands(fileContent)) {
+                    return null;
+                }
                 return classification;
             }
         }
         return null;
     }
+
+    /**
+     * Whether a file named like a drill holds a drill program: an Excellon header, a Gerber format
+     * statement, or a line that is nothing but codes — a tool select or a coordinate. {@code .txt}
+     * is a drill extension for several tools, and Allegro writes its NC parameter list
+     * ({@code nc_param.txt}: "INTEGER-PLACES 3") and its placement report ({@code place_txt.txt})
+     * beside the drill; their lines are words and {@code !}-separated columns, never bare codes.
+     */
+    private static boolean hasDrillCommands(String fileContent) {
+        return fileContent.contains("M48") || fileContent.contains("%FS")
+            || DRILL_CODE_LINE.matcher(fileContent).find();
+    }
+
+    private static final Pattern DRILL_CODE_LINE = Pattern.compile(
+        "(?m)^[ \\t]*[XYTGM][-+0-9.XYTGMRCFSDN*]*\\d[-+0-9.XYTGMRCFSDN*]*[ \\t]*\\r?$");
 
     /** Whether the Gerber holds any draw (D01) or flash (D03) command, i.e. any geometry at all. */
     private static boolean hasDrawCommands(String fileContent) {
